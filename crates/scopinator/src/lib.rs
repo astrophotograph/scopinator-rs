@@ -3,6 +3,7 @@ pub mod device;
 pub mod error;
 pub mod event;
 pub mod manager;
+pub mod sequencer;
 
 pub use device::*;
 pub use error::ScopinatorError;

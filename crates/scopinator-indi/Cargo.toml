@@ -1,0 +1,16 @@
+[package]
+name = "scopinator-indi"
+version = "0.1.0"
+description = "INDI protocol backend for scopinator"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scopinator-types.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
