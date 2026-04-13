@@ -765,6 +765,67 @@ mod tests {
         telescope.await.unwrap();
     }
 
+    /// Live test against a real Seestar scope. Skipped in normal `cargo test` runs.
+    ///
+    /// Authenticates, then sends `get_device_state` and asserts the telescope
+    /// responds with `code: 0` — proving the scope accepted the key and is
+    /// processing commands, not just that the local handshake logic ran cleanly.
+    ///
+    /// ```text
+    /// SEESTAR_HOST=192.168.x.x SEESTAR_INTEROP_PEM=~/client.pem \
+    ///   cargo test -p scopinator-seestar auth::tests::live -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn live() {
+        use tokio::io::AsyncBufReadExt;
+
+        let host: std::net::Ipv4Addr = std::env::var("SEESTAR_HOST")
+            .expect("set SEESTAR_HOST to the scope's IP address")
+            .parse()
+            .expect("SEESTAR_HOST must be a valid IPv4 address");
+        let pem_path =
+            std::env::var("SEESTAR_INTEROP_PEM").expect("set SEESTAR_INTEROP_PEM to the key path");
+        let pem = std::fs::read_to_string(&pem_path)
+            .unwrap_or_else(|e| panic!("failed to read {pem_path}: {e}"));
+        let key = InteropKey::from_pem(&pem).expect("failed to parse interop PEM");
+
+        let addr = std::net::SocketAddr::from((host, 4700u16));
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("failed to connect to scope");
+
+        authenticate(&mut stream, &key)
+            .await
+            .expect("authentication failed");
+
+        // Send get_device_state to confirm the telescope is actually accepting
+        // commands — a rejected key would return a non-zero code here.
+        let cmd = serde_json::json!({"id": 100000, "method": "get_device_state", "params": ["verify"]});
+        stream
+            .write_all(format!("{cmd}\r\n").as_bytes())
+            .await
+            .expect("failed to send get_device_state");
+
+        let mut reader = BufReader::new(&mut stream);
+        let mut line = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), reader.read_line(&mut line))
+            .await
+            .expect("timed out waiting for get_device_state response")
+            .expect("read error");
+
+        let resp: serde_json::Value =
+            serde_json::from_str(line.trim()).expect("invalid JSON in get_device_state response");
+
+        println!("get_device_state response: {resp}");
+
+        let code = resp.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+        assert_eq!(
+            code, 0,
+            "get_device_state returned code={code} — scope may have rejected the auth key"
+        );
+    }
+
     /// Telescope closes the connection after receiving get_verify_str (EOF during challenge read).
     #[tokio::test]
     async fn authenticate_connection_closed_mid_handshake() {
