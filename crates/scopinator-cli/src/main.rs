@@ -1,8 +1,10 @@
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use scopinator_seestar::InteropKey;
 
 mod commands;
 
@@ -12,6 +14,10 @@ struct Cli {
     /// Logging verbosity (-v for debug, -vv for trace)
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
+    /// Path to RSA interoperability PEM key for firmware 7.18+ authentication
+    #[arg(long, env = "SEESTAR_INTEROP_PEM", value_name = "PATH")]
+    interop_pem: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -70,12 +76,23 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Load interop key once; fail fast if the file exists but is unparseable.
+    let interop_key: Option<InteropKey> = if let Some(path) = &cli.interop_pem {
+        let pem = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read interop PEM from {}", path.display()))?;
+        let key = InteropKey::from_pem(&pem)
+            .with_context(|| format!("failed to parse interop PEM from {}", path.display()))?;
+        Some(key)
+    } else {
+        None
+    };
+
     match cli.command {
         Commands::Discover { timeout } => {
             commands::discover(Duration::from_secs(timeout)).await?;
         }
         Commands::Status { host } => {
-            commands::status(host).await?;
+            commands::status(host, interop_key).await?;
         }
         Commands::Goto {
             host,
@@ -83,10 +100,10 @@ async fn main() -> Result<()> {
             dec,
             name,
         } => {
-            commands::goto(host, ra, dec, &name).await?;
+            commands::goto(host, ra, dec, &name, interop_key).await?;
         }
         Commands::Park { host } => {
-            commands::park(host).await?;
+            commands::park(host, interop_key).await?;
         }
     }
 

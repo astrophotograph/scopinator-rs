@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::{debug, info};
 
+use crate::auth::InteropKey;
 use crate::command::Command;
 use crate::connection::control::{self, ClientRequest};
 use crate::connection::imaging::{self, ImageFrame};
@@ -13,6 +14,14 @@ use crate::error::SeestarError;
 use crate::event::SeestarEvent;
 use crate::protocol::json_rpc::{CONTROL_PORT, IMAGING_PORT, INITIAL_COMMAND_ID};
 use crate::response::CommandResponse;
+
+/// Configuration for connecting to a Seestar telescope.
+#[derive(Default)]
+pub struct SeestarConfig {
+    /// RSA interoperability PEM key for firmware 7.18+ challenge/response authentication.
+    /// If `None`, authentication is skipped (compatible with older firmware).
+    pub interop_key: Option<InteropKey>,
+}
 
 /// Command response timeout.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -63,14 +72,34 @@ impl SeestarClient {
         let control_addr = SocketAddr::V4(SocketAddrV4::new(ip, CONTROL_PORT));
         let imaging_addr = SocketAddr::V4(SocketAddrV4::new(ip, IMAGING_PORT));
 
-        Self::connect_with_ports(ip, control_addr, imaging_addr).await
+        Self::connect_internal(ip, control_addr, imaging_addr, SeestarConfig::default()).await
+    }
+
+    /// Connect with a [`SeestarConfig`] (e.g. to supply an interop key for firmware 7.18+).
+    pub async fn connect_with_config(
+        ip: Ipv4Addr,
+        config: SeestarConfig,
+    ) -> Result<Self, SeestarError> {
+        let control_addr = SocketAddr::V4(SocketAddrV4::new(ip, CONTROL_PORT));
+        let imaging_addr = SocketAddr::V4(SocketAddrV4::new(ip, IMAGING_PORT));
+
+        Self::connect_internal(ip, control_addr, imaging_addr, config).await
     }
 
     /// Connect with explicit addresses (useful for proxies or custom ports).
     pub async fn connect_with_ports(
+        ip: Ipv4Addr,
+        control_addr: SocketAddr,
+        imaging_addr: SocketAddr,
+    ) -> Result<Self, SeestarError> {
+        Self::connect_internal(ip, control_addr, imaging_addr, SeestarConfig::default()).await
+    }
+
+    async fn connect_internal(
         _ip: Ipv4Addr,
         control_addr: SocketAddr,
         imaging_addr: SocketAddr,
+        config: SeestarConfig,
     ) -> Result<Self, SeestarError> {
         let (request_tx, request_rx) = mpsc::channel::<ClientRequest>(256);
         let (event_tx, _) = broadcast::channel::<SeestarEvent>(256);
@@ -81,12 +110,15 @@ impl SeestarClient {
         let imaging_connected = Arc::new(AtomicBool::new(false));
         let next_id = Arc::new(AtomicU64::new(INITIAL_COMMAND_ID));
 
+        let interop_key = config.interop_key.map(|k| Arc::new(k));
+
         // Spawn control connection task
         {
             let event_tx = event_tx.clone();
             let connected = Arc::clone(&control_connected);
             let next_id = Arc::clone(&next_id);
             let shutdown_rx = shutdown_rx.clone();
+            let interop_key = interop_key.clone();
 
             tokio::spawn(async move {
                 control::run(
@@ -96,6 +128,7 @@ impl SeestarClient {
                     connected,
                     next_id,
                     shutdown_rx,
+                    interop_key,
                 )
                 .await;
             });

@@ -9,6 +9,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
+use crate::auth::InteropKey;
 use crate::command::Command;
 use crate::command::serialize::serialize_command;
 use crate::error::SeestarError;
@@ -63,6 +64,7 @@ pub(crate) async fn run(
     connected: Arc<AtomicBool>,
     next_id: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
+    interop_key: Option<Arc<InteropKey>>,
 ) {
     let state = Arc::new(Mutex::new(ControlState::new()));
     let mut policy = ReconnectPolicy::new();
@@ -79,11 +81,21 @@ pub(crate) async fn run(
         info!("connecting to telescope control at {addr}");
 
         match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
-            Ok(Ok(stream)) => {
+            Ok(Ok(mut stream)) => {
                 if let Err(e) = stream.set_nodelay(true) {
                     warn!("failed to set TCP_NODELAY: {e}");
                 }
                 info!("connected to telescope control at {addr}");
+
+                // Authenticate before advertising the connection as ready.
+                if let Some(key) = &interop_key {
+                    if let Err(e) = crate::auth::authenticate(&mut stream, key).await {
+                        error!("authentication failed: {e}");
+                        // Drop stream (closes socket) and fall through to reconnect delay.
+                        continue;
+                    }
+                }
+
                 connected.store(true, Ordering::Release);
                 policy.reset();
 
