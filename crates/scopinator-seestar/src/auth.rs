@@ -114,26 +114,37 @@ pub async fn authenticate(stream: &mut TcpStream, key: &InteropKey) -> Result<()
     let resp2 = read_response(stream).await?;
     check_verify_client(&resp2)?;
 
-    // Step 3: sanity-check (non-fatal).
-    send_raw(
-        stream,
-        serde_json::json!({
-            "id": ID_PI_IS_VERIFIED,
-            "method": "pi_is_verified",
-        }),
-    )
-    .await?;
+    // Step 3: sanity-check (non-fatal). Errors here do not fail authentication —
+    // verify_client already succeeded, so the telescope accepted our key.
+    let pi_result = async {
+        send_raw(
+            stream,
+            serde_json::json!({
+                "id": ID_PI_IS_VERIFIED,
+                "method": "pi_is_verified",
+            }),
+        )
+        .await?;
+        read_response(stream).await
+    }
+    .await;
 
-    let resp3 = read_response(stream).await?;
-    let is_verified = resp3
-        .get("result")
-        .and_then(|r| r.get("is_verified"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !is_verified {
-        warn!("pi_is_verified returned non-verified (non-fatal), proceeding");
-    } else {
-        debug!("pi_is_verified confirmed");
+    match pi_result {
+        Ok(resp3) => {
+            let is_verified = resp3
+                .get("result")
+                .and_then(|r| r.get("is_verified"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if is_verified {
+                debug!("pi_is_verified confirmed");
+            } else {
+                warn!("pi_is_verified returned non-verified (non-fatal), proceeding");
+            }
+        }
+        Err(e) => {
+            warn!("pi_is_verified check failed (non-fatal): {e}");
+        }
     }
 
     info!("authentication successful");
@@ -220,5 +231,565 @@ fn check_verify_client(msg: &serde_json::Value) -> Result<(), SeestarError> {
         Err(SeestarError::AuthFailed(format!(
             "verify_client rejected by telescope (code={code})"
         )))
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rand::rngs::OsRng;
+    use rsa::RsaPrivateKey;
+    use rsa::pkcs1v15::VerifyingKey;
+    use rsa::pkcs8::EncodePrivateKey;
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    use signature::Verifier;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    /// Generate a 512-bit RSA key for tests (small = fast; not for production use).
+    fn make_test_private_key() -> RsaPrivateKey {
+        RsaPrivateKey::new(&mut OsRng, 512).unwrap()
+    }
+
+    fn interop_key_from_private(private_key: &RsaPrivateKey) -> InteropKey {
+        InteropKey(Arc::new(SigningKey::<Sha1>::new(private_key.clone())))
+    }
+
+    // ── InteropKey::from_pem ──────────────────────────────────────────────────
+
+    #[test]
+    fn from_pem_pkcs8_roundtrip() {
+        let private_key = make_test_private_key();
+        let pem = private_key
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
+        assert!(InteropKey::from_pem(pem.as_str()).is_ok());
+    }
+
+    #[test]
+    fn from_pem_pkcs1_roundtrip() {
+        let private_key = make_test_private_key();
+        let pem = private_key
+            .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+            .unwrap();
+        assert!(InteropKey::from_pem(pem.as_str()).is_ok());
+    }
+
+    #[test]
+    fn from_pem_unrecognized_header() {
+        let pem = "-----BEGIN EC PRIVATE KEY-----\ndGVzdA==\n-----END EC PRIVATE KEY-----\n";
+        assert!(matches!(
+            InteropKey::from_pem(pem),
+            Err(SeestarError::InteropKeyLoad(_))
+        ));
+    }
+
+    #[test]
+    fn from_pem_empty_input() {
+        assert!(matches!(
+            InteropKey::from_pem(""),
+            Err(SeestarError::InteropKeyLoad(_))
+        ));
+    }
+
+    #[test]
+    fn from_pem_malformed_pkcs8_body() {
+        let pem = "-----BEGIN PRIVATE KEY-----\nbm90YWtleQ==\n-----END PRIVATE KEY-----\n";
+        assert!(matches!(
+            InteropKey::from_pem(pem),
+            Err(SeestarError::InteropKeyLoad(_))
+        ));
+    }
+
+    #[test]
+    fn from_pem_malformed_pkcs1_body() {
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\nbm90YWtleQ==\n-----END RSA PRIVATE KEY-----\n";
+        assert!(matches!(
+            InteropKey::from_pem(pem),
+            Err(SeestarError::InteropKeyLoad(_))
+        ));
+    }
+
+    // ── extract_challenge ─────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_challenge_ok() {
+        let msg = serde_json::json!({"result": {"str": "abc123"}});
+        assert_eq!(extract_challenge(&msg).unwrap(), "abc123");
+    }
+
+    #[test]
+    fn extract_challenge_missing_str_field() {
+        let msg = serde_json::json!({"result": {}});
+        assert!(matches!(
+            extract_challenge(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn extract_challenge_empty_str() {
+        let msg = serde_json::json!({"result": {"str": ""}});
+        assert!(matches!(
+            extract_challenge(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn extract_challenge_str_is_null() {
+        // str field present but JSON null — as_str() returns None.
+        let msg = serde_json::json!({"result": {"str": null}});
+        assert!(matches!(
+            extract_challenge(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn extract_challenge_result_is_null() {
+        // result field present but JSON null — get("str") returns None.
+        let msg = serde_json::json!({"result": null});
+        assert!(matches!(
+            extract_challenge(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn extract_challenge_result_is_scalar() {
+        // Telescope sends result as an integer instead of a dict.
+        let msg = serde_json::json!({"result": 0});
+        assert!(matches!(
+            extract_challenge(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn extract_challenge_missing_result() {
+        let msg = serde_json::json!({"code": 0});
+        assert!(matches!(
+            extract_challenge(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    // ── check_verify_client ───────────────────────────────────────────────────
+
+    #[test]
+    fn check_code_zero_ok() {
+        let msg = serde_json::json!({"id": 1002, "code": 0});
+        assert!(check_verify_client(&msg).is_ok());
+    }
+
+    #[test]
+    fn check_result_zero_ok() {
+        // Some firmware variants return result instead of code.
+        let msg = serde_json::json!({"id": 1002, "result": 0});
+        assert!(check_verify_client(&msg).is_ok());
+    }
+
+    #[test]
+    fn check_nonzero_code_err() {
+        let msg = serde_json::json!({"id": 1002, "code": 1001});
+        assert!(matches!(
+            check_verify_client(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn check_negative_code_err() {
+        let msg = serde_json::json!({"id": 1002, "code": -1});
+        assert!(matches!(
+            check_verify_client(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn check_null_code_falls_through_to_result_err() {
+        // code field present but null — as_i64() returns None, falls to result,
+        // which is also absent, so defaults to -1.
+        let msg = serde_json::json!({"id": 1002, "code": null});
+        assert!(matches!(
+            check_verify_client(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn check_string_code_not_accepted() {
+        // code as a string "0" rather than integer — as_i64() returns None,
+        // falls through to result which is absent, defaults to -1.
+        let msg = serde_json::json!({"id": 1002, "code": "0"});
+        assert!(matches!(
+            check_verify_client(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    #[test]
+    fn check_missing_code_and_result_err() {
+        let msg = serde_json::json!({"id": 1002, "method": "verify_client"});
+        assert!(matches!(
+            check_verify_client(&msg),
+            Err(SeestarError::AuthFailed(_))
+        ));
+    }
+
+    // ── sign_challenge ────────────────────────────────────────────────────────
+
+    #[test]
+    fn sign_challenge_produces_verifiable_signature() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+        let challenge = "test-challenge-string-42";
+
+        let sig_b64 = sign_challenge(&key, challenge).unwrap();
+
+        // Must decode as valid base64.
+        let sig_bytes = BASE64.decode(&sig_b64).expect("base64 decode failed");
+
+        // Signature must verify against the corresponding public key.
+        let verifying_key = VerifyingKey::<Sha1>::new(private_key.to_public_key());
+        let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice())
+            .expect("signature decode failed");
+        verifying_key
+            .verify(challenge.as_bytes(), &sig)
+            .expect("signature verification failed");
+    }
+
+    #[test]
+    fn sign_challenge_empty_string() {
+        // Signing an empty challenge must not panic and must produce a verifiable sig.
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+
+        let sig_b64 = sign_challenge(&key, "").unwrap();
+        let sig_bytes = BASE64.decode(&sig_b64).unwrap();
+        let verifying_key = VerifyingKey::<Sha1>::new(private_key.to_public_key());
+        let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()).unwrap();
+        verifying_key.verify(b"", &sig).expect("empty-challenge sig must verify");
+    }
+
+    #[test]
+    fn sign_challenge_wrong_key_does_not_verify() {
+        // A signature from key A must not verify under key B.
+        let private_key_a = make_test_private_key();
+        let private_key_b = make_test_private_key();
+        let key_a = interop_key_from_private(&private_key_a);
+        let challenge = "some-challenge";
+
+        let sig_b64 = sign_challenge(&key_a, challenge).unwrap();
+        let sig_bytes = BASE64.decode(&sig_b64).unwrap();
+
+        let verifying_key_b = VerifyingKey::<Sha1>::new(private_key_b.to_public_key());
+        let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()).unwrap();
+        assert!(
+            verifying_key_b.verify(challenge.as_bytes(), &sig).is_err(),
+            "signature from key A must not verify under key B"
+        );
+    }
+
+    #[test]
+    fn sign_challenge_is_deterministic() {
+        // RSA-PKCS1v15 is deterministic: same key + same input = same output.
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+        let challenge = "deterministic-test";
+
+        let sig1 = sign_challenge(&key, challenge).unwrap();
+        let sig2 = sign_challenge(&key, challenge).unwrap();
+        assert_eq!(sig1, sig2, "PKCS1v15 signing must be deterministic");
+    }
+
+    // ── authenticate() integration tests ─────────────────────────────────────
+    //
+    // Each test binds a local TCP listener that plays the telescope role,
+    // then runs authenticate() on the client side and checks the outcome.
+
+    /// Simulate a telescope that runs through the full happy-path handshake.
+    /// Also verifies that the signature sent by the client is cryptographically valid.
+    #[tokio::test]
+    async fn authenticate_success() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+        let challenge = "hello-seestar-42";
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let challenge_str = challenge.to_string();
+        let public_key = private_key.to_public_key();
+        let telescope = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = tokio::io::split(stream);
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+
+            // Step 1: receive get_verify_str, send challenge.
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(req["method"], "get_verify_str");
+
+            let resp = serde_json::json!({
+                "id": req["id"], "code": 0,
+                "result": {"str": challenge_str},
+            });
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+
+            // Step 2: receive verify_client, check signature, accept.
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(req["method"], "verify_client");
+            assert_eq!(req["params"]["data"], challenge_str);
+
+            let sig_b64 = req["params"]["sign"].as_str().unwrap();
+            let sig_bytes = BASE64.decode(sig_b64).unwrap();
+            let verifying_key = VerifyingKey::<Sha1>::new(public_key);
+            let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()).unwrap();
+            verifying_key
+                .verify(challenge_str.as_bytes(), &sig)
+                .expect("client sent an invalid signature");
+
+            let resp = serde_json::json!({"id": req["id"], "code": 0});
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+
+            // Step 3: receive pi_is_verified, send confirmation.
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(req["method"], "pi_is_verified");
+
+            let resp = serde_json::json!({
+                "id": req["id"], "code": 0,
+                "result": {"is_verified": true},
+            });
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        authenticate(&mut stream, &key).await.expect("authenticate should succeed");
+        telescope.await.unwrap();
+    }
+
+    /// Telescope rejects verify_client with a non-zero code.
+    #[tokio::test]
+    async fn authenticate_telescope_rejects_verify() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let telescope = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = tokio::io::split(stream);
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            let resp = serde_json::json!({
+                "id": req["id"], "code": 0,
+                "result": {"str": "challenge"},
+            });
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            // Reject with error code.
+            let resp = serde_json::json!({"id": req["id"], "code": 1001});
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let result = authenticate(&mut stream, &key).await;
+        assert!(
+            matches!(result, Err(SeestarError::AuthFailed(_))),
+            "expected AuthFailed, got {result:?}"
+        );
+        telescope.await.unwrap();
+    }
+
+    /// Telescope sends malformed JSON in response to get_verify_str.
+    #[tokio::test]
+    async fn authenticate_malformed_challenge_response() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let telescope = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = tokio::io::split(stream);
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            write.write_all(b"this is not json\r\n").await.unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let result = authenticate(&mut stream, &key).await;
+        assert!(
+            matches!(result, Err(SeestarError::AuthFailed(_))),
+            "expected AuthFailed on malformed JSON, got {result:?}"
+        );
+        telescope.await.unwrap();
+    }
+
+    /// Telescope sends an empty challenge string — must be rejected before signing.
+    #[tokio::test]
+    async fn authenticate_empty_challenge_from_telescope() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let telescope = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = tokio::io::split(stream);
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            let resp = serde_json::json!({
+                "id": req["id"], "code": 0,
+                "result": {"str": ""},  // empty challenge
+            });
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let result = authenticate(&mut stream, &key).await;
+        assert!(
+            matches!(result, Err(SeestarError::AuthFailed(_))),
+            "expected AuthFailed on empty challenge, got {result:?}"
+        );
+        telescope.await.unwrap();
+    }
+
+    /// Telescope accepts verify_client then closes before pi_is_verified.
+    /// Authentication must still succeed — pi_is_verified is non-fatal.
+    #[tokio::test]
+    async fn authenticate_pi_is_verified_nonfatal_on_close() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let telescope = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = tokio::io::split(stream);
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            let resp = serde_json::json!({
+                "id": req["id"], "code": 0,
+                "result": {"str": "challenge"},
+            });
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            let resp = serde_json::json!({"id": req["id"], "code": 0});
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+
+            // Close before pi_is_verified — client should succeed anyway.
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        authenticate(&mut stream, &key)
+            .await
+            .expect("auth must succeed even when pi_is_verified connection is closed");
+        telescope.await.unwrap();
+    }
+
+    /// Telescope reports is_verified: false — authentication still succeeds.
+    #[tokio::test]
+    async fn authenticate_pi_is_verified_false_is_nonfatal() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let telescope = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = tokio::io::split(stream);
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            let resp = serde_json::json!({
+                "id": req["id"], "code": 0,
+                "result": {"str": "challenge"},
+            });
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            let resp = serde_json::json!({"id": req["id"], "code": 0});
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            // Report not verified — should be ignored by client.
+            let resp = serde_json::json!({
+                "id": req["id"], "code": 0,
+                "result": {"is_verified": false},
+            });
+            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        authenticate(&mut stream, &key)
+            .await
+            .expect("auth must succeed even when is_verified is false");
+        telescope.await.unwrap();
+    }
+
+    /// Telescope closes the connection after receiving get_verify_str (EOF during challenge read).
+    #[tokio::test]
+    async fn authenticate_connection_closed_mid_handshake() {
+        let private_key = make_test_private_key();
+        let key = interop_key_from_private(&private_key);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let telescope = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, _write) = tokio::io::split(stream);
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+            // Read get_verify_str so the client's write succeeds, then drop → clean EOF.
+            reader.read_line(&mut line).await.unwrap();
+            // stream dropped here, sending EOF to client
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let result = authenticate(&mut stream, &key).await;
+        assert!(
+            matches!(result, Err(SeestarError::AuthFailed(_))),
+            "expected AuthFailed, got {result:?}"
+        );
+        telescope.await.unwrap();
     }
 }
