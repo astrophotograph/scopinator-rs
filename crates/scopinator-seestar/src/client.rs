@@ -96,7 +96,7 @@ impl SeestarClient {
     }
 
     async fn connect_internal(
-        _ip: Ipv4Addr,
+        _ip: Ipv4Addr, // reserved — may be used for source binding in future
         control_addr: SocketAddr,
         imaging_addr: SocketAddr,
         config: SeestarConfig,
@@ -110,7 +110,7 @@ impl SeestarClient {
         let imaging_connected = Arc::new(AtomicBool::new(false));
         let next_id = Arc::new(AtomicU64::new(INITIAL_COMMAND_ID));
 
-        let interop_key = config.interop_key.map(|k| Arc::new(k));
+        let interop_key = config.interop_key.map(Arc::new);
 
         // Spawn control connection task
         {

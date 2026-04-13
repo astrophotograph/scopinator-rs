@@ -44,6 +44,12 @@ const ID_PI_IS_VERIFIED: u64 = 1003;
 #[derive(Clone)]
 pub struct InteropKey(Arc<SigningKey<Sha1>>);
 
+impl std::fmt::Debug for InteropKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InteropKey").finish_non_exhaustive()
+    }
+}
+
 impl InteropKey {
     /// Load an RSA private key from a PEM string.
     ///
@@ -53,7 +59,15 @@ impl InteropKey {
     ///
     /// Returns `SeestarError::InteropKeyLoad` with a descriptive message on failure.
     pub fn from_pem(pem: &str) -> Result<Self, SeestarError> {
-        let private_key = if pem.contains("BEGIN PRIVATE KEY") {
+        let private_key = if pem.contains("BEGIN ENCRYPTED PRIVATE KEY") {
+            // Encrypted PKCS#8 — password-protected keys are not supported.
+            return Err(SeestarError::InteropKeyLoad(
+                "encrypted PEM keys are not supported — \
+                 use an unencrypted key (remove the passphrase with \
+                 `openssl pkcs8 -in enc.pem -out plain.pem`)"
+                    .to_string(),
+            ));
+        } else if pem.contains("BEGIN PRIVATE KEY") {
             // PKCS#8 unencrypted
             use rsa::pkcs8::DecodePrivateKey;
             RsaPrivateKey::from_pkcs8_pem(pem)
@@ -99,7 +113,7 @@ pub async fn authenticate(stream: &mut TcpStream, key: &InteropKey) -> Result<()
     debug!(challenge, "received auth challenge");
 
     // Step 2: sign and verify.
-    let sig = sign_challenge(key, &challenge)?;
+    let sig = sign_challenge(key, &challenge);
 
     send_raw(
         stream,
@@ -171,7 +185,8 @@ async fn read_response(stream: &mut TcpStream) -> Result<serde_json::Value, Sees
     let mut buf = String::new();
 
     let result = tokio::time::timeout(AUTH_TIMEOUT, async {
-        // SAFETY: We borrow stream mutably; BufReader does not outlive this block.
+        // BufReader borrows stream mutably and is dropped at the end of this block,
+        // so it cannot outlive the stream reference.
         let mut reader = BufReader::new(&mut *stream);
         reader.read_line(&mut buf).await
     })
@@ -210,11 +225,9 @@ fn extract_challenge(msg: &serde_json::Value) -> Result<String, SeestarError> {
 }
 
 /// Sign the challenge string with RSA-PKCS1v15-SHA1, return base64.
-fn sign_challenge(key: &InteropKey, challenge: &str) -> Result<String, SeestarError> {
-    let sig: rsa::pkcs1v15::Signature = key
-        .0
-        .sign(challenge.as_bytes());
-    Ok(BASE64.encode(sig.to_bytes()))
+fn sign_challenge(key: &InteropKey, challenge: &str) -> String {
+    let sig: rsa::pkcs1v15::Signature = key.0.sign(challenge.as_bytes());
+    BASE64.encode(sig.to_bytes())
 }
 
 /// Check that `verify_client` was accepted (code == 0).
@@ -276,6 +289,15 @@ mod tests {
             .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
             .unwrap();
         assert!(InteropKey::from_pem(pem.as_str()).is_ok());
+    }
+
+    #[test]
+    fn from_pem_encrypted_pkcs8_rejected() {
+        // Encrypted PKCS#8 header must produce a clear error, not a cryptic parse failure.
+        let pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\ndGVzdA==\n-----END ENCRYPTED PRIVATE KEY-----\n";
+        let err = InteropKey::from_pem(pem).unwrap_err();
+        assert!(matches!(err, SeestarError::InteropKeyLoad(_)));
+        assert!(err.to_string().contains("encrypted"), "error should mention encryption");
     }
 
     #[test]
@@ -450,7 +472,7 @@ mod tests {
         let key = interop_key_from_private(&private_key);
         let challenge = "test-challenge-string-42";
 
-        let sig_b64 = sign_challenge(&key, challenge).unwrap();
+        let sig_b64 = sign_challenge(&key, challenge);
 
         // Must decode as valid base64.
         let sig_bytes = BASE64.decode(&sig_b64).expect("base64 decode failed");
@@ -470,7 +492,7 @@ mod tests {
         let private_key = make_test_private_key();
         let key = interop_key_from_private(&private_key);
 
-        let sig_b64 = sign_challenge(&key, "").unwrap();
+        let sig_b64 = sign_challenge(&key, "");
         let sig_bytes = BASE64.decode(&sig_b64).unwrap();
         let verifying_key = VerifyingKey::<Sha1>::new(private_key.to_public_key());
         let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()).unwrap();
@@ -485,7 +507,7 @@ mod tests {
         let key_a = interop_key_from_private(&private_key_a);
         let challenge = "some-challenge";
 
-        let sig_b64 = sign_challenge(&key_a, challenge).unwrap();
+        let sig_b64 = sign_challenge(&key_a, challenge);
         let sig_bytes = BASE64.decode(&sig_b64).unwrap();
 
         let verifying_key_b = VerifyingKey::<Sha1>::new(private_key_b.to_public_key());
@@ -503,8 +525,8 @@ mod tests {
         let key = interop_key_from_private(&private_key);
         let challenge = "deterministic-test";
 
-        let sig1 = sign_challenge(&key, challenge).unwrap();
-        let sig2 = sign_challenge(&key, challenge).unwrap();
+        let sig1 = sign_challenge(&key, challenge);
+        let sig2 = sign_challenge(&key, challenge);
         assert_eq!(sig1, sig2, "PKCS1v15 signing must be deterministic");
     }
 

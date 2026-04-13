@@ -91,9 +91,28 @@ pub(crate) async fn run(
                 if let Some(key) = &interop_key {
                     if let Err(e) = crate::auth::authenticate(&mut stream, key).await {
                         error!("authentication failed: {e}");
-                        // Drop stream (closes socket) and fall through to reconnect delay.
-                        continue;
+                        // Fall through to the backoff delay below rather than
+                        // continuing immediately — avoids hammering the scope.
+                    } else {
+                        connected.store(true, Ordering::Release);
+                        policy.reset();
+                        run_connected(
+                            stream,
+                            Arc::clone(&state),
+                            Arc::clone(&request_rx),
+                            event_tx.clone(),
+                            Arc::clone(&next_id),
+                            shutdown.clone(),
+                        )
+                        .await;
+                        connected.store(false, Ordering::Release);
+                        info!("control connection lost, will reconnect");
                     }
+                    // Both paths fall through to flush_pending + backoff.
+                    flush_pending(&state).await;
+                    let wait = policy.next_backoff();
+                    tokio::time::sleep(wait).await;
+                    continue;
                 }
 
                 connected.store(true, Ordering::Release);
