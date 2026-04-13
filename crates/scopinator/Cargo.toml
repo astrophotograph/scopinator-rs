@@ -14,6 +14,8 @@ seestar = ["dep:scopinator-seestar"]
 scopinator-types.workspace = true
 scopinator-seestar = { workspace = true, optional = true }
 async-trait.workspace = true
+bytes.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
