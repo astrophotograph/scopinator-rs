@@ -1,0 +1,2 @@
+- [Project Context](memory/project_context.md) — Rust port of pyscopinator; references pyscopinator (models) and seestar-proxy (networking)
+- [User Profile](memory/user_profile.md) — Experienced Rust/Python dev, telescope control software, content creator

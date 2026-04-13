@@ -1,0 +1,19 @@
+[package]
+name = "scopinator"
+version = "0.1.0"
+description = "Telescope control library with pluggable backends"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["seestar"]
+seestar = ["dep:scopinator-seestar"]
+
+[dependencies]
+scopinator-types.workspace = true
+scopinator-seestar = { workspace = true, optional = true }
+async-trait.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
