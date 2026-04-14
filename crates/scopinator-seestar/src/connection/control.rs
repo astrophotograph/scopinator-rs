@@ -9,6 +9,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
+use crate::auth::InteropKey;
 use crate::command::Command;
 use crate::command::serialize::serialize_command;
 use crate::error::SeestarError;
@@ -63,6 +64,7 @@ pub(crate) async fn run(
     connected: Arc<AtomicBool>,
     next_id: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
+    interop_key: Option<Arc<InteropKey>>,
 ) {
     let state = Arc::new(Mutex::new(ControlState::new()));
     let mut policy = ReconnectPolicy::new();
@@ -79,11 +81,40 @@ pub(crate) async fn run(
         info!("connecting to telescope control at {addr}");
 
         match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
-            Ok(Ok(stream)) => {
+            Ok(Ok(mut stream)) => {
                 if let Err(e) = stream.set_nodelay(true) {
                     warn!("failed to set TCP_NODELAY: {e}");
                 }
                 info!("connected to telescope control at {addr}");
+
+                // Authenticate before advertising the connection as ready.
+                if let Some(key) = &interop_key {
+                    if let Err(e) = crate::auth::authenticate(&mut stream, key).await {
+                        error!("authentication failed: {e}");
+                        // Fall through to the backoff delay below rather than
+                        // continuing immediately — avoids hammering the scope.
+                    } else {
+                        connected.store(true, Ordering::Release);
+                        policy.reset();
+                        run_connected(
+                            stream,
+                            Arc::clone(&state),
+                            Arc::clone(&request_rx),
+                            event_tx.clone(),
+                            Arc::clone(&next_id),
+                            shutdown.clone(),
+                        )
+                        .await;
+                        connected.store(false, Ordering::Release);
+                        info!("control connection lost, will reconnect");
+                    }
+                    // Both paths fall through to flush_pending + backoff.
+                    flush_pending(&state).await;
+                    let wait = policy.next_backoff();
+                    tokio::time::sleep(wait).await;
+                    continue;
+                }
+
                 connected.store(true, Ordering::Release);
                 policy.reset();
 

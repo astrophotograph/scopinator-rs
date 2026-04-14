@@ -8,10 +8,17 @@ repository.workspace = true
 
 [dependencies]
 scopinator-types.workspace = true
+base64 = "0.22"
 bytes.workspace = true
+rsa = { version = "0.9", features = ["pem"] }
 serde.workspace = true
 serde_json.workspace = true
+sha1 = { version = "0.10", features = ["oid"] }
+signature = "2"
 socket2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+rand = "0.8"

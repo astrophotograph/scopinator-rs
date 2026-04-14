@@ -28,4 +28,10 @@ pub enum SeestarError {
 
     #[error("line too long: {size} bytes (limit: {limit})")]
     LineTooLong { size: usize, limit: usize },
+
+    #[error("authentication failed: {0}")]
+    AuthFailed(String),
+
+    #[error("failed to load interoperability key: {0}")]
+    InteropKeyLoad(String),
 }
