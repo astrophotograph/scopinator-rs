@@ -5,14 +5,14 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/erewhon/scopinator-rs"
+repository = "https://github.com/astrophotograph/scopinator-rs"
 
 [workspace.dependencies]
-scopinator-types = { path = "crates/scopinator-types" }
-scopinator-seestar = { path = "crates/scopinator-seestar" }
-scopinator-alpaca = { path = "crates/scopinator-alpaca" }
-scopinator-indi = { path = "crates/scopinator-indi" }
-scopinator = { path = "crates/scopinator" }
+scopinator-types = { version = "0.1.0", path = "crates/scopinator-types" }
+scopinator-seestar = { version = "0.1.0", path = "crates/scopinator-seestar" }
+scopinator-alpaca = { version = "0.1.0", path = "crates/scopinator-alpaca" }
+scopinator-indi = { version = "0.1.0", path = "crates/scopinator-indi" }
+scopinator = { version = "0.1.0", path = "crates/scopinator" }
 
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
