@@ -72,8 +72,13 @@ pub struct DeviceInfo {
     #[serde(rename = "cpuId")]
     pub cpu_id: Option<String>,
     pub product_model: Option<String>,
+    pub user_product_model: Option<String>,
     pub focal_len: Option<f64>,
     pub fnumber: Option<f64>,
+    pub can_star_mode_sel_cam: Option<bool>,
+    pub can_wide_cam_af: Option<bool>,
+    pub can_wide_cam_roi: Option<bool>,
+    pub is_verified: Option<bool>,
 }
 
 /// Camera sensor info.
@@ -97,7 +102,8 @@ pub struct FocuserInfo {
 pub struct MountInfo {
     pub move_type: Option<String>,
     pub tracking: Option<bool>,
-    pub equ_mode: Option<String>,
+    pub equ_mode: Option<bool>,
+    pub close: Option<bool>,
 }
 
 /// Pi status info (temperatures, battery, charge).
