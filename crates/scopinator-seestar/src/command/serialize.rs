@@ -57,6 +57,7 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::ScopeGetRaDec
         | Command::ScopeGetHorizCoord
         | Command::ScopePark
+        | Command::ScopeMoveToHorizon
         | Command::GetFocuserPosition
         | Command::StartAutoFocus
         | Command::StopAutoFocus
