@@ -66,6 +66,9 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::StartSolve
         | Command::StartScanPlanet => None,
 
+        // Mount mode switch: scope_park with equ_mode param
+        Command::ScopeParkMode(eq) => Some(json!({ "equ_mode": eq })),
+
         // Tuple params
         Command::ScopeSync(ra, dec) => Some(json!([ra, dec])),
         Command::ScopeSetTrackState(enabled) => Some(json!(enabled)),
