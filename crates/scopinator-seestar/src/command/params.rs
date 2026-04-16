@@ -129,15 +129,46 @@ pub struct SettingParams {
     pub stack_after_goto: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_calib: Option<bool>,
+    // Extended fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_power_off: Option<bool>,
+    /// dark_mode: sent as 0/1 integer per ZWO quirk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dark_mode: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focal_pos: Option<i64>,
+    /// Nested stack fields: cont_capt, drizzle2x, brightness, contrast, saturation, dbe_enable, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expert_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_target_af: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewplan_gohome: Option<bool>,
 }
 
 /// Parameters for `set_stack_setting`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SetStackSettingParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_discrete_ok_frame: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_discrete_frame: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light_duration_min: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capt_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capt_num: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contrast: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dbe_enable: Option<bool>,
 }
 
 /// Parameters for `set_control_value`.

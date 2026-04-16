@@ -39,6 +39,9 @@ pub enum Command {
     ScopeGetHorizCoord,
     ScopeSync(f64, f64),
     ScopePark,
+    /// Park and switch mount mode. `true` = Equatorial, `false` = Alt-Az.
+    ScopeParkMode(bool),
+    ScopeMoveToHorizon,
     ScopeSpeedMove(SpeedMoveParams),
     ScopeSetTrackState(bool),
 
@@ -106,6 +109,8 @@ impl Command {
             Self::ScopeGetHorizCoord => "scope_get_horiz_coord",
             Self::ScopeSync(_, _) => "scope_sync",
             Self::ScopePark => "scope_park",
+            Self::ScopeParkMode(_) => "scope_park",
+            Self::ScopeMoveToHorizon => "scope_move_to_horizon",
             Self::ScopeSpeedMove(_) => "scope_speed_move",
             Self::ScopeSetTrackState(_) => "scope_set_track_state",
             Self::GotoTarget(_) => "goto_target",
