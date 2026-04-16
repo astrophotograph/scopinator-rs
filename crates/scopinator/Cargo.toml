@@ -1,6 +1,6 @@
 [package]
 name = "scopinator"
-version = "0.1.0"
+version = "0.1.1"
 description = "Telescope control library with pluggable backends"
 edition.workspace = true
 license.workspace = true

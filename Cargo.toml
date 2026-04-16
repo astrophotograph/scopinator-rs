@@ -8,11 +8,11 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/astrophotograph/scopinator-rs"
 
 [workspace.dependencies]
-scopinator-types = { version = "0.1.0", path = "crates/scopinator-types" }
-scopinator-seestar = { version = "0.1.0", path = "crates/scopinator-seestar" }
-scopinator-alpaca = { version = "0.1.0", path = "crates/scopinator-alpaca" }
-scopinator-indi = { version = "0.1.0", path = "crates/scopinator-indi" }
-scopinator = { version = "0.1.0", path = "crates/scopinator" }
+scopinator-types = { version = "0.1.1", path = "crates/scopinator-types" }
+scopinator-seestar = { version = "0.1.1", path = "crates/scopinator-seestar" }
+scopinator-alpaca = { version = "0.1.1", path = "crates/scopinator-alpaca" }
+scopinator-indi = { version = "0.1.1", path = "crates/scopinator-indi" }
+scopinator = { version = "0.1.1", path = "crates/scopinator" }
 
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

@@ -1336,7 +1336,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scopinator"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-alpaca"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reqwest",
  "scopinator-types",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-indi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quick-xml",
  "scopinator-types",
@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-seestar"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "bytes",
@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "serde",
