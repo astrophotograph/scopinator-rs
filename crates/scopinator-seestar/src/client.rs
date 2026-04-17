@@ -55,6 +55,8 @@ pub struct SeestarClient {
     event_tx: broadcast::Sender<SeestarEvent>,
     /// Sender side of the frame broadcast (for subscribing).
     frame_tx: broadcast::Sender<Arc<ImageFrame>>,
+    /// Channel to send raw JSON commands to the imaging port (port 4800).
+    imaging_cmd_tx: mpsc::Sender<Vec<u8>>,
     /// Whether the control connection is alive.
     control_connected: Arc<AtomicBool>,
     /// Whether the imaging connection is alive.
@@ -104,6 +106,7 @@ impl SeestarClient {
         let (request_tx, request_rx) = mpsc::channel::<ClientRequest>(256);
         let (event_tx, _) = broadcast::channel::<SeestarEvent>(256);
         let (frame_tx, _) = broadcast::channel::<Arc<ImageFrame>>(32);
+        let (imaging_cmd_tx, imaging_cmd_rx) = mpsc::channel::<Vec<u8>>(16);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let control_connected = Arc::new(AtomicBool::new(false));
@@ -141,7 +144,7 @@ impl SeestarClient {
             let shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
-                imaging::run(imaging_addr, frame_tx, connected, shutdown_rx).await;
+                imaging::run(imaging_addr, frame_tx, connected, shutdown_rx, imaging_cmd_rx).await;
             });
         }
 
@@ -151,6 +154,7 @@ impl SeestarClient {
             request_tx,
             event_tx,
             frame_tx,
+            imaging_cmd_tx,
             control_connected,
             imaging_connected,
             shutdown_tx,
@@ -198,6 +202,15 @@ impl SeestarClient {
     /// Subscribe to imaging frames.
     pub fn subscribe_frames(&self) -> broadcast::Receiver<Arc<ImageFrame>> {
         self.frame_tx.subscribe()
+    }
+
+    /// Send a raw JSON command to the imaging port (port 4800).
+    /// The message should be a complete JSON line including the trailing `\r\n`.
+    pub async fn send_imaging_command(&self, msg: Vec<u8>) -> Result<(), SeestarError> {
+        self.imaging_cmd_tx
+            .send(msg)
+            .await
+            .map_err(|_| SeestarError::Disconnected)
     }
 
     /// Returns true if the control connection is currently alive.

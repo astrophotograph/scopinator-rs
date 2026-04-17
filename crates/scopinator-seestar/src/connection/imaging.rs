@@ -34,8 +34,10 @@ pub(crate) async fn run(
     frame_tx: broadcast::Sender<Arc<ImageFrame>>,
     connected: Arc<AtomicBool>,
     shutdown: tokio::sync::watch::Receiver<bool>,
+    cmd_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
 ) {
     let mut policy = ReconnectPolicy::new();
+    let cmd_rx = std::sync::Arc::new(tokio::sync::Mutex::new(cmd_rx));
 
     loop {
         if *shutdown.borrow() {
@@ -54,7 +56,7 @@ pub(crate) async fn run(
                 connected.store(true, Ordering::Release);
                 policy.reset();
 
-                run_imaging_connected(stream, &frame_tx, shutdown.clone()).await;
+                run_imaging_connected(stream, &frame_tx, shutdown.clone(), cmd_rx.clone()).await;
 
                 connected.store(false, Ordering::Release);
                 info!("imaging connection lost, will reconnect");
@@ -72,27 +74,35 @@ pub(crate) async fn run(
     }
 }
 
-/// Run while connected: reads frames and sends heartbeats.
+/// Run while connected: reads frames, sends heartbeats, and forwards outbound commands.
 async fn run_imaging_connected(
     stream: TcpStream,
     frame_tx: &broadcast::Sender<Arc<ImageFrame>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    cmd_rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
 ) {
     let (mut read_half, mut write_half) = tokio::io::split(stream);
 
-    // Heartbeat task
+    // Heartbeat + outbound command task
     let hb_handle = tokio::spawn({
         let mut shutdown = shutdown.clone();
         async move {
             let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
             interval.tick().await; // skip first
 
+            let mut cmd_rx = cmd_rx.lock().await;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         let msg = b"{\"id\":99,\"method\":\"test_connection\",\"params\":\"verify\"}\r\n";
                         if let Err(e) = write_half.write_all(msg).await {
                             debug!("imaging heartbeat write error: {e}");
+                            break;
+                        }
+                    }
+                    Some(cmd) = cmd_rx.recv() => {
+                        if let Err(e) = write_half.write_all(&cmd).await {
+                            debug!("imaging cmd write error: {e}");
                             break;
                         }
                     }
