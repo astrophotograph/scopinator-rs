@@ -106,7 +106,7 @@ impl SeestarClient {
         let (request_tx, request_rx) = mpsc::channel::<ClientRequest>(256);
         let (event_tx, _) = broadcast::channel::<SeestarEvent>(256);
         let (frame_tx, _) = broadcast::channel::<Arc<ImageFrame>>(32);
-        let (imaging_cmd_tx, imaging_cmd_rx) = mpsc::channel::<Vec<u8>>(16);
+        let (imaging_cmd_tx, imaging_cmd_rx) = mpsc::channel::<Vec<u8>>(64);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let control_connected = Arc::new(AtomicBool::new(false));
@@ -205,8 +205,11 @@ impl SeestarClient {
     }
 
     /// Send a raw JSON command to the imaging port (port 4800).
-    /// The message should be a complete JSON line including the trailing `\r\n`.
-    pub async fn send_imaging_command(&self, msg: Vec<u8>) -> Result<(), SeestarError> {
+    ///
+    /// `msg` should be the JSON payload without a trailing newline — the
+    /// `\r\n` terminator is appended automatically.
+    pub async fn send_imaging_command(&self, mut msg: Vec<u8>) -> Result<(), SeestarError> {
+        msg.extend_from_slice(b"\r\n");
         self.imaging_cmd_tx
             .send(msg)
             .await

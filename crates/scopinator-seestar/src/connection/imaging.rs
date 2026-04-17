@@ -6,7 +6,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::connection::reconnect::ReconnectPolicy;
@@ -33,11 +33,10 @@ pub(crate) async fn run(
     addr: SocketAddr,
     frame_tx: broadcast::Sender<Arc<ImageFrame>>,
     connected: Arc<AtomicBool>,
-    shutdown: tokio::sync::watch::Receiver<bool>,
-    cmd_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    shutdown: watch::Receiver<bool>,
+    mut cmd_rx: mpsc::Receiver<Vec<u8>>,
 ) {
     let mut policy = ReconnectPolicy::new();
-    let cmd_rx = std::sync::Arc::new(tokio::sync::Mutex::new(cmd_rx));
 
     loop {
         if *shutdown.borrow() {
@@ -56,7 +55,7 @@ pub(crate) async fn run(
                 connected.store(true, Ordering::Release);
                 policy.reset();
 
-                run_imaging_connected(stream, &frame_tx, shutdown.clone(), cmd_rx.clone()).await;
+                run_imaging_connected(stream, &frame_tx, shutdown.clone(), &mut cmd_rx).await;
 
                 connected.store(false, Ordering::Release);
                 info!("imaging connection lost, will reconnect");
@@ -74,45 +73,57 @@ pub(crate) async fn run(
     }
 }
 
-/// Run while connected: reads frames, sends heartbeats, and forwards outbound commands.
+/// Run while connected.
+///
+/// Spawns a reader task (so frame reads are never mid-cancelled by write
+/// events) and drives heartbeats + outbound commands inline on the write half.
 async fn run_imaging_connected(
     stream: TcpStream,
     frame_tx: &broadcast::Sender<Arc<ImageFrame>>,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
-    cmd_rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
+    mut shutdown: watch::Receiver<bool>,
+    cmd_rx: &mut mpsc::Receiver<Vec<u8>>,
 ) {
-    let (mut read_half, mut write_half) = tokio::io::split(stream);
+    let (read_half, mut write_half) = tokio::io::split(stream);
 
-    // Heartbeat + outbound command task
-    let hb_handle = tokio::spawn({
-        let mut shutdown = shutdown.clone();
-        async move {
-            let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-            interval.tick().await; // skip first
+    let reader_handle = tokio::spawn({
+        let frame_tx = frame_tx.clone();
+        let shutdown = shutdown.clone();
+        async move { reader_loop(read_half, frame_tx, shutdown).await }
+    });
+    tokio::pin!(reader_handle);
 
-            let mut cmd_rx = cmd_rx.lock().await;
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let msg = b"{\"id\":99,\"method\":\"test_connection\",\"params\":\"verify\"}\r\n";
-                        if let Err(e) = write_half.write_all(msg).await {
-                            debug!("imaging heartbeat write error: {e}");
-                            break;
-                        }
-                    }
-                    Some(cmd) = cmd_rx.recv() => {
-                        if let Err(e) = write_half.write_all(&cmd).await {
-                            debug!("imaging cmd write error: {e}");
-                            break;
-                        }
-                    }
-                    _ = shutdown.changed() => break,
+    let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+    interval.tick().await; // skip first
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let msg = b"{\"id\":99,\"method\":\"test_connection\",\"params\":\"verify\"}\r\n";
+                if let Err(e) = write_half.write_all(msg).await {
+                    debug!("imaging heartbeat write error: {e}");
+                    break;
                 }
             }
+            Some(cmd) = cmd_rx.recv() => {
+                if let Err(e) = write_half.write_all(&cmd).await {
+                    debug!("imaging cmd write error: {e}");
+                    break;
+                }
+            }
+            _ = shutdown.changed() => break,
+            _ = &mut reader_handle => break,
         }
-    });
+    }
 
-    // Reader loop
+    reader_handle.abort();
+}
+
+/// Reader loop: read frames until EOF, error, or shutdown.
+async fn reader_loop(
+    mut read_half: tokio::io::ReadHalf<TcpStream>,
+    frame_tx: broadcast::Sender<Arc<ImageFrame>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let mut header_buf = [0u8; HEADER_SIZE];
 
     loop {
@@ -130,7 +141,6 @@ async fn run_imaging_connected(
                         let _ = frame_tx.send(Arc::new(frame));
                     }
                     Ok(None) => {
-                        // EOF
                         info!("imaging connection EOF");
                         break;
                     }
@@ -143,8 +153,6 @@ async fn run_imaging_connected(
             _ = shutdown.changed() => break,
         }
     }
-
-    hb_handle.abort();
 }
 
 /// Read a single frame (header + payload) from the imaging stream.
