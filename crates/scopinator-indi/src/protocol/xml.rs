@@ -192,4 +192,120 @@ mod tests {
         assert!(xml.contains("name=\"CCD1\""));
         assert!(xml.contains(">Also</enableBLOB>"));
     }
+
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Identifier-style names: alphanumeric, space, dot, dash, underscore.
+        // Real INDI property/device names use this range; values containing
+        // `"`, `<`, `&`, `>` would expose a known bug — the serializer
+        // does NOT escape XML special chars. Tracked as TODO; tests stay
+        // within safe characters until escaping is added.
+        fn ident() -> impl Strategy<Value = String> {
+            "[A-Za-z0-9 ._-]{1,32}"
+        }
+
+        fn safe_text() -> impl Strategy<Value = String> {
+            "[A-Za-z0-9 ._-]{0,64}"
+        }
+
+        // Switch state strategy.
+        fn switch_states() -> impl Strategy<Value = SwitchState> {
+            prop_oneof![Just(SwitchState::On), Just(SwitchState::Off)]
+        }
+
+        fn blob_modes() -> impl Strategy<Value = BlobMode> {
+            prop_oneof![
+                Just(BlobMode::Never),
+                Just(BlobMode::Also),
+                Just(BlobMode::Only),
+            ]
+        }
+
+        // Verify serializer output is well-formed XML.
+        fn assert_well_formed_xml(xml: &str) -> Result<(), String> {
+            let mut reader = quick_xml::Reader::from_str(xml);
+            loop {
+                match reader.read_event() {
+                    Ok(quick_xml::events::Event::Eof) => return Ok(()),
+                    Ok(_) => continue,
+                    Err(e) => return Err(format!("XML parse error: {e}")),
+                }
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn get_properties_well_formed(
+                device in proptest::option::of(ident()),
+                name in proptest::option::of(ident()),
+            ) {
+                let xml = serialize_command(&IndiCommand::GetProperties { device, name });
+                prop_assert!(assert_well_formed_xml(&xml).is_ok(), "bad xml: {xml}");
+            }
+
+            #[test]
+            fn new_number_well_formed(
+                device in ident(),
+                name in ident(),
+                values in proptest::collection::vec((ident(), -1e6f64..1e6), 0..8),
+            ) {
+                let xml = serialize_command(&IndiCommand::NewNumber { device, name, values });
+                prop_assert!(assert_well_formed_xml(&xml).is_ok(), "bad xml: {xml}");
+            }
+
+            #[test]
+            fn new_switch_well_formed(
+                device in ident(),
+                name in ident(),
+                values in proptest::collection::vec((ident(), switch_states()), 0..8),
+            ) {
+                let xml = serialize_command(&IndiCommand::NewSwitch { device, name, values });
+                prop_assert!(assert_well_formed_xml(&xml).is_ok(), "bad xml: {xml}");
+            }
+
+            #[test]
+            fn new_text_well_formed(
+                device in ident(),
+                name in ident(),
+                values in proptest::collection::vec((ident(), safe_text()), 0..8),
+            ) {
+                let xml = serialize_command(&IndiCommand::NewText { device, name, values });
+                prop_assert!(assert_well_formed_xml(&xml).is_ok(), "bad xml: {xml}");
+            }
+
+            #[test]
+            fn enable_blob_well_formed(
+                device in ident(),
+                name in proptest::option::of(ident()),
+                mode in blob_modes(),
+            ) {
+                let xml = serialize_command(&IndiCommand::EnableBlob { device, name, mode });
+                prop_assert!(assert_well_formed_xml(&xml).is_ok(), "bad xml: {xml}");
+            }
+        }
+    }
+
+    // Regression test for the (currently broken) XML escape behavior.
+    // Unignore once xml::serialize_command escapes XML special chars in
+    // attributes (`"`, `<`, `&`) and text content (`<`, `&`).
+    #[test]
+    #[ignore = "serialize_command does not yet escape XML special chars"]
+    fn special_chars_must_not_break_xml() {
+        let cmd = IndiCommand::NewText {
+            device: r#"Device "with" quotes & < > chars"#.into(),
+            name: "name".into(),
+            values: vec![("k".into(), "<![CDATA[evil]]>&\"".into())],
+        };
+        let xml = serialize_command(&cmd);
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        loop {
+            match reader.read_event() {
+                Ok(quick_xml::events::Event::Eof) => return,
+                Ok(_) => continue,
+                Err(e) => panic!("XML parse error on adversarial input: {e}\n{xml}"),
+            }
+        }
+    }
 }

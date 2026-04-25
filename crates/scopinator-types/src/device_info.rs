@@ -59,3 +59,44 @@ impl fmt::Display for FirmwareVersion {
         write!(f, "{}", self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn device_id_roundtrip(s in ".{0,64}") {
+            let id = DeviceId::new(s.clone());
+            prop_assert_eq!(id.as_str(), &s);
+            let json = serde_json::to_string(&id).unwrap();
+            let back: DeviceId = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(id, back);
+        }
+
+        #[test]
+        fn device_name_roundtrip(s in ".{0,64}") {
+            let name = DeviceName::new(s.clone());
+            let json = serde_json::to_string(&name).unwrap();
+            let back: DeviceName = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(name, back);
+        }
+
+        #[test]
+        fn firmware_version_roundtrip(v in any::<u32>()) {
+            let fw = FirmwareVersion(v);
+            let json = serde_json::to_string(&fw).unwrap();
+            let back: FirmwareVersion = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(fw, back);
+        }
+
+        #[test]
+        fn requires_verify_matches_threshold(v in any::<u32>()) {
+            prop_assert_eq!(
+                FirmwareVersion(v).requires_verify(),
+                v > FirmwareVersion::VERIFY_THRESHOLD
+            );
+        }
+    }
+}

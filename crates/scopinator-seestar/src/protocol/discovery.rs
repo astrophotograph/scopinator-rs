@@ -95,7 +95,7 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredDevice>, Seesta
     Ok(devices)
 }
 
-fn parse_discovery_response(
+pub fn parse_discovery_response(
     response: &serde_json::Value,
     src: SocketAddr,
 ) -> Option<DiscoveredDevice> {
@@ -131,5 +131,97 @@ fn local_ipv4_address() -> Option<Ipv4Addr> {
     match socket.local_addr().ok()? {
         SocketAddr::V4(v4) => Some(*v4.ip()),
         SocketAddr::V6(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use serde_json::json;
+    use std::net::Ipv6Addr;
+
+    fn src_v4(addr: [u8; 4], port: u16) -> SocketAddr {
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(addr), port))
+    }
+
+    #[test]
+    fn parse_returns_none_when_result_missing() {
+        let v = json!({"id": 201});
+        assert!(parse_discovery_response(&v, src_v4([192, 168, 1, 5], 4720)).is_none());
+    }
+
+    #[test]
+    fn parse_uses_ip_from_json() {
+        let v = json!({
+            "result": {
+                "ip": "192.168.5.10",
+                "product_model": "Seestar S50",
+                "sn": "ABC123",
+            }
+        });
+        let d = parse_discovery_response(&v, src_v4([192, 168, 1, 5], 4720)).unwrap();
+        assert_eq!(d.address, Ipv4Addr::new(192, 168, 5, 10));
+        assert_eq!(d.product_model.as_deref(), Some("Seestar S50"));
+        assert_eq!(d.serial_number.as_deref(), Some("ABC123"));
+    }
+
+    #[test]
+    fn parse_falls_back_to_src_ip_when_json_ip_missing() {
+        let v = json!({"result": {"product_model": "Seestar S50"}});
+        let d = parse_discovery_response(&v, src_v4([10, 0, 0, 7], 4720)).unwrap();
+        assert_eq!(d.address, Ipv4Addr::new(10, 0, 0, 7));
+    }
+
+    #[test]
+    fn parse_falls_back_to_src_ip_when_json_ip_malformed() {
+        let v = json!({"result": {"ip": "not-an-ip"}});
+        let d = parse_discovery_response(&v, src_v4([10, 0, 0, 7], 4720)).unwrap();
+        assert_eq!(d.address, Ipv4Addr::new(10, 0, 0, 7));
+    }
+
+    #[test]
+    fn parse_falls_back_to_localhost_when_src_is_v6() {
+        let v = json!({"result": {"ip": "not-an-ip"}});
+        let src = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4720);
+        let d = parse_discovery_response(&v, src).unwrap();
+        assert_eq!(d.address, Ipv4Addr::LOCALHOST);
+    }
+
+    proptest! {
+        // Any JSON value as discovery response must not panic.
+        #[test]
+        fn parse_never_panics(
+            obj in proptest::collection::hash_map("[a-z_]{1,16}", any::<i64>(), 0..4),
+            ip_present in any::<bool>(),
+            ip_str in "[0-9.]{1,40}",
+            src_octets in any::<[u8; 4]>(),
+        ) {
+            let mut result = serde_json::Map::new();
+            if ip_present {
+                result.insert("ip".into(), serde_json::Value::String(ip_str));
+            }
+            for (k, v) in obj {
+                result.insert(k, serde_json::Value::Number(v.into()));
+            }
+            let v = serde_json::Value::Object({
+                let mut top = serde_json::Map::new();
+                top.insert("result".into(), serde_json::Value::Object(result));
+                top
+            });
+            let _ = parse_discovery_response(&v, src_v4(src_octets, 4720));
+        }
+
+        // Valid IPv4 string in `result.ip` is always preferred over the src.
+        #[test]
+        fn valid_ip_string_in_json_is_preferred(
+            json_octets in any::<[u8; 4]>(),
+            src_octets in any::<[u8; 4]>(),
+        ) {
+            let json_ip = Ipv4Addr::from(json_octets);
+            let v = json!({"result": {"ip": json_ip.to_string()}});
+            let d = parse_discovery_response(&v, src_v4(src_octets, 4720)).unwrap();
+            prop_assert_eq!(d.address, json_ip);
+        }
     }
 }

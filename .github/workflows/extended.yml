@@ -52,6 +52,7 @@ jobs:
         target:
           - frame_parse
           - json_rpc_classify
+          - discovery_parse
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

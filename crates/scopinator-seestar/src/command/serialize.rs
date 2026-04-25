@@ -184,4 +184,108 @@ mod tests {
         assert_eq!(msg["params"]["name"], "ViewPlan");
         assert_eq!(msg["params"]["verify"], true);
     }
+
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arbitrary_scalar() -> impl Strategy<Value = Value> {
+            prop_oneof![
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::Bool),
+                any::<i64>().prop_map(|n| Value::Number(n.into())),
+                "[A-Za-z0-9_]{0,16}".prop_map(Value::String),
+            ]
+        }
+
+        // Key for arbitrary objects — must NOT include "verify" so we can
+        // observe injection deterministically.
+        fn non_verify_key() -> impl Strategy<Value = String> {
+            "[a-z]{1,8}".prop_filter("not verify", |s| s != "verify")
+        }
+
+        fn arbitrary_object() -> impl Strategy<Value = serde_json::Map<String, Value>> {
+            proptest::collection::vec((non_verify_key(), arbitrary_scalar()), 0..5)
+                .prop_map(|entries| entries.into_iter().collect())
+        }
+
+        #[test]
+        fn no_verify_with_none_stays_none() {
+            let result = inject_verify(None, false);
+            assert_eq!(result, None);
+        }
+
+        #[test]
+        fn verify_with_none_yields_singleton_array() {
+            let result = inject_verify(None, true).unwrap();
+            assert_eq!(result, json!(["verify"]));
+        }
+
+        proptest! {
+            #[test]
+            fn no_verify_means_params_unchanged(scalar in arbitrary_scalar()) {
+                let result = inject_verify(Some(scalar.clone()), false);
+                prop_assert_eq!(result, Some(scalar));
+            }
+
+            #[test]
+            fn verify_object_adds_verify_true(map in arbitrary_object()) {
+                let original = Value::Object(map.clone());
+                let result = inject_verify(Some(original), true).unwrap();
+                let obj = result.as_object().unwrap();
+                prop_assert_eq!(obj.get("verify"), Some(&Value::Bool(true)));
+                // All original keys preserved with original values.
+                for (k, v) in &map {
+                    prop_assert_eq!(obj.get(k), Some(v));
+                }
+            }
+
+            #[test]
+            fn verify_array_appends_verify_string(items in proptest::collection::vec(arbitrary_scalar(), 0..5)) {
+                let original = Value::Array(items.clone());
+                let result = inject_verify(Some(original), true).unwrap();
+                let arr = result.as_array().unwrap();
+                prop_assert_eq!(arr.len(), items.len() + 1);
+                prop_assert_eq!(&arr[..items.len()], items.as_slice());
+                prop_assert_eq!(arr.last(), Some(&Value::String("verify".to_string())));
+            }
+
+            #[test]
+            fn verify_scalar_wraps_in_array_with_verify(scalar in prop_oneof![
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::Bool),
+                any::<i64>().prop_map(|n| Value::Number(n.into())),
+                "[A-Za-z0-9_]{0,16}".prop_map(Value::String),
+            ]) {
+                let result = inject_verify(Some(scalar.clone()), true).unwrap();
+                let arr = result.as_array().unwrap();
+                prop_assert_eq!(arr.len(), 2);
+                prop_assert_eq!(&arr[0], &scalar);
+                prop_assert_eq!(&arr[1], &Value::String("verify".to_string()));
+            }
+
+            #[test]
+            fn serialize_command_id_and_method_preserved(
+                id in any::<u64>(),
+                fw in proptest::option::of(any::<u32>().prop_map(FirmwareVersion)),
+            ) {
+                let cmd = Command::TestConnection;
+                let msg = serialize_command(&cmd, id, fw);
+                prop_assert_eq!(msg["id"].as_u64(), Some(id));
+                prop_assert_eq!(msg["method"].as_str(), Some(cmd.method()));
+            }
+
+            // needs_verify behavior: None firmware OR firmware > 2582 → verify injected.
+            #[test]
+            fn verify_injection_follows_firmware_threshold(
+                id in any::<u64>(),
+                fw_version in any::<u32>(),
+            ) {
+                let cmd = Command::TestConnection;
+                let msg = serialize_command(&cmd, id, Some(FirmwareVersion(fw_version)));
+                let has_params = msg.get("params").is_some();
+                prop_assert_eq!(has_params, fw_version > FirmwareVersion::VERIFY_THRESHOLD);
+            }
+        }
+    }
 }

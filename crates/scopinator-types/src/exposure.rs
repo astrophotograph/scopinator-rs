@@ -56,3 +56,55 @@ pub struct ImageData {
     pub bayer_pattern: Option<BayerPattern>,
     pub frame_kind: FrameKind,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn frame_kinds() -> impl Strategy<Value = FrameKind> {
+        prop_oneof![Just(FrameKind::Preview), Just(FrameKind::Stack)]
+    }
+
+    fn bayer_patterns() -> impl Strategy<Value = BayerPattern> {
+        prop_oneof![
+            Just(BayerPattern::Grbg),
+            Just(BayerPattern::Rggb),
+            Just(BayerPattern::Bggr),
+            Just(BayerPattern::Gbrg),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn frame_kind_roundtrip(kind in frame_kinds()) {
+            let s = serde_json::to_string(&kind).unwrap();
+            let back: FrameKind = serde_json::from_str(&s).unwrap();
+            prop_assert_eq!(kind, back);
+        }
+
+        #[test]
+        fn bayer_pattern_roundtrip(pat in bayer_patterns()) {
+            let s = serde_json::to_string(&pat).unwrap();
+            let back: BayerPattern = serde_json::from_str(&s).unwrap();
+            prop_assert_eq!(pat, back);
+        }
+
+        #[test]
+        fn exposure_settings_roundtrip(
+            // Millisecond precision in [0, 3600s]: exactly representable as f64.
+            duration_ms in 0u32..=3_600_000,
+            gain in proptest::option::of(any::<i32>()),
+            offset in proptest::option::of(any::<i32>()),
+            bin_x in 1u32..=16,
+            bin_y in 1u32..=16,
+            light in any::<bool>(),
+        ) {
+            let duration_seconds = f64::from(duration_ms) / 1000.0;
+            let exp = ExposureSettings { duration_seconds, gain, offset, bin_x, bin_y, light };
+            let s = serde_json::to_string(&exp).unwrap();
+            let back: ExposureSettings = serde_json::from_str(&s).unwrap();
+            prop_assert_eq!(exp, back);
+        }
+    }
+}

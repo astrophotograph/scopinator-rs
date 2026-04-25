@@ -156,10 +156,13 @@ async fn reader_loop(
 }
 
 /// Read a single frame (header + payload) from the imaging stream.
-async fn read_frame(
-    reader: &mut tokio::io::ReadHalf<TcpStream>,
+async fn read_frame<R>(
+    reader: &mut R,
     header_buf: &mut [u8; HEADER_SIZE],
-) -> Result<Option<ImageFrame>, SeestarError> {
+) -> Result<Option<ImageFrame>, SeestarError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     // Read header
     match reader.read_exact(header_buf).await {
         Ok(_) => {}
@@ -194,4 +197,143 @@ async fn read_frame(
         data: Bytes::from(payload),
         kind,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::frame::frame_id;
+
+    fn make_header(size: u32, id: u8, width: u16, height: u16) -> [u8; HEADER_SIZE] {
+        let mut buf = [0u8; HEADER_SIZE];
+        buf[6..10].copy_from_slice(&size.to_be_bytes());
+        buf[15] = id;
+        buf[16..18].copy_from_slice(&width.to_be_bytes());
+        buf[18..20].copy_from_slice(&height.to_be_bytes());
+        buf
+    }
+
+    #[tokio::test]
+    async fn read_frame_success_preview() {
+        let header = make_header(5, frame_id::VIEW, 100, 200);
+        let payload = b"hello";
+
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(payload)
+            .build();
+
+        let mut buf = [0u8; HEADER_SIZE];
+        let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+        assert_eq!(frame.header.size, 5);
+        assert_eq!(frame.header.id, frame_id::VIEW);
+        assert_eq!(frame.header.width, 100);
+        assert_eq!(frame.header.height, 200);
+        assert_eq!(&frame.data[..], b"hello");
+        assert_eq!(frame.kind, FrameKind::Preview);
+    }
+
+    #[tokio::test]
+    async fn read_frame_success_stack_maps_kind() {
+        let header = make_header(3, frame_id::STACK, 4056, 3040);
+        let payload = b"zip";
+
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(payload)
+            .build();
+
+        let mut buf = [0u8; HEADER_SIZE];
+        let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+        assert_eq!(frame.kind, FrameKind::Stack);
+    }
+
+    #[tokio::test]
+    async fn read_frame_zero_payload_succeeds() {
+        let header = make_header(0, frame_id::HANDSHAKE, 0, 0);
+        let mut mock = tokio_test::io::Builder::new().read(&header).build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+        assert_eq!(frame.header.size, 0);
+        assert!(frame.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_frame_eof_before_header_returns_none() {
+        let mut empty = tokio::io::empty();
+        let mut buf = [0u8; HEADER_SIZE];
+        let result = read_frame(&mut empty, &mut buf).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_frame_partial_header_returns_none() {
+        // Only 10 bytes of an 80-byte header — read_exact errors with UnexpectedEof
+        // which is mapped to Ok(None).
+        let mut mock = tokio_test::io::Builder::new().read(&[0u8; 10]).build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let result = read_frame(&mut mock, &mut buf).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_frame_truncated_payload_returns_none() {
+        // Header says 10 bytes but only 3 are available before EOF.
+        let header = make_header(10, frame_id::VIEW, 0, 0);
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(&[0u8; 3])
+            .build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let result = read_frame(&mut mock, &mut buf).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_frame_oversized_payload_errors() {
+        let header = make_header(MAX_PAYLOAD_SIZE + 1, frame_id::VIEW, 0, 0);
+        let mut mock = tokio_test::io::Builder::new().read(&header).build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let err = read_frame(&mut mock, &mut buf).await.unwrap_err();
+        match err {
+            SeestarError::FrameTooLarge { size, limit } => {
+                assert_eq!(size, MAX_PAYLOAD_SIZE + 1);
+                assert_eq!(limit, MAX_PAYLOAD_SIZE);
+            }
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_frame_at_max_payload_size_succeeds() {
+        // Boundary: exactly MAX_PAYLOAD_SIZE is allowed (use a small surrogate
+        // to avoid allocating 50 MB in tests).
+        let header = make_header(16, frame_id::VIEW, 0, 0);
+        let payload = vec![0xAB; 16];
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(&payload)
+            .build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+        assert_eq!(frame.data.len(), 16);
+        assert!(frame.data.iter().all(|&b| b == 0xAB));
+    }
+
+    #[tokio::test]
+    async fn read_frame_split_reads_reassemble_correctly() {
+        // Sender may split header and payload across multiple read() calls;
+        // read_frame must use read_exact, which loops until full buffer is read.
+        let header = make_header(8, frame_id::VIEW, 0, 0);
+        let payload = b"abcdefgh";
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header[..40])
+            .read(&header[40..])
+            .read(&payload[..3])
+            .read(&payload[3..])
+            .build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+        assert_eq!(&frame.data[..], b"abcdefgh");
+    }
 }

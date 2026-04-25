@@ -30,6 +30,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "discovery_parse"
+path = "fuzz_targets/discovery_parse.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1
 
