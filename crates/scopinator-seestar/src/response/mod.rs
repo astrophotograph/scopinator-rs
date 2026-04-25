@@ -189,10 +189,7 @@ mod tests {
             }
         }"#;
         let state: DeviceStateResult = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            state.device.as_ref().unwrap().firmware_ver_int,
-            Some(3000)
-        );
+        assert_eq!(state.device.as_ref().unwrap().firmware_ver_int, Some(3000));
         assert_eq!(state.focuser.as_ref().unwrap().step, Some(40000));
         assert_eq!(state.mount.as_ref().unwrap().tracking, Some(true));
     }

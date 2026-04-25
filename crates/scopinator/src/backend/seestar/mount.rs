@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::GotoTargetParams;
-use scopinator_seestar::SeestarClient;
-use scopinator_types::{Coordinates, DeviceId, RaDegrees, DecDegrees};
+use scopinator_types::{Coordinates, DecDegrees, DeviceId, RaDegrees};
 
 use crate::device::capabilities::MountCapabilities;
 use crate::device::status::{DeviceStatus, MountStatus};
@@ -56,19 +56,12 @@ impl Mount for SeestarMount {
             .await?;
 
         // Response result contains ra (hours) and dec (degrees)
-        let ra_hours = response
-            .get("ra")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let dec_deg = response
-            .get("dec")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+        let ra_hours = response.get("ra").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let dec_deg = response.get("dec").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-        let ra = RaDegrees::from_hours(ra_hours)
-            .map_err(|e| ScopinatorError::Backend(e.to_string()))?;
-        let dec = DecDegrees::new(dec_deg)
-            .map_err(|e| ScopinatorError::Backend(e.to_string()))?;
+        let ra =
+            RaDegrees::from_hours(ra_hours).map_err(|e| ScopinatorError::Backend(e.to_string()))?;
+        let dec = DecDegrees::new(dec_deg).map_err(|e| ScopinatorError::Backend(e.to_string()))?;
 
         Ok(Coordinates::new(ra, dec))
     }

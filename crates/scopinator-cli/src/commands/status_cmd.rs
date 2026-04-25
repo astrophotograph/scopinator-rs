@@ -20,8 +20,8 @@ pub async fn status(host: Ipv4Addr, interop_key: Option<InteropKey>) -> Result<(
     let response = client.send_command(Command::GetDeviceState).await?;
     let result = response.result.unwrap_or_default();
 
-    let state: DeviceStateResult = serde_json::from_value(result)
-        .context("failed to parse device state")?;
+    let state: DeviceStateResult =
+        serde_json::from_value(result).context("failed to parse device state")?;
 
     // Device info
     if let Some(device) = &state.device {

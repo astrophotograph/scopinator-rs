@@ -1,10 +1,10 @@
-mod mount;
 mod camera;
 mod event_translator;
+mod mount;
 
-pub use mount::SeestarMount;
 pub use camera::SeestarCamera;
 pub use event_translator::SeestarEventTranslator;
+pub use mount::SeestarMount;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;

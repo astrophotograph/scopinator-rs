@@ -133,4 +133,41 @@ mod tests {
         buf[6..10].copy_from_slice(&1001u32.to_be_bytes());
         assert!(FrameHeader::parse(&buf).is_image());
     }
+
+    proptest::proptest! {
+        #[test]
+        fn parse_never_panics(buf in proptest::collection::vec(proptest::prelude::any::<u8>(), HEADER_SIZE..=HEADER_SIZE)) {
+            let mut arr = [0u8; HEADER_SIZE];
+            arr.copy_from_slice(&buf);
+            let h = FrameHeader::parse(&arr);
+            // is_image() must be total
+            let _ = h.is_image();
+        }
+
+        #[test]
+        fn fields_match_byte_offsets(
+            size in proptest::prelude::any::<u32>(),
+            code in proptest::prelude::any::<u8>(),
+            id in proptest::prelude::any::<u8>(),
+            width in proptest::prelude::any::<u16>(),
+            height in proptest::prelude::any::<u16>(),
+            noise in proptest::collection::vec(proptest::prelude::any::<u8>(), HEADER_SIZE..=HEADER_SIZE),
+        ) {
+            // Start with fuzz noise to ensure unread bytes don't bleed into fields.
+            let mut buf = [0u8; HEADER_SIZE];
+            buf.copy_from_slice(&noise);
+            buf[6..10].copy_from_slice(&size.to_be_bytes());
+            buf[14] = code;
+            buf[15] = id;
+            buf[16..18].copy_from_slice(&width.to_be_bytes());
+            buf[18..20].copy_from_slice(&height.to_be_bytes());
+
+            let h = FrameHeader::parse(&buf);
+            proptest::prop_assert_eq!(h.size, size);
+            proptest::prop_assert_eq!(h.code, code);
+            proptest::prop_assert_eq!(h.id, id);
+            proptest::prop_assert_eq!(h.width, width);
+            proptest::prop_assert_eq!(h.height, height);
+        }
+    }
 }

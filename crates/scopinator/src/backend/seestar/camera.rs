@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::{StartViewParams, ViewMode};
-use scopinator_seestar::SeestarClient;
 use scopinator_types::{BayerPattern, DeviceId, ExposureSettings, ImageData};
 
 use crate::device::capabilities::CameraCapabilities;
@@ -89,17 +89,10 @@ impl Camera for SeestarCamera {
         let mut rx = self.client.subscribe_frames();
 
         // Request the stacked image
-        self.client
-            .send_command(Command::GetStackedImage)
-            .await?;
+        self.client.send_command(Command::GetStackedImage).await?;
 
         // Wait for the next frame
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            rx.recv(),
-        )
-        .await
-        {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
             Ok(Ok(frame)) => Ok(ImageData {
                 width: frame.header.width as u32,
                 height: frame.header.height as u32,
@@ -109,18 +102,13 @@ impl Camera for SeestarCamera {
                 bayer_pattern: Some(BayerPattern::Grbg),
                 frame_kind: frame.kind,
             }),
-            Ok(Err(_)) => Err(ScopinatorError::Backend(
-                "frame channel closed".into(),
-            )),
+            Ok(Err(_)) => Err(ScopinatorError::Backend("frame channel closed".into())),
             Err(_) => Err(ScopinatorError::Timeout),
         }
     }
 
     async fn is_exposing(&self) -> Result<bool, ScopinatorError> {
-        let response = self
-            .client
-            .send_and_validate(Command::GetViewState)
-            .await?;
+        let response = self.client.send_and_validate(Command::GetViewState).await?;
 
         // Check if the view state indicates active stacking
         let state = response

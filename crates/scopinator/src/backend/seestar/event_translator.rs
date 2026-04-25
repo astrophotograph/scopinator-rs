@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use scopinator_seestar::event::SeestarEvent;
 use scopinator_seestar::SeestarClient;
+use scopinator_seestar::event::SeestarEvent;
 use scopinator_types::DeviceId;
 use tracing::{debug, trace, warn};
 
@@ -12,11 +12,7 @@ pub struct SeestarEventTranslator;
 
 impl SeestarEventTranslator {
     /// Start translating events from a SeestarClient in the background.
-    pub fn start(
-        client: Arc<SeestarClient>,
-        device_id: DeviceId,
-        event_bus: Arc<UnifiedEventBus>,
-    ) {
+    pub fn start(client: Arc<SeestarClient>, device_id: DeviceId, event_bus: Arc<UnifiedEventBus>) {
         let mut rx = client.subscribe_events();
         tokio::spawn(async move {
             debug!(device = %device_id, "event translator started");
@@ -48,18 +44,20 @@ fn translate(event: &SeestarEvent, device_id: &DeviceId) -> Option<UnifiedEvent>
     match event {
         SeestarEvent::AutoGoto(data) => {
             let (event_type, payload) = match data.state.as_ref() {
-                Some(scopinator_seestar::event::EventState::Start | scopinator_seestar::event::EventState::Working) => {
-                    (EventType::SlewStarted, EventPayload::None)
-                }
+                Some(
+                    scopinator_seestar::event::EventState::Start
+                    | scopinator_seestar::event::EventState::Working,
+                ) => (EventType::SlewStarted, EventPayload::None),
                 Some(scopinator_seestar::event::EventState::Complete) => {
                     (EventType::SlewCompleted, EventPayload::None)
                 }
-                Some(scopinator_seestar::event::EventState::Fail) => {
-                    (EventType::Error, EventPayload::Error {
+                Some(scopinator_seestar::event::EventState::Fail) => (
+                    EventType::Error,
+                    EventPayload::Error {
                         code: data.code.unwrap_or(-1),
                         message: data.error.clone().unwrap_or_default(),
-                    })
-                }
+                    },
+                ),
                 _ => return None,
             };
             Some(UnifiedEvent {

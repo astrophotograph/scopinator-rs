@@ -1,22 +1,22 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::auth::InteropKey;
 use crate::command::Command;
 use crate::command::serialize::serialize_command;
+use crate::connection::reconnect::ReconnectPolicy;
 use crate::error::SeestarError;
 use crate::event::SeestarEvent;
 use crate::protocol::json_rpc::{self, MAX_LINE_BYTES};
 use crate::response::CommandResponse;
-use crate::connection::reconnect::ReconnectPolicy;
 use scopinator_types::FirmwareVersion;
 
 /// Connection timeout for TCP connect.

@@ -4,10 +4,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
-use scopinator_types::{Coordinates, ExposureSettings, RaDegrees, DecDegrees};
+use scopinator_types::{Coordinates, DecDegrees, ExposureSettings, RaDegrees};
 
-use crate::error::ScopinatorError;
 use super::context::ExecutionContext;
+use crate::error::ScopinatorError;
 
 /// Status of a sequencer command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,13 +44,9 @@ pub enum SequencerCommand {
     /// Stop camera imaging.
     StopImaging,
     /// Wait for a fixed number of minutes.
-    WaitMinutes {
-        minutes: f64,
-    },
+    WaitMinutes { minutes: f64 },
     /// Wait until a specific UTC time.
-    WaitUntilTime {
-        target_time: DateTime<Utc>,
-    },
+    WaitUntilTime { target_time: DateTime<Utc> },
     /// A nested sequence of commands.
     Sequence {
         commands: Vec<SequencerCommand>,
@@ -173,10 +169,12 @@ async fn execute_command_inner(
         SequencerCommand::WaitUntilTime { target_time } => {
             let now = Utc::now();
             if *target_time > now {
-                let wait = (*target_time - now)
-                    .to_std()
-                    .unwrap_or(Duration::ZERO);
-                debug!(?target_time, wait_secs = wait.as_secs(), "waiting until time");
+                let wait = (*target_time - now).to_std().unwrap_or(Duration::ZERO);
+                debug!(
+                    ?target_time,
+                    wait_secs = wait.as_secs(),
+                    "waiting until time"
+                );
                 tokio::time::sleep(wait).await;
             } else {
                 debug!(?target_time, "target time already passed, skipping wait");
@@ -243,7 +241,10 @@ mod tests {
         let json = serde_json::to_string_pretty(&cmd).unwrap();
         let roundtrip: SequencerCommand = serde_json::from_str(&json).unwrap();
         match roundtrip {
-            SequencerCommand::Sequence { commands, stop_on_error } => {
+            SequencerCommand::Sequence {
+                commands,
+                stop_on_error,
+            } => {
                 assert_eq!(commands.len(), 4);
                 assert!(stop_on_error);
             }

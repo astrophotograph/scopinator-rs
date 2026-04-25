@@ -45,10 +45,7 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredDevice>, Seesta
     });
     let probe_bytes = format!("{}\r\n", probe);
 
-    let broadcast_addr = SocketAddr::V4(SocketAddrV4::new(
-        Ipv4Addr::BROADCAST,
-        DISCOVERY_PORT,
-    ));
+    let broadcast_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::BROADCAST, DISCOVERY_PORT));
 
     socket
         .send_to(probe_bytes.as_bytes(), broadcast_addr)
@@ -109,12 +106,10 @@ fn parse_discovery_response(
         .and_then(|v| v.as_str())
         .unwrap_or_default();
 
-    let address = ip_str
-        .parse::<Ipv4Addr>()
-        .unwrap_or_else(|_| match src {
-            SocketAddr::V4(v4) => *v4.ip(),
-            SocketAddr::V6(_) => Ipv4Addr::LOCALHOST,
-        });
+    let address = ip_str.parse::<Ipv4Addr>().unwrap_or_else(|_| match src {
+        SocketAddr::V4(v4) => *v4.ip(),
+        SocketAddr::V6(_) => Ipv4Addr::LOCALHOST,
+    });
 
     Some(DiscoveredDevice {
         address,
@@ -122,10 +117,7 @@ fn parse_discovery_response(
             .get("product_model")
             .and_then(|v| v.as_str())
             .map(String::from),
-        serial_number: result
-            .get("sn")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        serial_number: result.get("sn").and_then(|v| v.as_str()).map(String::from),
         raw_response: response.clone(),
     })
 }

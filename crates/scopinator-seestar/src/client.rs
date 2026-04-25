@@ -1,6 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -144,11 +144,20 @@ impl SeestarClient {
             let shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
-                imaging::run(imaging_addr, frame_tx, connected, shutdown_rx, imaging_cmd_rx).await;
+                imaging::run(
+                    imaging_addr,
+                    frame_tx,
+                    connected,
+                    shutdown_rx,
+                    imaging_cmd_rx,
+                )
+                .await;
             });
         }
 
-        info!("client started, connecting to {control_addr} (control) and {imaging_addr} (imaging)");
+        info!(
+            "client started, connecting to {control_addr} (control) and {imaging_addr} (imaging)"
+        );
 
         Ok(Self {
             request_tx,
@@ -183,15 +192,14 @@ impl SeestarClient {
     }
 
     /// Send a command and return the result, failing on non-zero response codes.
-    pub async fn send_and_validate(
-        &self,
-        cmd: Command,
-    ) -> Result<serde_json::Value, SeestarError> {
+    pub async fn send_and_validate(&self, cmd: Command) -> Result<serde_json::Value, SeestarError> {
         let response = self.send_command(cmd).await?;
-        response.into_result().map_err(|e| SeestarError::CommandFailed {
-            code: e.code,
-            message: e.message,
-        })
+        response
+            .into_result()
+            .map_err(|e| SeestarError::CommandFailed {
+                code: e.code,
+                message: e.message,
+            })
     }
 
     /// Subscribe to telescope events.

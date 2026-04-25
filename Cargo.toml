@@ -28,3 +28,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Testing
+proptest = "1"
+arbitrary = { version = "1", features = ["derive"] }
+tokio-test = "0.4"

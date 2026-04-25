@@ -1,2 +1,12 @@
 logs/
 /target
+
+# Fuzz artifacts
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+
+# Coverage output
+/lcov.info
+/target/llvm-cov-target/

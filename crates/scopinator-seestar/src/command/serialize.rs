@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Command;
 use scopinator_types::FirmwareVersion;
@@ -78,9 +78,7 @@ fn command_params(cmd: &Command) -> Option<Value> {
         // Struct params
         Command::GotoTarget(p) => serde_json::to_value(p).ok(),
         Command::IscopeStartView(p) => serde_json::to_value(p).ok(),
-        Command::IscopeStopView(p) => {
-            Some(json!({"stage": format!("{:?}", p.stage)}))
-        }
+        Command::IscopeStopView(p) => Some(json!({"stage": format!("{:?}", p.stage)})),
         Command::IscopeStartStack(Some(p)) => serde_json::to_value(p).ok(),
         Command::IscopeStartStack(None) => None,
         Command::ScopeSpeedMove(p) => serde_json::to_value(p).ok(),

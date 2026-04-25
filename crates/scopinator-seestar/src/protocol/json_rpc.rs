@@ -57,8 +57,7 @@ mod tests {
 
     #[test]
     fn classify_event() {
-        let msg: Value =
-            serde_json::from_str(r#"{"Event": "PiStatus", "temp": 35.0}"#).unwrap();
+        let msg: Value = serde_json::from_str(r#"{"Event": "PiStatus", "temp": 35.0}"#).unwrap();
         assert!(is_event(&msg));
         assert!(!is_response(&msg));
         assert_eq!(event_name(&msg), Some("PiStatus"));
@@ -66,8 +65,7 @@ mod tests {
 
     #[test]
     fn classify_response() {
-        let msg: Value =
-            serde_json::from_str(r#"{"id": 42, "code": 0, "result": null}"#).unwrap();
+        let msg: Value = serde_json::from_str(r#"{"id": 42, "code": 0, "result": null}"#).unwrap();
         assert!(!is_event(&msg));
         assert!(is_response(&msg));
         assert_eq!(json_rpc_id(&msg), Some(42));

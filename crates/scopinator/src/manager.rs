@@ -51,8 +51,7 @@ impl DeviceManager {
         &self,
         ip: std::net::Ipv4Addr,
     ) -> Result<(), crate::error::ScopinatorError> {
-        let backend =
-            SeestarBackend::connect(ip, Arc::clone(&self.event_bus)).await?;
+        let backend = SeestarBackend::connect(ip, Arc::clone(&self.event_bus)).await?;
         let key = ip.to_string();
         let mut backends = self.seestar_backends.lock().await;
         backends.insert(key, backend);
@@ -61,10 +60,7 @@ impl DeviceManager {
 
     /// Get a Seestar mount by IP address string.
     #[cfg(feature = "seestar")]
-    pub async fn seestar_mount(
-        &self,
-        key: &str,
-    ) -> Option<crate::backend::seestar::SeestarMount> {
+    pub async fn seestar_mount(&self, key: &str) -> Option<crate::backend::seestar::SeestarMount> {
         let backends = self.seestar_backends.lock().await;
         backends.get(key).map(|b| b.mount())
     }

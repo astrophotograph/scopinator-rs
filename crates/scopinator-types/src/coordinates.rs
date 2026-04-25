@@ -183,4 +183,34 @@ mod tests {
         let s = format!("{dec}");
         assert!(s.starts_with("-22d 30'"));
     }
+
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn ra_from_hours_within_bounds(hours in 0.0f64..24.0) {
+                let ra = RaDegrees::from_hours(hours).unwrap();
+                let deg = ra.as_degrees();
+                prop_assert!((0.0..360.0).contains(&deg), "deg out of range: {deg}");
+            }
+
+            #[test]
+            fn dec_roundtrip(deg in -90.0f64..=90.0) {
+                let dec = DecDegrees::new(deg).unwrap();
+                prop_assert!((dec.as_degrees() - deg).abs() < f64::EPSILON);
+            }
+
+            #[test]
+            fn ra_below_zero_rejected(deg in -1e9f64..0.0) {
+                prop_assert!(RaDegrees::new(deg).is_err());
+            }
+
+            #[test]
+            fn ra_above_360_rejected(deg in 360.0001f64..1e9) {
+                prop_assert!(RaDegrees::new(deg).is_err());
+            }
+        }
+    }
 }

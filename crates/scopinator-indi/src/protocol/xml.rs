@@ -79,7 +79,9 @@ pub fn serialize_command(cmd: &IndiCommand) -> String {
         } => {
             let mut xml = format!("<newNumberVector device=\"{device}\" name=\"{name}\">\n");
             for (vname, value) in values {
-                xml.push_str(&format!("  <oneNumber name=\"{vname}\">{value}</oneNumber>\n"));
+                xml.push_str(&format!(
+                    "  <oneNumber name=\"{vname}\">{value}</oneNumber>\n"
+                ));
             }
             xml.push_str("</newNumberVector>\n");
             xml

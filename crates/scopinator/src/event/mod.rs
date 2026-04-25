@@ -49,10 +49,7 @@ pub enum EventPayload {
         total: i32,
     },
     /// An error occurred.
-    Error {
-        code: i32,
-        message: String,
-    },
+    Error { code: i32, message: String },
     /// Status update with free-form data.
     Status(serde_json::Value),
 }

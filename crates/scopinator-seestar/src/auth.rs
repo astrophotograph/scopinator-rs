@@ -22,7 +22,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use rsa::RsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use sha1::Sha1;
-use signature::{Signer, SignatureEncoding};
+use signature::{SignatureEncoding, Signer};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
@@ -217,9 +217,7 @@ fn extract_challenge(msg: &serde_json::Value) -> Result<String, SeestarError> {
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            SeestarError::AuthFailed(format!(
-                "get_verify_str response missing result.str: {msg}"
-            ))
+            SeestarError::AuthFailed(format!("get_verify_str response missing result.str: {msg}"))
         })?;
     Ok(challenge.to_string())
 }
@@ -255,9 +253,9 @@ mod tests {
 
     use rand::rngs::OsRng;
     use rsa::RsaPrivateKey;
+    use rsa::pkcs1::EncodeRsaPrivateKey;
     use rsa::pkcs1v15::VerifyingKey;
     use rsa::pkcs8::EncodePrivateKey;
-    use rsa::pkcs1::EncodeRsaPrivateKey;
     use signature::Verifier;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
@@ -297,7 +295,10 @@ mod tests {
         let pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\ndGVzdA==\n-----END ENCRYPTED PRIVATE KEY-----\n";
         let err = InteropKey::from_pem(pem).unwrap_err();
         assert!(matches!(err, SeestarError::InteropKeyLoad(_)));
-        assert!(err.to_string().contains("encrypted"), "error should mention encryption");
+        assert!(
+            err.to_string().contains("encrypted"),
+            "error should mention encryption"
+        );
     }
 
     #[test]
@@ -496,7 +497,9 @@ mod tests {
         let sig_bytes = BASE64.decode(&sig_b64).unwrap();
         let verifying_key = VerifyingKey::<Sha1>::new(private_key.to_public_key());
         let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()).unwrap();
-        verifying_key.verify(b"", &sig).expect("empty-challenge sig must verify");
+        verifying_key
+            .verify(b"", &sig)
+            .expect("empty-challenge sig must verify");
     }
 
     #[test]
@@ -563,7 +566,10 @@ mod tests {
                 "id": req["id"], "code": 0,
                 "result": {"str": challenge_str},
             });
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
 
             // Step 2: receive verify_client, check signature, accept.
             line.clear();
@@ -581,7 +587,10 @@ mod tests {
                 .expect("client sent an invalid signature");
 
             let resp = serde_json::json!({"id": req["id"], "code": 0});
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
 
             // Step 3: receive pi_is_verified, send confirmation.
             line.clear();
@@ -593,11 +602,16 @@ mod tests {
                 "id": req["id"], "code": 0,
                 "result": {"is_verified": true},
             });
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
         });
 
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        authenticate(&mut stream, &key).await.expect("authenticate should succeed");
+        authenticate(&mut stream, &key)
+            .await
+            .expect("authenticate should succeed");
         telescope.await.unwrap();
     }
 
@@ -622,14 +636,20 @@ mod tests {
                 "id": req["id"], "code": 0,
                 "result": {"str": "challenge"},
             });
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
 
             line.clear();
             reader.read_line(&mut line).await.unwrap();
             let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
             // Reject with error code.
             let resp = serde_json::json!({"id": req["id"], "code": 1001});
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
         });
 
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -688,7 +708,10 @@ mod tests {
                 "id": req["id"], "code": 0,
                 "result": {"str": ""},  // empty challenge
             });
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
         });
 
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -722,13 +745,19 @@ mod tests {
                 "id": req["id"], "code": 0,
                 "result": {"str": "challenge"},
             });
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
 
             line.clear();
             reader.read_line(&mut line).await.unwrap();
             let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
             let resp = serde_json::json!({"id": req["id"], "code": 0});
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
 
             // Close before pi_is_verified — client should succeed anyway.
         });
@@ -761,13 +790,19 @@ mod tests {
                 "id": req["id"], "code": 0,
                 "result": {"str": "challenge"},
             });
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
 
             line.clear();
             reader.read_line(&mut line).await.unwrap();
             let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
             let resp = serde_json::json!({"id": req["id"], "code": 0});
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
 
             line.clear();
             reader.read_line(&mut line).await.unwrap();
@@ -777,7 +812,10 @@ mod tests {
                 "id": req["id"], "code": 0,
                 "result": {"is_verified": false},
             });
-            write.write_all(format!("{resp}\r\n").as_bytes()).await.unwrap();
+            write
+                .write_all(format!("{resp}\r\n").as_bytes())
+                .await
+                .unwrap();
         });
 
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -823,7 +861,8 @@ mod tests {
 
         // Send get_device_state to confirm the telescope is actually accepting
         // commands — a rejected key would return a non-zero code here.
-        let cmd = serde_json::json!({"id": 100000, "method": "get_device_state", "params": ["verify"]});
+        let cmd =
+            serde_json::json!({"id": 100000, "method": "get_device_state", "params": ["verify"]});
         stream
             .write_all(format!("{cmd}\r\n").as_bytes())
             .await
@@ -831,10 +870,13 @@ mod tests {
 
         let mut reader = BufReader::new(&mut stream);
         let mut line = String::new();
-        tokio::time::timeout(std::time::Duration::from_secs(10), reader.read_line(&mut line))
-            .await
-            .expect("timed out waiting for get_device_state response")
-            .expect("read error");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reader.read_line(&mut line),
+        )
+        .await
+        .expect("timed out waiting for get_device_state response")
+        .expect("read error");
 
         let resp: serde_json::Value =
             serde_json::from_str(line.trim()).expect("invalid JSON in get_device_state response");

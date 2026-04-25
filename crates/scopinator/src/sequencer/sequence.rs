@@ -4,10 +4,10 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-use super::command::{execute_command, SequencerCommand};
+use super::command::{SequencerCommand, execute_command};
 use super::context::ExecutionContext;
 
 /// State of a sequence.
