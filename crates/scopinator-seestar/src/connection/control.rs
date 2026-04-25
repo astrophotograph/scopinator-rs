@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -13,9 +12,10 @@ use crate::auth::InteropKey;
 use crate::command::Command;
 use crate::command::serialize::serialize_command;
 use crate::connection::reconnect::ReconnectPolicy;
+use crate::connection::registry::Registry;
 use crate::error::SeestarError;
 use crate::event::SeestarEvent;
-use crate::protocol::json_rpc::{self, MAX_LINE_BYTES};
+use crate::protocol::json_rpc::{self, INITIAL_COMMAND_ID, MAX_LINE_BYTES};
 use crate::response::CommandResponse;
 use scopinator_types::FirmwareVersion;
 
@@ -31,25 +31,37 @@ pub(crate) struct ClientRequest {
     pub response_tx: oneshot::Sender<Result<CommandResponse, SeestarError>>,
 }
 
-/// Pending request awaiting a response.
-struct PendingRequest {
-    response_tx: oneshot::Sender<Result<CommandResponse, SeestarError>>,
-}
+type ResponseSender = oneshot::Sender<Result<CommandResponse, SeestarError>>;
 
 /// Shared state for the control connection.
 pub(crate) struct ControlState {
-    /// Pending requests keyed by remapped ID.
-    pending: HashMap<u64, PendingRequest>,
-    /// Detected firmware version.
-    pub firmware_version: Option<FirmwareVersion>,
+    /// Pending requests keyed by allocated ID. Owns its own internal lock
+    /// and ID allocator so callers don't need an outer Mutex.
+    pub(crate) pending: Registry<ResponseSender>,
+    /// Detected firmware version (sync mutex — never held across await).
+    firmware_version: std::sync::Mutex<Option<FirmwareVersion>>,
 }
 
 impl ControlState {
     fn new() -> Self {
         Self {
-            pending: HashMap::new(),
-            firmware_version: None,
+            pending: Registry::with_start(INITIAL_COMMAND_ID),
+            firmware_version: std::sync::Mutex::new(None),
         }
+    }
+
+    fn firmware_version(&self) -> Option<FirmwareVersion> {
+        *self
+            .firmware_version
+            .lock()
+            .expect("firmware_version mutex poisoned")
+    }
+
+    fn set_firmware_version(&self, fw: FirmwareVersion) {
+        *self
+            .firmware_version
+            .lock()
+            .expect("firmware_version mutex poisoned") = Some(fw);
     }
 }
 
@@ -62,11 +74,10 @@ pub(crate) async fn run(
     request_rx: mpsc::Receiver<ClientRequest>,
     event_tx: broadcast::Sender<SeestarEvent>,
     connected: Arc<AtomicBool>,
-    next_id: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
     interop_key: Option<Arc<InteropKey>>,
 ) {
-    let state = Arc::new(Mutex::new(ControlState::new()));
+    let state = Arc::new(ControlState::new());
     let mut policy = ReconnectPolicy::new();
 
     // Wrap request_rx in Arc<Mutex> so we can reuse it across reconnections
@@ -101,7 +112,6 @@ pub(crate) async fn run(
                             Arc::clone(&state),
                             Arc::clone(&request_rx),
                             event_tx.clone(),
-                            Arc::clone(&next_id),
                             shutdown.clone(),
                         )
                         .await;
@@ -109,7 +119,7 @@ pub(crate) async fn run(
                         info!("control connection lost, will reconnect");
                     }
                     // Both paths fall through to flush_pending + backoff.
-                    flush_pending(&state).await;
+                    flush_pending(&state);
                     let wait = policy.next_backoff();
                     tokio::time::sleep(wait).await;
                     continue;
@@ -123,7 +133,6 @@ pub(crate) async fn run(
                     Arc::clone(&state),
                     Arc::clone(&request_rx),
                     event_tx.clone(),
-                    Arc::clone(&next_id),
                     shutdown.clone(),
                 )
                 .await;
@@ -140,7 +149,7 @@ pub(crate) async fn run(
         }
 
         // Flush all pending requests with disconnect error
-        flush_pending(&state).await;
+        flush_pending(&state);
 
         let wait = policy.next_backoff();
         tokio::time::sleep(wait).await;
@@ -150,10 +159,9 @@ pub(crate) async fn run(
 /// Run while connected: spawns reader, writer, and heartbeat tasks.
 async fn run_connected(
     stream: TcpStream,
-    state: Arc<Mutex<ControlState>>,
+    state: Arc<ControlState>,
     request_rx: Arc<Mutex<mpsc::Receiver<ClientRequest>>>,
     event_tx: broadcast::Sender<SeestarEvent>,
-    next_id: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let (read_half, write_half) = tokio::io::split(stream);
@@ -167,7 +175,6 @@ async fn run_connected(
     // Writer task
     let writer_handle = {
         let state = Arc::clone(&state);
-        let next_id = Arc::clone(&next_id);
         let write_tx_for_hb = write_tx.clone();
 
         tokio::spawn(async move {
@@ -176,7 +183,6 @@ async fn run_connected(
                 &mut write_rx,
                 request_rx,
                 state,
-                next_id,
                 reader_dead_rx,
                 write_tx_for_hb,
                 shutdown,
@@ -204,7 +210,7 @@ async fn run_connected(
 /// Reader task: reads lines from TCP, routes responses and events.
 async fn reader_task(
     read_half: tokio::io::ReadHalf<TcpStream>,
-    state: Arc<Mutex<ControlState>>,
+    state: Arc<ControlState>,
     event_tx: broadcast::Sender<SeestarEvent>,
 ) {
     let mut reader = BufReader::new(read_half);
@@ -238,7 +244,7 @@ async fn reader_task(
                 if json_rpc::is_event(&msg) {
                     handle_event(&msg, &event_tx);
                 } else if json_rpc::is_response(&msg) {
-                    handle_response(&msg, &state).await;
+                    handle_response(&msg, &state);
                 } else {
                     trace!("unclassified message: {trimmed}");
                 }
@@ -265,7 +271,7 @@ fn handle_event(msg: &serde_json::Value, event_tx: &broadcast::Sender<SeestarEve
 }
 
 /// Handle an incoming response message.
-async fn handle_response(msg: &serde_json::Value, state: &Arc<Mutex<ControlState>>) {
+fn handle_response(msg: &serde_json::Value, state: &Arc<ControlState>) {
     let id = match json_rpc::json_rpc_id(msg) {
         Some(id) => id,
         None => {
@@ -283,8 +289,7 @@ async fn handle_response(msg: &serde_json::Value, state: &Arc<Mutex<ControlState
             .and_then(|d| d.get("firmware_ver_int"))
             .and_then(|v| v.as_u64())
     {
-        let mut s = state.lock().await;
-        s.firmware_version = Some(FirmwareVersion(fw_int as u32));
+        state.set_firmware_version(FirmwareVersion(fw_int as u32));
         debug!(firmware = fw_int, "detected firmware version");
     }
 
@@ -296,22 +301,19 @@ async fn handle_response(msg: &serde_json::Value, state: &Arc<Mutex<ControlState
         }
     };
 
-    let mut s = state.lock().await;
-    if let Some(pending) = s.pending.remove(&id) {
-        let _ = pending.response_tx.send(Ok(response));
+    if let Some(sender) = state.pending.take(id) {
+        let _ = sender.send(Ok(response));
     } else {
         trace!(id, "response for unknown/expired request");
     }
 }
 
 /// Writer task: processes client requests and writes to TCP.
-#[allow(clippy::too_many_arguments)]
 async fn writer_task(
     mut write_half: tokio::io::WriteHalf<TcpStream>,
     write_rx: &mut mpsc::Receiver<String>,
     request_rx: Arc<Mutex<mpsc::Receiver<ClientRequest>>>,
-    state: Arc<Mutex<ControlState>>,
-    next_id: Arc<AtomicU64>,
+    state: Arc<ControlState>,
     mut reader_dead_rx: oneshot::Receiver<()>,
     heartbeat_tx: mpsc::Sender<String>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
@@ -325,30 +327,18 @@ async fn writer_task(
             // Client request
             Some(req) = req_rx.recv() => {
                 drop(req_rx); // release lock before doing work
-                let id = next_id.fetch_add(1, Ordering::Relaxed);
-                let fw = {
-                    let s = state.lock().await;
-                    s.firmware_version
-                };
+                let fw = state.firmware_version();
+                let method = req.command.method();
+                let id = state.pending.register(req.response_tx);
                 let msg = serialize_command(&req.command, id, fw);
                 let line = format!("{}\r\n", msg);
 
-                trace!(id, method = req.command.method(), "sending command");
-
-                // Register pending before writing
-                {
-                    let mut s = state.lock().await;
-                    s.pending.insert(id, PendingRequest {
-                        response_tx: req.response_tx,
-                    });
-                }
+                trace!(id, method, "sending command");
 
                 if let Err(e) = write_half.write_all(line.as_bytes()).await {
                     error!("write error on control connection: {e}");
-                    // Remove the pending entry we just inserted
-                    let mut s = state.lock().await;
-                    if let Some(pending) = s.pending.remove(&id) {
-                        let _ = pending.response_tx.send(Err(SeestarError::Disconnected));
+                    if let Some(sender) = state.pending.take(id) {
+                        let _ = sender.send(Err(SeestarError::Disconnected));
                     }
                     break;
                 }
@@ -407,11 +397,11 @@ async fn heartbeat_task(
 }
 
 /// Flush all pending requests with a disconnect error.
-async fn flush_pending(state: &Arc<Mutex<ControlState>>) {
-    let mut s = state.lock().await;
-    let count = s.pending.len();
-    for (_, pending) in s.pending.drain() {
-        let _ = pending.response_tx.send(Err(SeestarError::Disconnected));
+fn flush_pending(state: &Arc<ControlState>) {
+    let pending = state.pending.drain();
+    let count = pending.len();
+    for sender in pending {
+        let _ = sender.send(Err(SeestarError::Disconnected));
     }
     if count > 0 {
         debug!(count, "flushed pending requests on disconnect");

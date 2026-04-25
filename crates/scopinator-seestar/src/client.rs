@@ -1,6 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -12,7 +12,7 @@ use crate::connection::control::{self, ClientRequest};
 use crate::connection::imaging::{self, ImageFrame};
 use crate::error::SeestarError;
 use crate::event::SeestarEvent;
-use crate::protocol::json_rpc::{CONTROL_PORT, IMAGING_PORT, INITIAL_COMMAND_ID};
+use crate::protocol::json_rpc::{CONTROL_PORT, IMAGING_PORT};
 use crate::response::CommandResponse;
 
 /// Configuration for connecting to a Seestar telescope.
@@ -111,7 +111,6 @@ impl SeestarClient {
 
         let control_connected = Arc::new(AtomicBool::new(false));
         let imaging_connected = Arc::new(AtomicBool::new(false));
-        let next_id = Arc::new(AtomicU64::new(INITIAL_COMMAND_ID));
 
         let interop_key = config.interop_key.map(Arc::new);
 
@@ -119,7 +118,6 @@ impl SeestarClient {
         {
             let event_tx = event_tx.clone();
             let connected = Arc::clone(&control_connected);
-            let next_id = Arc::clone(&next_id);
             let shutdown_rx = shutdown_rx.clone();
             let interop_key = interop_key.clone();
 
@@ -129,7 +127,6 @@ impl SeestarClient {
                     request_rx,
                     event_tx,
                     connected,
-                    next_id,
                     shutdown_rx,
                     interop_key,
                 )
