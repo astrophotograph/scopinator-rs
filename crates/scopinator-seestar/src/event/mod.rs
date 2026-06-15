@@ -46,9 +46,56 @@ pub enum SeestarEvent {
     #[serde(rename = "3PPA")]
     ThreePPA(serde_json::Value),
     ViewPlan(serde_json::Value),
-    /// Forward-compatible: unknown event types are captured as raw JSON.
+    /// Forward-compatible catch-all: any event whose `Event` tag is not one of
+    /// the variants above deserializes here. The payload is not retained on the
+    /// variant (serde's `other` requires a unit variant), but the connection
+    /// reader logs the raw event name so firmware drift (new event types) is
+    /// observable at runtime. See [`known_event_names`] for the modeled set.
     #[serde(other)]
     Unknown,
+}
+
+/// The set of `Event` tag strings this crate models (everything except the
+/// forward-compatible [`SeestarEvent::Unknown`] catch-all).
+///
+/// Used by tests to assert the captured corpus contains no unmodeled events,
+/// and available to callers that want to detect firmware drift.
+pub fn known_event_names() -> &'static [&'static str] {
+    &[
+        "Alert",
+        "AutoFocus",
+        "AutoGoto",
+        "ContinuousExposure",
+        "DarkLibrary",
+        "DiskSpace",
+        "Exposure",
+        "FocuserMove",
+        "Initialise",
+        "PiStatus",
+        "RTSP",
+        "SaveImage",
+        "ScopeGoto",
+        "ScopeHome",
+        "ScopeMoveToHorizon",
+        "ScopeTrack",
+        "Stack",
+        "View",
+        "WheelMove",
+        "Annotate",
+        "AutoGotoStep",
+        "BatchStack",
+        "Client",
+        "EqModePA",
+        "GoPixel",
+        "Internal",
+        "PlateSolve",
+        "ScanSun",
+        "SecondView",
+        "SelectCamera",
+        "Setting",
+        "3PPA",
+        "ViewPlan",
+    ]
 }
 
 impl SeestarEvent {

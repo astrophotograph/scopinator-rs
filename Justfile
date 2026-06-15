@@ -23,6 +23,31 @@ test:
 # Run fmt-check + clippy + test in one shot. What CI runs.
 ci: fmt-check lint test
 
+# --- Session corpus / conformance / cross-language parity. ---
+
+# Analyze the raw captures (firmware/command/event matrix + drift detection).
+# Defaults to ../seestar-proxy; pass a dir to override.
+analyze dir="":
+    python3 tools/analyze_sessions.py {{dir}}
+
+# List secrets in a capture directory (must be empty for the committed corpus).
+analyze-pii dir="conformance/sessions":
+    python3 tools/analyze_sessions.py --pii {{dir}}
+
+# Sanitize a raw seestar-proxy capture into the committable corpus.
+# `just sanitize ../seestar-proxy/session_XXXX conformance/sessions/s50_fw670_x`
+sanitize src dst:
+    python3 tools/sanitize_session.py {{src}} {{dst}}
+
+# Replay the corpus through scopinator-rs (session + IO/concurrency tests).
+replay:
+    cargo test -p scopinator-seestar --test session_replay --test control_integration
+
+# Cross-language parity: replay the corpus through scopinator-rs AND pyscopinator
+# and diff the normalized reports. Needs cargo + pyscopinator (uv).
+parity:
+    python3 conformance/parity/compare.py --run
+
 # --- Coverage (cargo-llvm-cov). ---
 # Install once: `cargo install cargo-llvm-cov` and `rustup component add llvm-tools-preview`.
 

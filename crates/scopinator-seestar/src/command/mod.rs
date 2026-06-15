@@ -48,7 +48,10 @@ pub enum Command {
     // -- Observation --
     GotoTarget(GotoTargetParams),
     IscopeStartView(StartViewParams),
-    IscopeStopView(StopViewParams),
+    /// Stop the live view. The `stage` parameter is optional: firmware 6.70
+    /// is observed to accept a parameterless `iscope_stop_view` (just the
+    /// injected `verify`), so `None` sends no `stage`.
+    IscopeStopView(Option<StopViewParams>),
     IscopeStartStack(Option<StartStackParams>),
 
     // -- Focus --
@@ -65,6 +68,15 @@ pub enum Command {
     SetStackSetting(SetStackSettingParams),
     SetControlValue(String, i32),
     PiOutputSet2(serde_json::Value),
+    /// Configure an imaging sequence (firmware 7.06+). Wire form is a list of
+    /// group entries, sent nested as `[[{group_name: ...}]]`.
+    SetSequenceSetting(Vec<SequenceSettingParams>),
+
+    // -- Misc / system --
+    /// Play a built-in sound (firmware 7.06+).
+    PlaySound(PlaySoundParams),
+    /// Query the Wi-Fi station state. No parameters.
+    PiStationState,
 
     // -- Imaging --
     BeginStreaming,
@@ -78,6 +90,66 @@ pub enum Command {
     // -- Plans --
     SetViewPlan(serde_json::Value),
     StopViewPlan,
+}
+
+/// Every JSON-RPC method string the [`Command`] enum can produce.
+///
+/// Kept in lockstep with [`Command::method`] (asserted by a unit test). Used by
+/// the conformance/parity tooling to report which methods this crate models.
+pub fn command_method_names() -> &'static [&'static str] {
+    &[
+        "test_connection",
+        "pi_is_verified",
+        "pi_reboot",
+        "pi_get_time",
+        "pi_set_time",
+        "get_device_state",
+        "get_view_state",
+        "get_camera_info",
+        "get_camera_state",
+        "get_setting",
+        "get_stack_setting",
+        "get_stack_info",
+        "get_disk_volume",
+        "get_user_location",
+        "get_wheel_position",
+        "get_wheel_setting",
+        "get_wheel_state",
+        "get_last_solve_result",
+        "get_solve_result",
+        "get_annotated_result",
+        "scope_get_equ_coord",
+        "scope_get_ra_dec",
+        "scope_get_horiz_coord",
+        "scope_sync",
+        "scope_park",
+        "scope_move_to_horizon",
+        "scope_speed_move",
+        "scope_set_track_state",
+        "goto_target",
+        "iscope_start_view",
+        "iscope_stop_view",
+        "iscope_start_stack",
+        "get_focuser_position",
+        "move_focuser",
+        "start_auto_focuse",
+        "stop_auto_focuse",
+        "set_user_location",
+        "set_setting",
+        "set_stack_setting",
+        "set_control_value",
+        "pi_output_set2",
+        "set_sequence_setting",
+        "play_sound",
+        "pi_station_state",
+        "begin_streaming",
+        "stop_streaming",
+        "get_stacked_img",
+        "start_solve",
+        "start_scan_planet",
+        "set_view_plan",
+        "stop_func",
+    ]
 }
 
 impl Command {
@@ -126,6 +198,9 @@ impl Command {
             Self::SetStackSetting(_) => "set_stack_setting",
             Self::SetControlValue(_, _) => "set_control_value",
             Self::PiOutputSet2(_) => "pi_output_set2",
+            Self::SetSequenceSetting(_) => "set_sequence_setting",
+            Self::PlaySound(_) => "play_sound",
+            Self::PiStationState => "pi_station_state",
             Self::BeginStreaming => "begin_streaming",
             Self::StopStreaming => "stop_streaming",
             Self::GetStackedImage => "get_stacked_img",
@@ -134,5 +209,122 @@ impl Command {
             Self::SetViewPlan(_) => "set_view_plan",
             Self::StopViewPlan => "stop_func",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// One `Command` per variant — used to prove [`command_method_names`] stays
+    /// exhaustive and in sync with [`Command::method`]. Adding a variant without
+    /// updating either list fails this test.
+    fn one_of_every_variant() -> Vec<Command> {
+        vec![
+            Command::TestConnection,
+            Command::PiIsVerified,
+            Command::PiReboot,
+            Command::PiGetTime,
+            Command::PiSetTime(SetTimeParams {
+                year: 2026,
+                mon: 1,
+                day: 1,
+                hour: 0,
+                min: 0,
+                sec: 0,
+                time_zone: "UTC".into(),
+            }),
+            Command::GetDeviceState,
+            Command::GetViewState,
+            Command::GetCameraInfo,
+            Command::GetCameraState,
+            Command::GetSetting,
+            Command::GetStackSetting,
+            Command::GetStackInfo,
+            Command::GetDiskVolume,
+            Command::GetUserLocation,
+            Command::GetWheelPosition,
+            Command::GetWheelSetting,
+            Command::GetWheelState,
+            Command::GetLastSolveResult,
+            Command::GetSolveResult,
+            Command::GetAnnotatedResult,
+            Command::ScopeGetEquCoord,
+            Command::ScopeGetRaDec,
+            Command::ScopeGetHorizCoord,
+            Command::ScopeSync(0.0, 0.0),
+            Command::ScopePark,
+            Command::ScopeParkMode(true),
+            Command::ScopeMoveToHorizon,
+            Command::ScopeSpeedMove(SpeedMoveParams {
+                angle: 0,
+                level: 0,
+                dur_sec: 0,
+                percent: 0,
+            }),
+            Command::ScopeSetTrackState(true),
+            Command::GotoTarget(GotoTargetParams {
+                target_name: "M31".into(),
+                is_j2000: true,
+                ra: 0.0,
+                dec: 0.0,
+            }),
+            Command::IscopeStartView(StartViewParams {
+                mode: None,
+                target_name: None,
+                target_ra_dec: None,
+                target_type: None,
+                lp_filter: None,
+            }),
+            Command::IscopeStopView(None),
+            Command::IscopeStartStack(None),
+            Command::GetFocuserPosition,
+            Command::MoveFocuser(MoveFocuserParams {
+                step: 0,
+                ret_step: true,
+            }),
+            Command::StartAutoFocus,
+            Command::StopAutoFocus,
+            Command::SetUserLocation(SetUserLocationParams {
+                lat: 0.0,
+                lon: 0.0,
+                force: true,
+            }),
+            Command::SetSetting(SettingParams::default()),
+            Command::SetStackSetting(SetStackSettingParams::default()),
+            Command::SetControlValue("gain".into(), 0),
+            Command::PiOutputSet2(json!({})),
+            Command::SetSequenceSetting(vec![]),
+            Command::PlaySound(PlaySoundParams { num: 0 }),
+            Command::PiStationState,
+            Command::BeginStreaming,
+            Command::StopStreaming,
+            Command::GetStackedImage,
+            Command::StartSolve,
+            Command::StartScanPlanet,
+            Command::SetViewPlan(json!({})),
+            Command::StopViewPlan,
+        ]
+    }
+
+    #[test]
+    fn method_names_list_is_exhaustive_and_in_sync() {
+        use std::collections::BTreeSet;
+        let from_variants: BTreeSet<&str> =
+            one_of_every_variant().iter().map(|c| c.method()).collect();
+        let from_list: BTreeSet<&str> = command_method_names().iter().copied().collect();
+
+        // Every modeled command's method is in the published list, and vice versa.
+        assert_eq!(
+            from_variants, from_list,
+            "command_method_names() is out of sync with Command::method()"
+        );
+        // The published list has no duplicates.
+        assert_eq!(
+            command_method_names().len(),
+            from_list.len(),
+            "duplicate method names"
+        );
     }
 }

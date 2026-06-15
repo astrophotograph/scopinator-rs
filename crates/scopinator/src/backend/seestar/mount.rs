@@ -84,9 +84,9 @@ impl Mount for SeestarMount {
     async fn abort_slew(&self) -> Result<(), ScopinatorError> {
         // Seestar uses iscope_stop_view to abort
         use scopinator_seestar::command::params::{StopStage, StopViewParams};
-        let cmd = Command::IscopeStopView(StopViewParams {
+        let cmd = Command::IscopeStopView(Some(StopViewParams {
             stage: StopStage::AutoGoto,
-        });
+        }));
         self.client.send_and_validate(cmd).await?;
         Ok(())
     }

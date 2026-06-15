@@ -65,7 +65,8 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::StopStreaming
         | Command::GetStackedImage
         | Command::StartSolve
-        | Command::StartScanPlanet => None,
+        | Command::StartScanPlanet
+        | Command::PiStationState => None,
 
         // Mount mode switch: scope_park with equ_mode param
         Command::ScopeParkMode(eq) => Some(json!({ "equ_mode": eq })),
@@ -78,7 +79,10 @@ fn command_params(cmd: &Command) -> Option<Value> {
         // Struct params
         Command::GotoTarget(p) => serde_json::to_value(p).ok(),
         Command::IscopeStartView(p) => serde_json::to_value(p).ok(),
-        Command::IscopeStopView(p) => Some(json!({"stage": format!("{:?}", p.stage)})),
+        // `stage` serializes via serde (StopStage -> "DarkLibrary"/"Stack"/"AutoGoto").
+        // `None` sends no params, matching firmware 6.70's parameterless stop.
+        Command::IscopeStopView(Some(p)) => serde_json::to_value(p).ok(),
+        Command::IscopeStopView(None) => None,
         Command::IscopeStartStack(Some(p)) => serde_json::to_value(p).ok(),
         Command::IscopeStartStack(None) => None,
         Command::ScopeSpeedMove(p) => serde_json::to_value(p).ok(),
@@ -90,6 +94,10 @@ fn command_params(cmd: &Command) -> Option<Value> {
         Command::PiOutputSet2(v) => Some(v.clone()),
         Command::SetViewPlan(v) => Some(v.clone()),
         Command::StopViewPlan => Some(json!({"name": "ViewPlan"})),
+        Command::PlaySound(p) => serde_json::to_value(p).ok(),
+        // Nested form: a list wrapping the list of group entries. Firmware then
+        // appends "verify" -> [[{group_name: ...}], "verify"].
+        Command::SetSequenceSetting(groups) => Some(json!([groups])),
     }
 }
 
@@ -174,6 +182,58 @@ mod tests {
         let params = msg["params"].as_array().unwrap();
         assert_eq!(params[0], true);
         assert_eq!(params[1], "verify");
+    }
+
+    #[test]
+    fn serialize_play_sound_matches_capture() {
+        // Captured (fw 7.06): {"method":"play_sound","params":{"num":80,"verify":true},"id":...}
+        use crate::command::params::PlaySoundParams;
+        let cmd = Command::PlaySound(PlaySoundParams { num: 80 });
+        let msg = serialize_command(&cmd, 10016, None);
+        assert_eq!(msg["method"], "play_sound");
+        assert_eq!(msg["params"]["num"], 80);
+        assert_eq!(msg["params"]["verify"], true);
+    }
+
+    #[test]
+    fn serialize_pi_station_state_matches_capture() {
+        // Captured: {"method":"pi_station_state","params":["verify"],"id":...}
+        let msg = serialize_command(&Command::PiStationState, 10001, None);
+        assert_eq!(msg["method"], "pi_station_state");
+        assert_eq!(msg["params"], json!(["verify"]));
+    }
+
+    #[test]
+    fn serialize_set_sequence_setting_matches_capture() {
+        // Captured (fw 7.06):
+        // {"method":"set_sequence_setting","params":[[{"group_name":"M44"}],"verify"],"id":...}
+        use crate::command::params::SequenceSettingParams;
+        let cmd = Command::SetSequenceSetting(vec![SequenceSettingParams {
+            group_name: Some("M44".into()),
+        }]);
+        let msg = serialize_command(&cmd, 10027, None);
+        assert_eq!(msg["method"], "set_sequence_setting");
+        assert_eq!(msg["params"], json!([[{ "group_name": "M44" }], "verify"]));
+    }
+
+    #[test]
+    fn serialize_stop_view_without_stage_matches_fw670() {
+        // Captured (fw 6.70): {"method":"iscope_stop_view","params":["verify"],"id":...}
+        let msg = serialize_command(&Command::IscopeStopView(None), 10094, None);
+        assert_eq!(msg["method"], "iscope_stop_view");
+        assert_eq!(msg["params"], json!(["verify"]));
+    }
+
+    #[test]
+    fn serialize_stop_view_with_stage_uses_serde_names() {
+        use crate::command::params::{StopStage, StopViewParams};
+        let cmd = Command::IscopeStopView(Some(StopViewParams {
+            stage: StopStage::DarkLibrary,
+        }));
+        // Without verify (old firmware) the stage is serialized via serde,
+        // not Debug formatting.
+        let msg = serialize_command(&cmd, 1, Some(FirmwareVersion(2500)));
+        assert_eq!(msg["params"], json!({ "stage": "DarkLibrary" }));
     }
 
     #[test]

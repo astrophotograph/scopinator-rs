@@ -77,9 +77,9 @@ impl Camera for SeestarCamera {
 
     async fn abort_exposure(&self) -> Result<(), ScopinatorError> {
         use scopinator_seestar::command::params::{StopStage, StopViewParams};
-        let cmd = Command::IscopeStopView(StopViewParams {
+        let cmd = Command::IscopeStopView(Some(StopViewParams {
             stage: StopStage::Stack,
-        });
+        }));
         self.client.send_and_validate(cmd).await?;
         Ok(())
     }

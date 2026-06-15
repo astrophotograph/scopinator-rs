@@ -1,3 +1,4 @@
 - [Project Context](memory/project_context.md) — Rust port of pyscopinator; references pyscopinator (models) and seestar-proxy (networking)
 - [User Profile](memory/user_profile.md) — Experienced Rust/Python dev, telescope control software, content creator
 - [Commit Style](memory/feedback_commits.md) — Bundle fmt drift with substantive changes; don't split into style/test commits
+- [Conformance Corpus](memory/conformance_corpus.md) — Raw captures in seestar-proxy (have secrets); sanitize into conformance/; firmware 6.70/7.06 matrix; pyscopinator parity harness

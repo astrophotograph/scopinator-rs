@@ -173,3 +173,23 @@ pub struct SetStackSettingParams {
 
 /// Parameters for `set_control_value`.
 pub type SetControlValueParams = (String, i32);
+
+/// A single sequence-setting group entry for `set_sequence_setting`.
+///
+/// On the wire the command sends `[[{group_name: ...}], "verify"]` — a list
+/// containing the list of group entries, with `"verify"` appended by firmware
+/// injection. See [`crate::command::serialize`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SequenceSettingParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+}
+
+/// Parameters for `play_sound`.
+///
+/// Observed in firmware 7.06 captures as `{"num": 80, "verify": true}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaySoundParams {
+    /// Sound index to play.
+    pub num: i32,
+}

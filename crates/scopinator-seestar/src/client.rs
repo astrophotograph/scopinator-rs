@@ -21,10 +21,13 @@ pub struct SeestarConfig {
     /// RSA interoperability PEM key for firmware 7.18+ challenge/response authentication.
     /// If `None`, authentication is skipped (compatible with older firmware).
     pub interop_key: Option<InteropKey>,
+    /// How long [`SeestarClient::send_command`] waits for a response before
+    /// returning [`SeestarError::Timeout`]. Defaults to [`DEFAULT_RESPONSE_TIMEOUT`].
+    pub response_timeout: Option<Duration>,
 }
 
-/// Command response timeout.
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default command response timeout.
+pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Client for communicating with a Seestar smart telescope.
 ///
@@ -63,6 +66,8 @@ pub struct SeestarClient {
     imaging_connected: Arc<AtomicBool>,
     /// Shutdown signal.
     shutdown_tx: watch::Sender<bool>,
+    /// Per-command response timeout.
+    response_timeout: Duration,
 }
 
 impl SeestarClient {
@@ -97,6 +102,16 @@ impl SeestarClient {
         Self::connect_internal(ip, control_addr, imaging_addr, SeestarConfig::default()).await
     }
 
+    /// Connect with explicit addresses and a [`SeestarConfig`].
+    pub async fn connect_with_ports_and_config(
+        ip: Ipv4Addr,
+        control_addr: SocketAddr,
+        imaging_addr: SocketAddr,
+        config: SeestarConfig,
+    ) -> Result<Self, SeestarError> {
+        Self::connect_internal(ip, control_addr, imaging_addr, config).await
+    }
+
     async fn connect_internal(
         _ip: Ipv4Addr, // reserved — may be used for source binding in future
         control_addr: SocketAddr,
@@ -113,6 +128,7 @@ impl SeestarClient {
         let imaging_connected = Arc::new(AtomicBool::new(false));
 
         let interop_key = config.interop_key.map(Arc::new);
+        let response_timeout = config.response_timeout.unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
 
         // Spawn control connection task
         {
@@ -164,6 +180,7 @@ impl SeestarClient {
             control_connected,
             imaging_connected,
             shutdown_tx,
+            response_timeout,
         })
     }
 
@@ -181,10 +198,10 @@ impl SeestarClient {
             .await
             .map_err(|_| SeestarError::Disconnected)?;
 
-        match tokio::time::timeout(RESPONSE_TIMEOUT, response_rx).await {
+        match tokio::time::timeout(self.response_timeout, response_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(SeestarError::Disconnected),
-            Err(_) => Err(SeestarError::Timeout(RESPONSE_TIMEOUT)),
+            Err(_) => Err(SeestarError::Timeout(self.response_timeout)),
         }
     }
 

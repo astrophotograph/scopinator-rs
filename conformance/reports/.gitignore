@@ -1,0 +1,2 @@
+# Generated parity reports — regenerate with conformance/parity/compare.py --run
+*.json

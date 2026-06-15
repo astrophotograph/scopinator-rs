@@ -17,7 +17,14 @@ pub async fn goto(
     let coords = Coordinates::from_hours(ra_hours, dec_deg).context("invalid coordinates")?;
 
     println!("Connecting to {host}...");
-    let client = SeestarClient::connect_with_config(host, SeestarConfig { interop_key }).await?;
+    let client = SeestarClient::connect_with_config(
+        host,
+        SeestarConfig {
+            interop_key,
+            ..Default::default()
+        },
+    )
+    .await?;
     client
         .wait_for_connection(Duration::from_secs(10))
         .await

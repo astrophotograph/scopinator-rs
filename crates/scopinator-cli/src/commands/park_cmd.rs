@@ -7,7 +7,14 @@ use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig};
 
 pub async fn park(host: Ipv4Addr, interop_key: Option<InteropKey>) -> Result<()> {
     println!("Connecting to {host}...");
-    let client = SeestarClient::connect_with_config(host, SeestarConfig { interop_key }).await?;
+    let client = SeestarClient::connect_with_config(
+        host,
+        SeestarConfig {
+            interop_key,
+            ..Default::default()
+        },
+    )
+    .await?;
     client
         .wait_for_connection(Duration::from_secs(10))
         .await
