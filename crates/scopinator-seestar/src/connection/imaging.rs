@@ -9,6 +9,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, error, info, trace, warn};
 
+use crate::command::ImagingCommand;
 use crate::connection::reconnect::ReconnectPolicy;
 use crate::error::SeestarError;
 use crate::protocol::frame::{self, FrameHeader, HEADER_SIZE, MAX_PAYLOAD_SIZE};
@@ -98,8 +99,9 @@ async fn run_imaging_connected(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let msg = b"{\"id\":99,\"method\":\"test_connection\",\"params\":\"verify\"}\r\n";
-                if let Err(e) = write_half.write_all(msg).await {
+                let mut msg = ImagingCommand::TestConnection.serialize(99);
+                msg.extend_from_slice(b"\r\n");
+                if let Err(e) = write_half.write_all(&msg).await {
                     debug!("imaging heartbeat write error: {e}");
                     break;
                 }
@@ -187,9 +189,13 @@ where
         Err(e) => return Err(SeestarError::Connection(e)),
     }
 
+    // Only VIEW/PREVIEW/STACK carry image data. Everything else on the imaging
+    // socket (e.g. `test_connection` heartbeat echoes) is a status frame — do
+    // not mislabel it as a preview image.
     let kind = match header.id {
         frame::frame_id::STACK => FrameKind::Stack,
-        _ => FrameKind::Preview,
+        frame::frame_id::VIEW | frame::frame_id::PREVIEW => FrameKind::Preview,
+        _ => FrameKind::Status,
     };
 
     Ok(Some(ImageFrame {
@@ -246,6 +252,22 @@ mod tests {
         let mut buf = [0u8; HEADER_SIZE];
         let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
         assert_eq!(frame.kind, FrameKind::Stack);
+    }
+
+    #[tokio::test]
+    async fn read_frame_non_image_id_maps_to_status() {
+        // A `test_connection` heartbeat echo (or any non-VIEW/PREVIEW/STACK id)
+        // must be classified Status, not mislabeled as a Preview image.
+        let header = make_header(17, 99, 0, 0);
+        let payload = [0u8; 17];
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(&payload)
+            .build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+        assert_eq!(frame.kind, FrameKind::Status);
+        assert!(!frame.kind.is_image());
     }
 
     #[tokio::test]

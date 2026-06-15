@@ -1,6 +1,6 @@
 [package]
 name = "scopinator-indi"
-version = "0.2.0"
+version = "0.3.0"
 description = "INDI protocol backend for scopinator"
 edition.workspace = true
 license.workspace = true

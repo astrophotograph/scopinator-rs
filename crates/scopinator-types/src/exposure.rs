@@ -25,14 +25,26 @@ impl Default for ExposureSettings {
     }
 }
 
-/// Kind of image frame.
+/// Kind of frame received on the imaging connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FrameKind {
-    /// Live view / preview frame.
+    /// Live view / preview image frame.
     Preview,
     /// Stacked result.
     Stack,
+    /// A non-image frame on the imaging socket — e.g. a `test_connection`
+    /// heartbeat echo or other status/control frame. Carries no image payload;
+    /// consumers decoding images should skip these (see [`FrameKind::is_image`]).
+    Status,
+}
+
+impl FrameKind {
+    /// Whether this frame carries decodable image data ([`Preview`](Self::Preview)
+    /// or [`Stack`](Self::Stack)), as opposed to a [`Status`](Self::Status) frame.
+    pub fn is_image(self) -> bool {
+        matches!(self, FrameKind::Preview | FrameKind::Stack)
+    }
 }
 
 /// Bayer pattern for raw sensor data.
@@ -63,7 +75,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn frame_kinds() -> impl Strategy<Value = FrameKind> {
-        prop_oneof![Just(FrameKind::Preview), Just(FrameKind::Stack)]
+        prop_oneof![
+            Just(FrameKind::Preview),
+            Just(FrameKind::Stack),
+            Just(FrameKind::Status),
+        ]
     }
 
     fn bayer_patterns() -> impl Strategy<Value = BayerPattern> {

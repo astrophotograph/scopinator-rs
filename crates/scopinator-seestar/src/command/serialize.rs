@@ -61,8 +61,6 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::GetFocuserPosition
         | Command::StartAutoFocus
         | Command::StopAutoFocus
-        | Command::BeginStreaming
-        | Command::StopStreaming
         | Command::GetStackedImage
         | Command::StartSolve
         | Command::StartScanPlanet

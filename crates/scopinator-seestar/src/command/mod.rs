@@ -79,8 +79,11 @@ pub enum Command {
     PiStationState,
 
     // -- Imaging --
-    BeginStreaming,
-    StopStreaming,
+    // NOTE: `begin_streaming` / `stop_streaming` are intentionally NOT modeled
+    // here. They are imaging-port (4800) commands, not control-port (4700)
+    // JSON-RPC commands — the scope rejects `begin_streaming` on 4700 with code
+    // 103. They live in [`ImagingCommand`]; use
+    // [`crate::SeestarClient::send_imaging`] / `begin_streaming` to drive them.
     GetStackedImage,
 
     // -- Plate solving --
@@ -142,8 +145,6 @@ pub fn command_method_names() -> &'static [&'static str] {
         "set_sequence_setting",
         "play_sound",
         "pi_station_state",
-        "begin_streaming",
-        "stop_streaming",
         "get_stacked_img",
         "start_solve",
         "start_scan_planet",
@@ -201,14 +202,58 @@ impl Command {
             Self::SetSequenceSetting(_) => "set_sequence_setting",
             Self::PlaySound(_) => "play_sound",
             Self::PiStationState => "pi_station_state",
-            Self::BeginStreaming => "begin_streaming",
-            Self::StopStreaming => "stop_streaming",
             Self::GetStackedImage => "get_stacked_img",
             Self::StartSolve => "start_solve",
             Self::StartScanPlanet => "start_scan_planet",
             Self::SetViewPlan(_) => "set_view_plan",
             Self::StopViewPlan => "stop_func",
         }
+    }
+}
+
+/// A command sent to the telescope's **imaging port (4800)**.
+///
+/// These are distinct from control-port [`Command`]s in two ways: they are
+/// fire-and-forget (the scope answers with binary image frames, not a
+/// correlated JSON response), and they never get `verify` injected. Send one
+/// with [`SeestarClient::send_imaging`](crate::SeestarClient::send_imaging).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ImagingCommand {
+    /// Start the live frame stream. In star mode the scope then pushes
+    /// full-resolution raw frames over 4800 (verified against firmware 6.70);
+    /// solar/moon/planet/scenery modes stream via RTSP instead.
+    BeginStreaming,
+    /// Stop the live frame stream. Port inferred by symmetry with
+    /// [`BeginStreaming`](Self::BeginStreaming); not yet hardware-verified.
+    StopStreaming,
+    /// Liveness check. Used internally as the imaging-port heartbeat.
+    TestConnection,
+}
+
+impl ImagingCommand {
+    /// The JSON-RPC method string for this command.
+    pub fn method(&self) -> &'static str {
+        match self {
+            Self::BeginStreaming => "begin_streaming",
+            Self::StopStreaming => "stop_streaming",
+            Self::TestConnection => "test_connection",
+        }
+    }
+
+    /// Serialize to the wire form — a single JSON line **without** a trailing
+    /// newline (the imaging connection appends `\r\n`). `id` is included for
+    /// protocol shape but the imaging port does not correlate responses to it.
+    pub fn serialize(&self, id: u64) -> Vec<u8> {
+        let method = self.method();
+        // `test_connection` carries `params:"verify"`; the others take none.
+        let line = match self {
+            Self::TestConnection => {
+                format!(r#"{{"id":{id},"method":"{method}","params":"verify"}}"#)
+            }
+            _ => format!(r#"{{"id":{id},"method":"{method}"}}"#),
+        };
+        line.into_bytes()
     }
 }
 
@@ -298,8 +343,6 @@ mod tests {
             Command::SetSequenceSetting(vec![]),
             Command::PlaySound(PlaySoundParams { num: 0 }),
             Command::PiStationState,
-            Command::BeginStreaming,
-            Command::StopStreaming,
             Command::GetStackedImage,
             Command::StartSolve,
             Command::StartScanPlanet,
@@ -326,5 +369,27 @@ mod tests {
             from_list.len(),
             "duplicate method names"
         );
+    }
+
+    #[test]
+    fn imaging_command_serializes_to_valid_json_with_method() {
+        for (cmd, method, has_verify) in [
+            (ImagingCommand::BeginStreaming, "begin_streaming", false),
+            (ImagingCommand::StopStreaming, "stop_streaming", false),
+            (ImagingCommand::TestConnection, "test_connection", true),
+        ] {
+            let bytes = cmd.serialize(7);
+            // No trailing newline — the imaging connection appends it.
+            assert!(
+                !bytes.ends_with(b"\n"),
+                "{method} should not end with newline"
+            );
+            let v: serde_json::Value = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|e| panic!("{method} not valid JSON: {e}"));
+            assert_eq!(v["method"], method);
+            assert_eq!(v["id"], 7);
+            assert_eq!(v.get("params").is_some(), has_verify, "{method} params");
+            assert_eq!(cmd.method(), method);
+        }
     }
 }

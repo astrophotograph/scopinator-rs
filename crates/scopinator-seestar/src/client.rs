@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::{debug, info};
 
 use crate::auth::InteropKey;
-use crate::command::Command;
+use crate::command::{Command, ImagingCommand};
 use crate::connection::control::{self, ClientRequest};
 use crate::connection::imaging::{self, ImageFrame};
 use crate::error::SeestarError;
@@ -28,6 +28,10 @@ pub struct SeestarConfig {
 
 /// Default command response timeout.
 pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Fixed `id` used for client-issued imaging-port commands. The imaging port
+/// does not correlate responses to ids, so the exact value is immaterial.
+const IMAGING_CMD_ID: u64 = 21;
 
 /// Client for communicating with a Seestar smart telescope.
 ///
@@ -236,6 +240,33 @@ impl SeestarClient {
             .send(msg)
             .await
             .map_err(|_| SeestarError::Disconnected)
+    }
+
+    /// Send a typed [`ImagingCommand`] to the imaging port (4800).
+    ///
+    /// Fire-and-forget: the scope replies with binary frames (via
+    /// [`subscribe_frames`](Self::subscribe_frames)), not a correlated response,
+    /// so this returns as soon as the command is queued for the socket. For
+    /// arbitrary/raw payloads use [`send_imaging_command`](Self::send_imaging_command).
+    pub async fn send_imaging(&self, cmd: ImagingCommand) -> Result<(), SeestarError> {
+        self.send_imaging_command(cmd.serialize(IMAGING_CMD_ID))
+            .await
+    }
+
+    /// Start the live imaging frame stream.
+    ///
+    /// Convenience for [`send_imaging`](Self::send_imaging) with
+    /// [`ImagingCommand::BeginStreaming`]. This goes to the **imaging port
+    /// (4800)** — the only place the telescope accepts it; on the control port
+    /// (4700) it is rejected with code 103. In star mode the scope then pushes
+    /// full-resolution raw frames (`FrameKind::Preview`); solar/moon/planet/
+    /// scenery modes use a separate RTSP stream instead.
+    ///
+    /// Call this after entering a view with
+    /// [`Command::IscopeStartView`](crate::command::Command::IscopeStartView) on
+    /// the control port — `begin_streaming` starts the frame pipe, not the view.
+    pub async fn begin_streaming(&self) -> Result<(), SeestarError> {
+        self.send_imaging(ImagingCommand::BeginStreaming).await
     }
 
     /// Returns true if the control connection is currently alive.
