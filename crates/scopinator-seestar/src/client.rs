@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::{debug, info};
 
 use crate::auth::InteropKey;
+use crate::command::params::{Direction, SpeedMoveParams};
 use crate::command::{Command, ImagingCommand};
 use crate::connection::control::{self, ClientRequest};
 use crate::connection::imaging::{self, ImageFrame};
@@ -267,6 +268,33 @@ impl SeestarClient {
     /// the control port — `begin_streaming` starts the frame pipe, not the view.
     pub async fn begin_streaming(&self) -> Result<(), SeestarError> {
         self.send_imaging(ImagingCommand::BeginStreaming).await
+    }
+
+    /// Manually jog the mount toward a cardinal [`Direction`].
+    ///
+    /// This is an **open-loop** motor move (`scope_speed_move`) — unlike a goto
+    /// it needs no polar alignment. `level` is the speed gear, `percent` the
+    /// speed (`0` stops), `dur_sec` the run time; the scope auto-stops after
+    /// `dur_sec`. The direction→angle mapping is verified for **EQ mode** on
+    /// firmware 6.70 (see [`Direction`]); call [`stop_jog`](Self::stop_jog) to
+    /// halt early.
+    pub async fn jog(
+        &self,
+        direction: Direction,
+        level: i32,
+        percent: i32,
+        dur_sec: i32,
+    ) -> Result<CommandResponse, SeestarError> {
+        self.send_command(Command::ScopeSpeedMove(SpeedMoveParams::toward(
+            direction, level, percent, dur_sec,
+        )))
+        .await
+    }
+
+    /// Stop manual jogging immediately (`scope_speed_move` with `percent = 0`).
+    pub async fn stop_jog(&self) -> Result<CommandResponse, SeestarError> {
+        self.send_command(Command::ScopeSpeedMove(SpeedMoveParams::stop()))
+            .await
     }
 
     /// Returns true if the control connection is currently alive.
