@@ -1,10 +1,13 @@
-//! Empirically confirm what triggers real preview frames over the imaging port.
+//! Empirically confirm what starts and stops real preview frames over the
+//! imaging port.
 //!
 //! Assumes the scope is already in an active view (iscope_start_view done by
 //! someone else). Phase A: baseline (no trigger). Phase B: `begin_streaming` on
-//! the imaging port (4800) via [`SeestarClient::begin_streaming`]. Reports a
+//! the imaging port (4800) via [`SeestarClient::begin_streaming`]. Phase C:
+//! `stop_streaming` via `send_imaging(ImagingCommand::StopStreaming)`. Reports a
 //! per-phase frame id histogram so we can see whether real
-//! PREVIEW(21)/VIEW(20)/STACK(23) frames appear vs only heartbeat echoes.
+//! PREVIEW(21)/VIEW(20)/STACK(23) frames appear/disappear vs only heartbeat
+//! echoes, and prints a verdict on whether stop_streaming actually stops frames.
 //!
 //! (The control-port (4700) `begin_streaming` path was verified to be rejected
 //! with code 103, which is why `Command::BeginStreaming` no longer exists.)
@@ -17,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use scopinator_seestar::SeestarClient;
-use scopinator_seestar::command::Command;
+use scopinator_seestar::command::{Command, ImagingCommand};
 use scopinator_seestar::connection::imaging::ImageFrame;
 
 type Err = Box<dyn std::error::Error>;
@@ -52,7 +55,8 @@ async fn collect(
     (hist, max_payload)
 }
 
-fn report(label: &str, hist: &BTreeMap<u8, u64>, max_payload: usize) {
+/// Print a per-phase summary and return the number of real image frames.
+fn report(label: &str, hist: &BTreeMap<u8, u64>, max_payload: usize) -> u64 {
     let total: u64 = hist.values().sum();
     // id 20=VIEW, 21=PREVIEW, 23=STACK are real image frames; others are status.
     let images: u64 = hist
@@ -64,6 +68,7 @@ fn report(label: &str, hist: &BTreeMap<u8, u64>, max_payload: usize) {
         "  [{label}] total={total} image_frames(id20/21/23)={images} max_payload={max_payload}B"
     );
     println!("    id histogram: {hist:?}");
+    images
 }
 
 #[tokio::main]
@@ -93,10 +98,33 @@ async fn main() -> Result<(), Err> {
     let (h, mp) = collect(&mut frames, 7).await;
     report("baseline", &h, mp);
 
-    println!("\nPhase B — begin_streaming on IMAGING port (4800), 10s:");
+    println!("\nPhase B — begin_streaming on IMAGING port (4800), 12s:");
     client.begin_streaming().await?;
-    let (h, mp) = collect(&mut frames, 10).await;
-    report("after 4800 begin_streaming", &h, mp);
+    let (h, mp) = collect(&mut frames, 12).await;
+    let started = report("after 4800 begin_streaming", &h, mp);
+
+    println!("\nPhase C — stop_streaming on IMAGING port (4800), 14s:");
+    client.send_imaging(ImagingCommand::StopStreaming).await?;
+    let (h, mp) = collect(&mut frames, 14).await;
+    let after_stop = report("after 4800 stop_streaming", &h, mp);
+
+    println!("\n== verdict ==");
+    if started == 0 {
+        println!(
+            "INCONCLUSIVE: no image frames flowed in phase B, so there was no \
+             stream to stop (is a star-mode view active?)."
+        );
+    } else if after_stop == 0 {
+        println!(
+            "stop_streaming WORKS: {started} image frames while streaming, 0 after \
+             stop_streaming. The frame stream halted on the imaging port (4800)."
+        );
+    } else {
+        println!(
+            "stop_streaming did NOT halt frames: {started} before, {after_stop} after. \
+             Either it's the wrong method/port, or another client re-started the stream."
+        );
+    }
 
     client.shutdown().await;
     Ok(())
