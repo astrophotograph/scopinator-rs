@@ -1,6 +1,6 @@
 [package]
 name = "scopinator-types"
-version = "0.1.2"
+version = "0.2.0"
 description = "Shared types for the scopinator telescope control library"
 edition.workspace = true
 license.workspace = true
