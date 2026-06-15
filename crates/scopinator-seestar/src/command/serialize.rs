@@ -84,6 +84,7 @@ fn command_params(cmd: &Command) -> Option<Value> {
         Command::IscopeStartStack(Some(p)) => serde_json::to_value(p).ok(),
         Command::IscopeStartStack(None) => None,
         Command::ScopeSpeedMove(p) => serde_json::to_value(p).ok(),
+        Command::StartPolarAlign(p) => serde_json::to_value(p).ok(),
         Command::MoveFocuser(p) => serde_json::to_value(p).ok(),
         Command::PiSetTime(p) => Some(json!([p])),
         Command::SetUserLocation(p) => serde_json::to_value(p).ok(),

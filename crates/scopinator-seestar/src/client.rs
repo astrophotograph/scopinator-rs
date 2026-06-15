@@ -1,13 +1,15 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::{debug, info};
 
 use crate::auth::InteropKey;
-use crate::command::params::{Direction, SpeedMoveParams};
+use crate::command::params::{
+    Direction, PolarAlignParams, SetTimeParams, SetUserLocationParams, SpeedMoveParams,
+};
 use crate::command::{Command, ImagingCommand};
 use crate::connection::control::{self, ClientRequest};
 use crate::connection::imaging::{self, ImageFrame};
@@ -295,6 +297,74 @@ impl SeestarClient {
     pub async fn stop_jog(&self) -> Result<CommandResponse, SeestarError> {
         self.send_command(Command::ScopeSpeedMove(SpeedMoveParams::stop()))
             .await
+    }
+
+    /// Start the telescope's auto-focus routine (`start_auto_focuse` — the
+    /// firmware's spelling is intentional).
+    ///
+    /// Auto-focus requires the scope to be polar-aligned and able to see stars;
+    /// it fails from a fresh, unaligned park. Use
+    /// [`stop_auto_focus`](Self::stop_auto_focus) to cancel an in-progress run.
+    pub async fn start_auto_focus(&self) -> Result<CommandResponse, SeestarError> {
+        self.send_command(Command::StartAutoFocus).await
+    }
+
+    /// Cancel an in-progress auto-focus routine (`stop_auto_focuse`).
+    pub async fn stop_auto_focus(&self) -> Result<CommandResponse, SeestarError> {
+        self.send_command(Command::StopAutoFocus).await
+    }
+
+    /// Send the basic startup commands: set the telescope clock (UTC, from the
+    /// local system clock) and the observing location, then return its
+    /// verification status.
+    ///
+    /// This does **not** perform polar alignment — call
+    /// [`start_polar_align`](Self::start_polar_align) separately (EQ mode, clear
+    /// sky). For a specific local time-zone string, build the [`SetTimeParams`]
+    /// yourself and send [`Command::PiSetTime`] instead of using this helper.
+    ///
+    /// Returns `true` if the scope reports itself verified (`pi_is_verified`).
+    pub async fn startup(&self, lat: f64, lon: f64) -> Result<bool, SeestarError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.send_and_validate(Command::PiSetTime(SetTimeParams::from_unix_utc(now)))
+            .await?;
+        self.send_and_validate(Command::SetUserLocation(SetUserLocationParams {
+            lat,
+            lon,
+            force: true,
+        }))
+        .await?;
+        // `pi_is_verified` returns a bare boolean `result` (some firmware nests
+        // it under `is_verified`); treat anything else as not verified.
+        let resp = self.send_command(Command::PiIsVerified).await?;
+        Ok(resp
+            .result
+            .as_ref()
+            .and_then(|r| {
+                r.as_bool()
+                    .or_else(|| r.get("is_verified").and_then(|v| v.as_bool()))
+            })
+            .unwrap_or(false))
+    }
+
+    /// Trigger EQ-mode 3-point polar alignment ("3PPA", `start_polar_align`).
+    ///
+    /// Requires the mount to be in EQ mode and able to see stars (it images and
+    /// plate-solves); it fails otherwise. `restart` begins a fresh alignment;
+    /// `dec_pos_index` selects the declination position for the points.
+    pub async fn start_polar_align(
+        &self,
+        restart: bool,
+        dec_pos_index: i32,
+    ) -> Result<CommandResponse, SeestarError> {
+        self.send_command(Command::StartPolarAlign(PolarAlignParams {
+            restart,
+            dec_pos_index,
+        }))
+        .await
     }
 
     /// Returns true if the control connection is currently alive.

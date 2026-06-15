@@ -164,6 +164,48 @@ pub struct SetTimeParams {
     pub time_zone: String,
 }
 
+impl SetTimeParams {
+    /// Build from a UTC Unix timestamp (seconds), with `time_zone = "UTC"`.
+    ///
+    /// The telescope derives sidereal time from UTC + longitude, so setting UTC
+    /// is astronomically correct. If you need a specific local time-zone *name*
+    /// (e.g. for display in saved frames), construct [`SetTimeParams`] yourself
+    /// with local time components and the IANA zone string.
+    pub fn from_unix_utc(unix_secs: i64) -> Self {
+        let days = unix_secs.div_euclid(86_400);
+        let sod = unix_secs.rem_euclid(86_400);
+        // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+        let z = days + 719_468;
+        let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let mon = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = if mon <= 2 { y + 1 } else { y };
+        Self {
+            year: year as i32,
+            mon: mon as i32,
+            day: day as i32,
+            hour: (sod / 3_600) as i32,
+            min: (sod % 3_600 / 60) as i32,
+            sec: (sod % 60) as i32,
+            time_zone: "UTC".into(),
+        }
+    }
+}
+
+/// Parameters for `start_polar_align` (EQ-mode 3-point polar alignment, "3PPA").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolarAlignParams {
+    /// Restart the alignment from scratch.
+    pub restart: bool,
+    /// Declination position index for the alignment points.
+    pub dec_pos_index: i32,
+}
+
 /// Parameters for `set_setting`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SettingParams {
@@ -276,6 +318,27 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Direction::North).unwrap(),
             "\"north\""
+        );
+    }
+
+    #[test]
+    fn set_time_from_unix_utc_decodes_known_timestamps() {
+        let epoch = SetTimeParams::from_unix_utc(0);
+        assert_eq!(
+            (
+                epoch.year, epoch.mon, epoch.day, epoch.hour, epoch.min, epoch.sec
+            ),
+            (1970, 1, 1, 0, 0, 0)
+        );
+        assert_eq!(epoch.time_zone, "UTC");
+
+        // 1609459200 = 2021-01-01 00:00:00 UTC.
+        let y2021 = SetTimeParams::from_unix_utc(1_609_459_200);
+        assert_eq!(
+            (
+                y2021.year, y2021.mon, y2021.day, y2021.hour, y2021.min, y2021.sec
+            ),
+            (2021, 1, 1, 0, 0, 0)
         );
     }
 }

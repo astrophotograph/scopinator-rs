@@ -90,6 +90,11 @@ pub enum Command {
     StartSolve,
     StartScanPlanet,
 
+    // -- Alignment --
+    /// EQ-mode 3-point polar alignment ("3PPA"). Requires a clear view of the
+    /// sky; EQ mode only.
+    StartPolarAlign(PolarAlignParams),
+
     // -- Plans --
     SetViewPlan(serde_json::Value),
     StopViewPlan,
@@ -148,6 +153,7 @@ pub fn command_method_names() -> &'static [&'static str] {
         "get_stacked_img",
         "start_solve",
         "start_scan_planet",
+        "start_polar_align",
         "set_view_plan",
         "stop_func",
     ]
@@ -205,6 +211,7 @@ impl Command {
             Self::GetStackedImage => "get_stacked_img",
             Self::StartSolve => "start_solve",
             Self::StartScanPlanet => "start_scan_planet",
+            Self::StartPolarAlign(_) => "start_polar_align",
             Self::SetViewPlan(_) => "set_view_plan",
             Self::StopViewPlan => "stop_func",
         }
@@ -346,6 +353,10 @@ mod tests {
             Command::GetStackedImage,
             Command::StartSolve,
             Command::StartScanPlanet,
+            Command::StartPolarAlign(PolarAlignParams {
+                restart: true,
+                dec_pos_index: 0,
+            }),
             Command::SetViewPlan(json!({})),
             Command::StopViewPlan,
         ]
