@@ -266,7 +266,7 @@ impl SeestarClient {
     /// scenery modes use a separate RTSP stream instead.
     ///
     /// Call this after entering a view with
-    /// [`Command::IscopeStartView`](crate::command::Command::IscopeStartView) on
+    /// [`Command::IscopeStartView`] on
     /// the control port — `begin_streaming` starts the frame pipe, not the view.
     pub async fn begin_streaming(&self) -> Result<(), SeestarError> {
         self.send_imaging(ImagingCommand::BeginStreaming).await

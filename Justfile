@@ -20,8 +20,11 @@ lint:
 test:
     cargo test --workspace --all-features
 
-# Run fmt-check + clippy + test in one shot. What CI runs.
-ci: fmt-check lint test
+doc:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
+# Run fmt-check + clippy + test + doc in one shot. What CI (.github/workflows/ci.yml) runs.
+ci: fmt-check lint test doc
 
 # --- Session corpus / conformance / cross-language parity. ---
 
