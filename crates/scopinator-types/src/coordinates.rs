@@ -184,6 +184,136 @@ mod tests {
         assert!(s.starts_with("-22d 30'"));
     }
 
+    // ---- Differential tests mirroring pyscopinator
+    // tests/v2/test_core_types.py (Forge task: "Add differential coordinate
+    // tests mirroring core types oracle"). Python takes RA in degrees directly
+    // (`Coordinates(ra=..., dec=...)`); Rust splits it into RaDegrees/DecDegrees.
+
+    // Python: TestCoordinates::test_create_coordinates
+    #[test]
+    fn py_test_create_coordinates() {
+        let c = Coordinates::new(
+            RaDegrees::new(10.5).unwrap(),
+            DecDegrees::new(45.0).unwrap(),
+        );
+        assert_eq!(c.ra.as_degrees(), 10.5);
+        assert_eq!(c.dec.as_degrees(), 45.0);
+        assert_eq!(c.epoch, Epoch::J2000);
+    }
+
+    // Python: TestCoordinates::test_ra_validation
+    #[test]
+    fn py_test_ra_validation() {
+        assert_eq!(RaDegrees::new(0.0).unwrap().as_degrees(), 0.0);
+        assert_eq!(RaDegrees::new(359.99).unwrap().as_degrees(), 359.99);
+        assert!(RaDegrees::new(-1.0).is_err());
+        // Python rejects ra=360.0 here (pytest.raises(ValueError)); Rust
+        // accepts it, see py_divergence_ra_360_normalizes_to_zero.
+    }
+
+    // Python: TestCoordinates::test_ra_validation (the `ra=360.0` branch)
+    // KNOWN DIVERGENCE (pinned, not fixed): Python `Field(ge=0, lt=360)`
+    // rejects 360.0; Rust normalizes 360.0 -> 0.0 and 24h -> 0.0.
+    // See docs/bugs/ra-360-divergence.md.
+    #[test]
+    fn py_divergence_ra_360_normalizes_to_zero() {
+        let ra = RaDegrees::new(360.0).expect("Rust accepts 360.0 (Python rejects)");
+        assert_eq!(ra.as_degrees(), 0.0);
+
+        let ra = RaDegrees::from_hours(24.0)
+            .expect("Rust accepts 24h (Python has no 24h; 360deg rejected)");
+        assert_eq!(ra.as_degrees(), 0.0);
+
+        let c = Coordinates::from_hours(24.0, 0.0).expect("Rust accepts 24h");
+        assert_eq!(c.ra.as_degrees(), 0.0);
+
+        // Still rejected beyond the tolerance band.
+        assert!(RaDegrees::new(360.1).is_err());
+        assert!(RaDegrees::from_hours(24.1).is_err());
+        assert!(RaDegrees::from_hours(-0.1).is_err());
+    }
+
+    // Python: TestCoordinates::test_dec_validation
+    #[test]
+    fn py_test_dec_validation() {
+        assert_eq!(DecDegrees::new(-90.0).unwrap().as_degrees(), -90.0);
+        assert_eq!(DecDegrees::new(90.0).unwrap().as_degrees(), 90.0);
+        assert!(DecDegrees::new(-91.0).is_err());
+        assert!(DecDegrees::new(91.0).is_err());
+        // Coordinates::from_hours validates Dec as well.
+        assert!(Coordinates::from_hours(0.0, 91.0).is_err());
+        assert!(Coordinates::from_hours(0.0, -91.0).is_err());
+    }
+
+    // Python: TestCoordinates::test_from_hours
+    #[test]
+    fn py_test_from_hours() {
+        let c = Coordinates::from_hours(6.0, 45.0).unwrap();
+        assert_eq!(c.ra.as_degrees(), 90.0); // 6 h * 15
+        assert_eq!(c.dec.as_degrees(), 45.0);
+        assert_eq!(c.epoch, Epoch::J2000);
+    }
+
+    // Python: TestCoordinates::test_ra_hours_property
+    #[test]
+    fn py_test_ra_hours_property() {
+        let c = Coordinates::new(
+            RaDegrees::new(90.0).unwrap(),
+            DecDegrees::new(45.0).unwrap(),
+        );
+        assert_eq!(c.ra.as_hours(), 6.0);
+    }
+
+    // Python: TestCoordinates::test_str_representation
+    // (Rust formats "RA 6h 0m 0.0s Dec +45d 0' 0.0\" (J2000)"; Python only
+    // checks for the substrings "RA" and "Dec".)
+    #[test]
+    fn py_test_str_representation() {
+        let c = Coordinates::new(
+            RaDegrees::new(90.0).unwrap(),
+            DecDegrees::new(45.0).unwrap(),
+        );
+        let s = c.to_string();
+        assert!(s.contains("RA"));
+        assert!(s.contains("Dec"));
+    }
+
+    // Python: TestAltAzCoordinates::test_create_altaz
+    #[test]
+    fn py_test_create_altaz() {
+        let c = AltAzCoordinates {
+            altitude: 45.0,
+            azimuth: 180.0,
+        };
+        assert_eq!(c.altitude, 45.0);
+        assert_eq!(c.azimuth, 180.0);
+    }
+
+    // Python: TestAltAzCoordinates::test_altitude_validation and
+    // ::test_azimuth_validation.
+    // KNOWN DIVERGENCE (pinned, not fixed): Python rejects altitude outside
+    // -90..=90 and azimuth outside 0..360 (ValueError). Rust's
+    // AltAzCoordinates has public fields and no validating constructor, so
+    // every value is accepted. Documented in docs/bugs/ra-360-divergence.md
+    // (secondary section).
+    #[test]
+    fn py_divergence_altaz_has_no_validation() {
+        for (alt, az) in [(-91.0, 0.0), (91.0, 0.0), (0.0, -1.0), (0.0, 360.0)] {
+            let c = AltAzCoordinates {
+                altitude: alt,
+                azimuth: az,
+            };
+            assert_eq!(c.altitude, alt);
+            assert_eq!(c.azimuth, az);
+        }
+        // In-range values from the Python test.
+        let c = AltAzCoordinates {
+            altitude: 0.0,
+            azimuth: 359.99,
+        };
+        assert_eq!(c.azimuth, 359.99);
+    }
+
     mod prop {
         use super::*;
         use proptest::prelude::*;
