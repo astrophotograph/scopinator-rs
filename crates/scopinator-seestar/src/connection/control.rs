@@ -416,3 +416,65 @@ fn flush_pending(state: &Arc<ControlState>) {
         debug!(count, "flushed pending requests on disconnect");
     }
 }
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    /// Run the real heartbeat task under paused time and return the first line it sends.
+    async fn first_heartbeat_line() -> String {
+        let (tx, mut rx) = mpsc::channel::<String>(4);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(heartbeat_task(tx, shutdown_rx));
+
+        // Nothing is sent before the first interval elapses.
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_err());
+
+        tokio::time::advance(HEARTBEAT_INTERVAL + Duration::from_millis(1)).await;
+        let line = rx.recv().await.expect("heartbeat line");
+
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap();
+        line
+    }
+
+    // Characterizes docs/bugs/heartbeat-hardcoded-verify.md (Forge task
+    // "Pin heartbeat verify behavior and write bug report"). pyscopinator's
+    // `_should_inject_verify` only injects "verify" on firmware > 2582; the
+    // Rust heartbeat bypasses `serialize_command` and always injects it.
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_always_sends_hardcoded_verify() {
+        let line = first_heartbeat_line().await;
+        assert_eq!(
+            line,
+            "{\"id\":1,\"method\":\"pi_get_time\",\"params\":[\"verify\"]}\r\n"
+        );
+    }
+
+    // The heartbeat task takes no firmware input, so its bytes are identical
+    // for every firmware. Compare with `serialize_command`: equal on
+    // post-2582 firmware, DIVERGENT on firmware <= 2582 (no params expected).
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_ignores_firmware_unlike_serialize_command() {
+        let line = first_heartbeat_line().await;
+        let sent: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+
+        let post = serialize_command(&Command::PiGetTime, 1, Some(FirmwareVersion(2700)));
+        assert_eq!(sent, post, "post-2582 firmware: heartbeat matches");
+
+        for fw in [2000, FirmwareVersion::VERIFY_THRESHOLD] {
+            let pre = serialize_command(&Command::PiGetTime, 1, Some(FirmwareVersion(fw)));
+            assert!(
+                pre.get("params").is_none(),
+                "fw {fw}: serialize omits verify"
+            );
+            // Pinned current behaviour: heartbeat still carries params.
+            assert_ne!(
+                sent, pre,
+                "fw {fw}: heartbeat diverges from serialize_command"
+            );
+            assert_eq!(sent["params"], serde_json::json!(["verify"]));
+        }
+    }
+}
