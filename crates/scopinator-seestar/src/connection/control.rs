@@ -478,3 +478,224 @@ mod heartbeat_tests {
         }
     }
 }
+
+/// Timeout interplay under paused tokio time (Forge task "Add timeout
+/// interplay tests with paused time"). No Python original: pyscopinator has no
+/// spanning test for these constants either.
+///
+/// These drive the real `run` loop against a real loopback socket. Tokio
+/// auto-advances a paused clock whenever the runtime is idle, which includes
+/// "idle while waiting for a loopback packet" — that makes virtual timestamps
+/// meaningless. So the tests never go idle: they advance virtual time in small
+/// explicit steps (`step`) and poll everything else non-blockingly.
+#[cfg(test)]
+mod timeout_interplay_tests {
+    use super::*;
+    use tokio::net::TcpListener;
+    use tokio::time::Instant;
+
+    /// Mirrors the private `AUTH_TIMEOUT` in `auth.rs` (10 s per handshake read).
+    const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+    const STEP: Duration = Duration::from_millis(10);
+    const TOL: Duration = Duration::from_millis(60);
+
+    /// Advance virtual time one step and let real loopback IO and tasks run.
+    async fn step() {
+        tokio::time::advance(STEP).await;
+        std::thread::sleep(Duration::from_micros(300));
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+    }
+
+    async fn run_for(d: Duration) {
+        let end = Instant::now() + d;
+        while Instant::now() < end {
+            step().await;
+        }
+    }
+
+    /// Server-side view of one accepted control connection.
+    struct Conn {
+        accepted_at: Instant,
+        lines: mpsc::UnboundedReceiver<String>,
+        /// Dropping/sending closes the server end of the socket.
+        close: Option<oneshot::Sender<()>>,
+    }
+
+    impl Conn {
+        fn close(&mut self) {
+            if let Some(tx) = self.close.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    struct Harness {
+        conns: mpsc::UnboundedReceiver<Conn>,
+        connected: Arc<AtomicBool>,
+        shutdown_tx: tokio::sync::watch::Sender<bool>,
+        _request_tx: mpsc::Sender<ClientRequest>,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    async fn start(key: Option<Arc<InteropKey>>) -> Harness {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let (conn_tx, conns) = mpsc::unbounded_channel::<Conn>();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let accepted_at = Instant::now();
+                let (line_tx, lines) = mpsc::unbounded_channel();
+                let (close_tx, mut close_rx) = oneshot::channel::<()>();
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    loop {
+                        let mut s = String::new();
+                        tokio::select! {
+                            n = reader.read_line(&mut s) => match n {
+                                Ok(0) | Err(_) => break,
+                                Ok(_) => { let _ = line_tx.send(s); }
+                            },
+                            _ = &mut close_rx => break,
+                        }
+                    }
+                    // `reader` (and the socket) drops here.
+                });
+                let _ = conn_tx.send(Conn {
+                    accepted_at,
+                    lines,
+                    close: Some(close_tx),
+                });
+            }
+        });
+
+        let (request_tx, request_rx) = mpsc::channel(8);
+        let (event_tx, _) = broadcast::channel(8);
+        let connected = Arc::new(AtomicBool::new(false));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(run(
+            addr,
+            request_rx,
+            event_tx,
+            Arc::clone(&connected),
+            shutdown_rx,
+            key,
+        ));
+        Harness {
+            conns,
+            connected,
+            shutdown_tx,
+            _request_tx: request_tx,
+            handle,
+        }
+    }
+
+    impl Harness {
+        /// Step virtual time until the next connection is accepted (bounded).
+        async fn next_conn(&mut self, within: Duration) -> Conn {
+            let end = Instant::now() + within;
+            loop {
+                if let Ok(c) = self.conns.try_recv() {
+                    return c;
+                }
+                assert!(Instant::now() < end, "no connection within {within:?}");
+                step().await;
+            }
+        }
+
+        /// Signal shutdown and step (bounded) until `run` exits.
+        async fn stop(self) {
+            self.shutdown_tx.send(true).unwrap();
+            let end = Instant::now() + Duration::from_secs(60);
+            while !self.handle.is_finished() {
+                assert!(Instant::now() < end, "run did not exit after shutdown");
+                step().await;
+            }
+        }
+    }
+
+    // Forge task: "Heartbeat behavior across a reconnect window".
+    // Pinned: after the socket dies the control loop reconnects after the 1 s
+    // policy backoff, and the new connection gets a fresh heartbeat task whose
+    // first beat comes a full HEARTBEAT_INTERVAL after the reconnect — not
+    // sooner, and not carried over from the dead connection's timer.
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_restarts_with_fresh_interval_after_reconnect() {
+        let mut h = start(None).await;
+
+        let mut c1 = h.next_conn(Duration::from_secs(1)).await;
+        run_for(HEARTBEAT_INTERVAL + Duration::from_millis(100)).await;
+        let hb = c1.lines.try_recv().expect("first heartbeat");
+        assert!(hb.contains("pi_get_time"), "got {hb:?}");
+        run_for(HEARTBEAT_INTERVAL).await;
+        assert!(c1.lines.try_recv().is_ok(), "second heartbeat");
+
+        // Kill the connection from the telescope side.
+        c1.close();
+        let dead_at = Instant::now();
+
+        let mut c2 = h.next_conn(Duration::from_secs(30)).await;
+        let backoff = c2.accepted_at - dead_at;
+        assert!(
+            backoff >= Duration::from_secs(1) && backoff <= Duration::from_secs(1) + TOL,
+            "reconnected after {backoff:?}"
+        );
+        assert!(h.connected.load(Ordering::Acquire));
+
+        // No heartbeat until (almost) a full interval on the new connection...
+        run_for(HEARTBEAT_INTERVAL - Duration::from_millis(200)).await;
+        assert!(c2.lines.try_recv().is_err(), "heartbeat arrived early");
+        // ...then exactly one.
+        run_for(Duration::from_millis(400)).await;
+        let hb2 = c2.lines.try_recv().expect("heartbeat on new connection");
+        assert!(hb2.contains("pi_get_time"));
+        assert!(c2.lines.try_recv().is_err());
+
+        c2.close();
+        h.stop().await;
+    }
+
+    // Forge task: "Auth timeout mid-handshake -> connection retries per
+    // ReconnectPolicy backoff". The telescope accepts and reads
+    // `get_verify_str` but never answers. Pinned: each attempt fails after
+    // AUTH_TIMEOUT, then waits the policy backoff; because the policy is only
+    // reset on a *successful* auth, backoff escalates 1 s, 2 s, 4 s. The
+    // control connection is never advertised as connected.
+    #[tokio::test(start_paused = true)]
+    async fn auth_timeout_retries_with_escalating_backoff() {
+        use rsa::pkcs8::EncodePrivateKey;
+        let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 512).unwrap();
+        let pem = private.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let key = Arc::new(InteropKey::from_pem(pem.as_str()).unwrap());
+
+        let mut h = start(Some(key)).await;
+
+        let mut conns = Vec::new();
+        for _ in 0..4 {
+            let mut c = h.next_conn(Duration::from_secs(30)).await;
+            step().await;
+            let line = c.lines.try_recv().expect("handshake request");
+            assert!(line.contains("get_verify_str"), "got {line:?}");
+            assert!(!h.connected.load(Ordering::Acquire));
+            conns.push(c); // keep open: silence, not EOF
+        }
+
+        let gaps: Vec<Duration> = conns
+            .windows(2)
+            .map(|w| w[1].accepted_at - w[0].accepted_at)
+            .collect();
+        for (gap, backoff) in gaps.iter().zip([1u64, 2, 4]) {
+            let want = AUTH_TIMEOUT + Duration::from_secs(backoff);
+            assert!(
+                *gap >= want && *gap <= want + TOL,
+                "gap {gap:?}, expected ~{want:?}"
+            );
+        }
+
+        for c in &mut conns {
+            c.close();
+        }
+        h.stop().await;
+    }
+}

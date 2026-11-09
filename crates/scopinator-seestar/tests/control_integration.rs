@@ -254,6 +254,78 @@ async fn send_command_times_out_when_unanswered() {
     client.shutdown().await;
 }
 
+// Forge task "Add timeout interplay tests with paused time", case 2.
+// While the control connection is down (reconnect backoff is 1 s), a caller
+// whose response timeout (500 ms) is shorter than the backoff gets
+// `Timeout`, not a hang and not `Disconnected`. Pinned side effect: the
+// request stays queued and is still written to the telescope after the
+// reconnect, even though the caller already gave up.
+#[tokio::test(start_paused = true)]
+async fn response_timeout_fires_during_reconnect_window() {
+    let fake = FakeSeestar::start().await;
+    let config = SeestarConfig {
+        response_timeout: Some(Duration::from_millis(500)),
+        ..Default::default()
+    };
+    let client = SeestarClient::connect_with_ports_and_config(
+        LOCALHOST,
+        fake.control_addr,
+        fake.imaging_addr,
+        config,
+    )
+    .await
+    .expect("connect");
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .unwrap();
+
+    fake.drop_connection();
+    // Wait (bounded, virtual) until the client notices the drop.
+    let mut noticed = false;
+    for _ in 0..50 {
+        if !client.is_control_connected() {
+            noticed = true;
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(5)).await;
+        tokio::task::yield_now().await;
+    }
+    assert!(noticed, "client never noticed the dropped connection");
+
+    let start = tokio::time::Instant::now();
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.send_command(Command::GetDeviceState),
+    )
+    .await
+    .expect("send_command must not hang")
+    .unwrap_err();
+    assert!(
+        matches!(err, SeestarError::Timeout(d) if d == Duration::from_millis(500)),
+        "got {err:?}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(1));
+
+    // After the reconnect, the abandoned request is still delivered.
+    let mut delivered = false;
+    for _ in 0..100 {
+        if fake.connection_count() >= 2
+            && fake
+                .received()
+                .iter()
+                .any(|m| m.get("method").and_then(Value::as_str) == Some("get_device_state"))
+        {
+            delivered = true;
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+    }
+    assert!(delivered, "stale request was not delivered after reconnect");
+    client.shutdown().await;
+}
+
 #[tokio::test]
 async fn firmware_detected_then_used_for_subsequent_commands() {
     // After a get_device_state carrying fw 2706, the client keeps injecting
