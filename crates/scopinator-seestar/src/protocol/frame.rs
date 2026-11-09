@@ -134,6 +134,50 @@ mod tests {
         assert!(FrameHeader::parse(&buf).is_image());
     }
 
+    /// Shared vectors in `conformance/vectors/frame_headers.json`; the Python
+    /// oracle (`conformance/parity/check_frame_vectors.py`) checks the same
+    /// file with `struct.unpack(">HHHIHHBBHH")`.
+    /// Forge task: "Add shared frame header differential vectors".
+    #[test]
+    fn shared_frame_header_vectors() {
+        let raw = include_str!("../../../../conformance/vectors/frame_headers.json");
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let vectors = doc["vectors"].as_array().unwrap();
+        assert!(!vectors.is_empty());
+        for v in vectors {
+            let name = v["name"].as_str().unwrap();
+            let hex = v["header_hex"].as_str().unwrap();
+            assert_eq!(hex.len(), HEADER_SIZE * 2, "{name}: bad hex length");
+            let mut buf = [0u8; HEADER_SIZE];
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+            }
+            let h = FrameHeader::parse(&buf);
+            let e = &v["expected"];
+            assert_eq!(
+                u64::from(h.size),
+                e["size"].as_u64().unwrap(),
+                "{name}: size"
+            );
+            assert_eq!(
+                u64::from(h.code),
+                e["code"].as_u64().unwrap(),
+                "{name}: code"
+            );
+            assert_eq!(u64::from(h.id), e["id"].as_u64().unwrap(), "{name}: id");
+            assert_eq!(
+                u64::from(h.width),
+                e["width"].as_u64().unwrap(),
+                "{name}: width"
+            );
+            assert_eq!(
+                u64::from(h.height),
+                e["height"].as_u64().unwrap(),
+                "{name}: height"
+            );
+        }
+    }
+
     proptest::proptest! {
         #[test]
         fn parse_never_panics(buf in proptest::collection::vec(proptest::prelude::any::<u8>(), HEADER_SIZE..=HEADER_SIZE)) {
