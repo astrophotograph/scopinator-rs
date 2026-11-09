@@ -102,9 +102,10 @@ mod tests {
     /// Literal expected schedule, deliberately not derived from the code
     /// under test: 1,2,4,8,16,32,60,60,... seconds, reset-on-success.
     /// Python oracle: `pyscopinator/src/scopinator/seestar/connection.py`
-    /// reconnect/backoff constants. NOTE: the Python constants were NOT
-    /// verified when this test was written (sibling checkout unreadable
-    /// from the worker sandbox); see the journal entry for the follow-up.
+    /// (`_do_reconnect_with_backoff`): `min(1.0 * 2**min(n-1, 6), 60.0)`,
+    /// reset on success — the same deterministic series. Python adds 0–1 s
+    /// of jitter and has a separate reboot-detected schedule (5 s → 40 s);
+    /// both are documented, not pinned, in docs/bugs/reconnect-backoff-parity.md.
     #[test]
     fn reconnect_backoff_matches_python_schedule_spec() {
         let expected_secs: [u64; 10] = [1, 2, 4, 8, 16, 32, 60, 60, 60, 60];
