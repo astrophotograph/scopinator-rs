@@ -97,6 +97,47 @@ mod tests {
         assert_eq!(p.next_backoff(), MIN_BACKOFF);
     }
 
+    /// Parity spec (Forge task "Add ReconnectPolicy parity spec test").
+    ///
+    /// Literal expected schedule, deliberately not derived from the code
+    /// under test: 1,2,4,8,16,32,60,60,... seconds, reset-on-success.
+    /// Python oracle: `pyscopinator/src/scopinator/seestar/connection.py`
+    /// reconnect/backoff constants. NOTE: the Python constants were NOT
+    /// verified when this test was written (sibling checkout unreadable
+    /// from the worker sandbox); see the journal entry for the follow-up.
+    #[test]
+    fn reconnect_backoff_matches_python_schedule_spec() {
+        let expected_secs: [u64; 10] = [1, 2, 4, 8, 16, 32, 60, 60, 60, 60];
+        let mut p = ReconnectPolicy::new();
+        for (i, secs) in expected_secs.iter().enumerate() {
+            assert_eq!(
+                p.next_backoff(),
+                Duration::from_secs(*secs),
+                "failure #{}",
+                i + 1
+            );
+            assert_eq!(p.failures(), i as u32 + 1);
+        }
+
+        // Reset-on-success: schedule restarts from the beginning, twice over.
+        for _ in 0..2 {
+            p.reset();
+            assert_eq!(p.failures(), 0);
+            for secs in &expected_secs[..8] {
+                assert_eq!(p.next_backoff(), Duration::from_secs(*secs));
+            }
+        }
+
+        // Reset mid-ramp (after 3 failures) also restarts at 1s.
+        let mut q = ReconnectPolicy::default();
+        for _ in 0..3 {
+            q.next_backoff();
+        }
+        q.reset();
+        assert_eq!(q.next_backoff(), Duration::from_secs(1));
+        assert_eq!(q.next_backoff(), Duration::from_secs(2));
+    }
+
     proptest! {
         #[test]
         fn backoff_never_exceeds_max(failures in 0u32..256) {
