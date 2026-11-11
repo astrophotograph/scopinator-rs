@@ -220,6 +220,41 @@ mod tests {
         assert!(matches!(event, SeestarEvent::Unknown));
     }
 
+    // Characterizes the observability gap filed in
+    // docs/bugs/response-drop-timeout.md (Forge task "Characterize silent
+    // drop paths and write bug report"). Serde's `#[serde(other)]` requires a
+    // unit variant, so an unmodeled event loses both its wire tag and its
+    // payload at deserialization: consumers see only `Unknown` and cannot
+    // tell which event fired, let alone what it carried. The only signal is
+    // the connection reader's `warn!` in `handle_event` (control.rs), which
+    // logs the raw event name at runtime. Pinned as-is, not fixed here.
+    #[test]
+    fn unknown_event_drops_tag_and_payload() {
+        let json = r#"{
+            "Event": "SomeFutureEvent",
+            "Timestamp": "1234567890.0",
+            "state": "complete",
+            "count": 3
+        }"#;
+        let event: SeestarEvent = serde_json::from_str(json).unwrap();
+        // The match binds nothing: `Unknown` is a unit variant, so there is
+        // no payload field to read.
+        match &event {
+            SeestarEvent::Unknown => {}
+            other => panic!("expected Unknown, got {}", other.name()),
+        }
+        // The wire tag ("SomeFutureEvent") is not recoverable either:
+        // name() reports the catch-all.
+        assert_eq!(event.name(), "Unknown");
+
+        // A different unmodeled tag is indistinguishable from the first —
+        // firmware drift is invisible to broadcast subscribers.
+        let other_event: SeestarEvent =
+            serde_json::from_str(r#"{"Event": "AnotherFutureEvent", "data": 99}"#).unwrap();
+        assert!(matches!(&other_event, SeestarEvent::Unknown));
+        assert_eq!(other_event.name(), event.name());
+    }
+
     #[test]
     fn deserialize_scope_track_event() {
         let json = r#"{

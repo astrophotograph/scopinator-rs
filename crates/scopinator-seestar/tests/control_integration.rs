@@ -213,6 +213,45 @@ async fn malformed_json_line_is_skipped() {
     client.shutdown().await;
 }
 
+// Characterizes the Unknown-event half of docs/bugs/response-drop-timeout.md
+// (Forge task "Characterize silent drop paths and write bug report"). An event
+// whose `Event` tag no `SeestarEvent` variant models still reaches broadcast
+// subscribers — but only as `SeestarEvent::Unknown`: serde's `#[serde(other)]`
+// requires a unit variant, so the wire tag and payload are discarded. Pinned:
+// subscribers get `Unknown` (nothing else to see), and the broadcast stream
+// keeps flowing — a modeled event sent afterwards still arrives.
+#[tokio::test]
+async fn unknown_event_broadcast_as_unknown_and_stream_continues() {
+    let fake = FakeSeestar::start().await;
+    let client = connect(&fake).await;
+    let mut events = client.subscribe_events();
+
+    fake.send_event(json!({
+        "Event": "SomeFutureEvent",
+        "Timestamp": "1234567890.0",
+        "state": "complete",
+        "count": 3
+    }));
+
+    let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("event within timeout")
+        .expect("event recv");
+    // GAP (characterized, not fixed): the payload — and even the wire tag —
+    // are inaccessible on the delivered value.
+    assert!(matches!(&ev, SeestarEvent::Unknown));
+    assert_eq!(ev.name(), "Unknown");
+
+    // The subscriber stream continues after the unknown event.
+    fake.send_event(corpus_event("PiStatus"));
+    let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("event within timeout")
+        .expect("event recv");
+    assert!(matches!(ev, SeestarEvent::PiStatus(_)));
+    client.shutdown().await;
+}
+
 #[tokio::test]
 async fn send_command_times_out_when_unanswered() {
     let fake = FakeSeestar::start().await;
@@ -323,6 +362,95 @@ async fn response_timeout_fires_during_reconnect_window() {
         tokio::task::yield_now().await;
     }
     assert!(delivered, "stale request was not delivered after reconnect");
+    client.shutdown().await;
+}
+
+// Characterizes docs/bugs/response-drop-timeout.md (Forge task "Characterize
+// silent drop paths and write bug report"). A response-shaped message (id +
+// code present, so `json_rpc::is_response` classifies it) whose body fails
+// `CommandResponse` deserialization is warn-and-dropped in `handle_response`
+// (control.rs) — even when its id matches a pending request. Pinned: the
+// waiting caller gets no correlation error and eats the full configured
+// response timeout (500 ms here; `DEFAULT_RESPONSE_TIMEOUT` = 30 s in
+// production), while the connection stays healthy — the error is `Timeout`,
+// not `Disconnected`, and the reader keeps processing (the event pushed after
+// the garbage body still arrives).
+#[tokio::test(start_paused = true)]
+async fn malformed_response_for_pending_id_is_dropped_and_caller_times_out() {
+    let fake = FakeSeestar::start().await;
+    fake.silent_on("get_view_state");
+    let config = SeestarConfig {
+        response_timeout: Some(Duration::from_millis(500)),
+        ..Default::default()
+    };
+    let client = std::sync::Arc::new(
+        SeestarClient::connect_with_ports_and_config(
+            LOCALHOST,
+            fake.control_addr,
+            fake.imaging_addr,
+            config,
+        )
+        .await
+        .expect("connect"),
+    );
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .expect("control connected");
+    let mut events = client.subscribe_events();
+
+    let start = tokio::time::Instant::now();
+    let send = {
+        let client = std::sync::Arc::clone(&client);
+        tokio::spawn(async move { client.send_command(Command::GetViewState).await })
+    };
+
+    // Wait (bounded, virtual time) until the command reaches the fake, then
+    // read back the id the registry allocated for it. By then the request is
+    // registered as pending, so the garbage below really is dropped for a
+    // live waiter.
+    let mut id = None;
+    for _ in 0..200 {
+        if let Some(msg) = fake
+            .received()
+            .iter()
+            .find(|m| m.get("method").and_then(Value::as_str) == Some("get_view_state"))
+        {
+            id = msg.get("id").and_then(Value::as_u64);
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+    let id = id.expect("fake never received the command");
+
+    // Response-shaped for the pending id, but with a body that cannot
+    // deserialize: `code` is present (so `is_response` classifies it) yet
+    // string-typed where `CommandResponse::code: i32` wants an integer.
+    fake.send_raw_line(&format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"get_view_state","code":"garbage"}}"#
+    ));
+
+    // The reader survives the warn-and-drop: a later event still flows.
+    fake.send_event(corpus_event("PiStatus"));
+
+    let err = tokio::time::timeout(Duration::from_secs(5), send)
+        .await
+        .expect("send_command must not hang")
+        .expect("send task join")
+        .unwrap_err();
+    // The caller ate the full timeout rather than erroring promptly.
+    assert!(start.elapsed() >= Duration::from_millis(500));
+    assert!(
+        matches!(err, SeestarError::Timeout(d) if d == Duration::from_millis(500)),
+        "got {err:?}"
+    );
+
+    let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("event within timeout")
+        .expect("event recv");
+    assert!(matches!(ev, SeestarEvent::PiStatus(_)));
     client.shutdown().await;
 }
 
