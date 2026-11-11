@@ -313,17 +313,119 @@ mod tests {
 
     #[tokio::test]
     async fn read_frame_oversized_payload_errors() {
-        let header = make_header(MAX_PAYLOAD_SIZE + 1, frame_id::VIEW, 0, 0);
+        // Rejection boundary (Forge task: "Add imaging allocation pressure
+        // tests"): one byte over the cap and the extreme u32::MAX claim are
+        // both rejected *before* the payload buffer is allocated, so a
+        // hostile header can never make `read_frame` reserve more than
+        // MAX_PAYLOAD_SIZE.
+        for claimed in [MAX_PAYLOAD_SIZE + 1, u32::MAX] {
+            let header = make_header(claimed, frame_id::VIEW, 0, 0);
+            let mut mock = tokio_test::io::Builder::new().read(&header).build();
+            let mut buf = [0u8; HEADER_SIZE];
+            let err = read_frame(&mut mock, &mut buf).await.unwrap_err();
+            match err {
+                SeestarError::FrameTooLarge { size, limit } => {
+                    assert_eq!(size, claimed);
+                    assert_eq!(limit, MAX_PAYLOAD_SIZE);
+                }
+                other => panic!("expected FrameTooLarge, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_frame_exactly_at_cap_is_accepted() {
+        // Characterization (Forge task: "Add imaging allocation pressure
+        // tests"): the cap check is `size > MAX_PAYLOAD_SIZE`, so a header
+        // announcing exactly the cap (50 MiB) is accepted, and the full
+        // 50 MiB buffer is reserved before a single payload byte has
+        // arrived. A true end-to-end success at the cap would mean pushing
+        // 50 MiB through the stream, which these tests deliberately avoid;
+        // acceptance is pinned via the truncated-stream path instead: no
+        // FrameTooLarge error, the read proceeds into the payload phase,
+        // then EOF maps to Ok(None).
+        let header = make_header(MAX_PAYLOAD_SIZE, frame_id::VIEW, 1920, 1080);
         let mut mock = tokio_test::io::Builder::new().read(&header).build();
         let mut buf = [0u8; HEADER_SIZE];
-        let err = read_frame(&mut mock, &mut buf).await.unwrap_err();
-        match err {
-            SeestarError::FrameTooLarge { size, limit } => {
-                assert_eq!(size, MAX_PAYLOAD_SIZE + 1);
-                assert_eq!(limit, MAX_PAYLOAD_SIZE);
-            }
-            other => panic!("expected FrameTooLarge, got {other:?}"),
+
+        let frame = read_frame(&mut mock, &mut buf)
+            .await
+            .expect("exactly MAX_PAYLOAD_SIZE must pass the size check");
+        assert!(frame.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_frame_near_cap_header_truncated_returns_none() {
+        // Characterization (Forge task: "Add imaging allocation pressure
+        // tests"): the imaging port has no auth gate, and a header just under
+        // the cap (49 MiB) is accepted by the size check; `read_frame` then
+        // eagerly reserves the full 49 MiB payload buffer before reading a
+        // single payload byte. When the peer truncates the connection
+        // mid-payload, the partial `read_exact` surfaces as Ok(None) —
+        // exactly the "clean EOF" a graceful close would produce — so the
+        // caller cannot distinguish a truncated frame from an orderly
+        // shutdown, and the large reservation was made for nothing. A caller
+        // would want a distinct error here (and ideally a read strategy that
+        // does not pre-reserve the announced size). Today's behavior:
+        // Ok(None), promptly, no hang.
+        const NEAR_CAP: u32 = 49 * 1024 * 1024;
+
+        let header = make_header(NEAR_CAP, frame_id::VIEW, 1920, 1080);
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(&[0u8; 1024]) // a sliver of payload, then the stream is cut
+            .build();
+        let mut buf = [0u8; HEADER_SIZE];
+
+        // Paused-clock guard: fires only (deterministically) if `read_frame`
+        // were to wedge on a truncated near-cap frame instead of erroring.
+        let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut mock, &mut buf))
+            .await
+            .expect("read_frame must not hang on a truncated near-cap frame")
+            .expect("49 MiB is under the cap: must not be rejected as FrameTooLarge");
+
+        assert!(frame.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_frame_sequential_large_frames_complete() {
+        // Characterization (Forge task: "Add imaging allocation pressure
+        // tests"): each `read_frame` call allocates one payload buffer and
+        // hands it to the caller inside `ImageFrame`; `read_frame` itself
+        // accumulates nothing between calls. RSS cannot be measured from a
+        // unit test, so pin the bounded shape instead: several sequential
+        // large-header frames each complete, and dropping each frame releases
+        // its allocation before the next one is read. (1 MiB per frame keeps
+        // the total bytes written far below the "no tens of megabytes of
+        // payload" rule while still exercising the large-allocation path.)
+        const FRAME_BYTES: usize = 1024 * 1024;
+
+        let header = make_header(FRAME_BYTES as u32, frame_id::VIEW, 1920, 1080);
+        let payload = vec![0x5A; FRAME_BYTES];
+
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(&payload)
+            .read(&header)
+            .read(&payload)
+            .read(&header)
+            .read(&payload)
+            .read(&header)
+            .read(&payload)
+            .build();
+        let mut buf = [0u8; HEADER_SIZE];
+
+        for i in 0..4 {
+            let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+            assert_eq!(frame.header.size as usize, FRAME_BYTES, "frame {i}");
+            assert_eq!(frame.data.len(), FRAME_BYTES, "frame {i}");
+            assert!(frame.data.iter().all(|&b| b == 0x5A), "frame {i}");
+            // Drop the frame (and its 1 MiB payload) before reading the next.
+            drop(frame);
         }
+
+        // All frames consumed; the stream ends in a clean EOF.
+        assert!(read_frame(&mut mock, &mut buf).await.unwrap().is_none());
     }
 
     #[tokio::test]
