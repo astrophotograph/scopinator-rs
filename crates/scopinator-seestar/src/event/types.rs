@@ -168,3 +168,59 @@ pub struct SaveImageEventData {
     #[serde(default)]
     pub fullname: String,
 }
+
+// Ported from pyscopinator's tests/unit/test_events.py. These pin the
+// wire-string behavior of the closed enums that live in this module at the
+// enum level; the event-level counterparts (parsing a full message through
+// SeestarEvent) are in event/mod.rs.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Mirrors TestEventStates::test_valid_states (the string half; the None
+    // case lives at the event level in event/mod.rs): every EventState value
+    // deserializes from its snake_case wire string.
+    #[test]
+    fn event_state_deserializes_snake_case_strings() {
+        let cases = [
+            ("\"start\"", EventState::Start),
+            ("\"cancel\"", EventState::Cancel),
+            ("\"working\"", EventState::Working),
+            ("\"complete\"", EventState::Complete),
+            ("\"fail\"", EventState::Fail),
+        ];
+        for (wire, expected) in cases {
+            assert_eq!(serde_json::from_str::<EventState>(wire).unwrap(), expected);
+        }
+    }
+
+    // Mirrors TestEventStates::test_invalid_state_raises: EventState is a
+    // closed enum, so an unknown string is a deserialization error.
+    #[test]
+    fn event_state_rejects_unknown_strings() {
+        let err = serde_json::from_str::<EventState>("\"invalid_state_xyz\"").unwrap_err();
+        assert!(err.to_string().contains("invalid_state_xyz"));
+    }
+
+    // Mirrors TestPiStatusEvent::test_invalid_charger_status (the event-level
+    // counterpart is in event/mod.rs): ChargerStatus is a closed enum whose
+    // four wire strings all deserialize, including the spaced "Not charging"
+    // rename; anything else errors.
+    #[test]
+    fn charger_status_deserializes_known_values_only() {
+        let cases = [
+            ("\"Discharging\"", ChargerStatus::Discharging),
+            ("\"Charging\"", ChargerStatus::Charging),
+            ("\"Full\"", ChargerStatus::Full),
+            ("\"Not charging\"", ChargerStatus::NotCharging),
+        ];
+        for (wire, expected) in cases {
+            assert_eq!(
+                serde_json::from_str::<ChargerStatus>(wire).unwrap(),
+                expected
+            );
+        }
+        let err = serde_json::from_str::<ChargerStatus>("\"InvalidStatus\"").unwrap_err();
+        assert!(err.to_string().contains("InvalidStatus"));
+    }
+}
