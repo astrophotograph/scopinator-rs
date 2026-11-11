@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
@@ -197,6 +197,10 @@ pub fn strip_verify(params: Option<&Value>) -> Stripped {
 enum ServerAction {
     /// Write a raw line (terminator appended if missing).
     SendLine(String),
+    /// Write raw bytes exactly as given — no terminator appended. Used to
+    /// deliver a line split across multiple writes (partial-read reassembly
+    /// tests); the bytes concatenate with any other in-flight fragment.
+    SendFragment(String),
     /// Close the current connection (EOF to the client).
     Drop,
 }
@@ -210,8 +214,13 @@ struct Shared {
     silent_on: Mutex<HashSet<String>>,
     /// Every client message the server has received, in order.
     received: Mutex<Vec<Value>>,
+    /// Every raw line the server has read, exactly as it arrived on the wire
+    /// (line terminator included).
+    raw_lines: Mutex<Vec<String>>,
     /// Count of accepted control connections (for reconnect assertions).
     connections: AtomicUsize,
+    /// Currently-established control connections: accepted minus ended.
+    active_control: AtomicIsize,
     /// Broadcast of actions to the active connection.
     actions: broadcast::Sender<ServerAction>,
 }
@@ -221,6 +230,8 @@ pub struct FakeSeestar {
     pub control_addr: SocketAddr,
     pub imaging_addr: SocketAddr,
     shared: Arc<Shared>,
+    /// Handle to the control accept-loop task, so tests can stop accepting.
+    accept_task: tokio::task::JoinHandle<()>,
 }
 
 impl FakeSeestar {
@@ -242,12 +253,15 @@ impl FakeSeestar {
             drop_on: Mutex::new(HashSet::new()),
             silent_on: Mutex::new(HashSet::new()),
             received: Mutex::new(Vec::new()),
+            raw_lines: Mutex::new(Vec::new()),
             connections: AtomicUsize::new(0),
+            active_control: AtomicIsize::new(0),
             actions,
         });
 
-        // Control accept loop.
-        {
+        // Control accept loop. The handle is kept so tests can abort it (see
+        // `stop_accepting`).
+        let accept_task = {
             let shared = Arc::clone(&shared);
             tokio::spawn(async move {
                 loop {
@@ -255,11 +269,20 @@ impl FakeSeestar {
                         break;
                     };
                     shared.connections.fetch_add(1, Ordering::SeqCst);
+                    shared.active_control.fetch_add(1, Ordering::SeqCst);
                     let shared = Arc::clone(&shared);
-                    tokio::spawn(async move { serve_control(stream, shared).await });
+                    tokio::spawn(async move {
+                        let shared_for_exit = Arc::clone(&shared);
+                        serve_control(stream, shared).await;
+                        // Every serve_control exit (EOF, error, drop action)
+                        // means the connection has ended.
+                        shared_for_exit
+                            .active_control
+                            .fetch_sub(1, Ordering::SeqCst);
+                    });
                 }
-            });
-        }
+            })
+        };
         // Imaging accept loop — accept and idle so the imaging task stays quiet.
         tokio::spawn(async move {
             loop {
@@ -283,6 +306,7 @@ impl FakeSeestar {
             control_addr,
             imaging_addr,
             shared,
+            accept_task,
         }
     }
 
@@ -348,6 +372,17 @@ impl FakeSeestar {
             .send(ServerAction::SendLine(line.to_string()));
     }
 
+    /// Push raw bytes with no terminator appended, letting a test deliver one
+    /// line split across several writes (the reader must buffer fragments
+    /// until a terminator arrives). See [`Self::send_raw_line`] for the
+    /// terminated form.
+    pub fn send_raw_fragment(&self, fragment: &str) {
+        let _ = self
+            .shared
+            .actions
+            .send(ServerAction::SendFragment(fragment.to_string()));
+    }
+
     /// Force-drop the current connection (to test disconnect/reconnect).
     pub fn drop_connection(&self) {
         let _ = self.shared.actions.send(ServerAction::Drop);
@@ -361,6 +396,28 @@ impl FakeSeestar {
     /// Number of control connections accepted.
     pub fn connection_count(&self) -> usize {
         self.shared.connections.load(Ordering::SeqCst)
+    }
+
+    /// Snapshot of every raw line the server has read, exactly as received
+    /// (line terminator included). Unlike [`Self::received`], this preserves
+    /// the wire bytes, so tests can pin framing such as the `\r\n` terminator.
+    pub fn raw_lines(&self) -> Vec<String> {
+        self.shared.raw_lines.lock().unwrap().clone()
+    }
+
+    /// Number of control connections currently established (accepted but not
+    /// yet ended). Observes whether the client-side socket is still open —
+    /// e.g. after a shutdown the TCP link may outlive the client's tasks.
+    pub fn active_control_connections(&self) -> usize {
+        self.shared.active_control.load(Ordering::SeqCst).max(0) as usize
+    }
+
+    /// Stop accepting new control connections: the control listener is
+    /// closed, so further connects are refused (connection-refused tests:
+    /// the "telescope is down" window). Already-established connections stay
+    /// up until they end on their own.
+    pub fn stop_accepting(&self) {
+        self.accept_task.abort();
     }
 }
 
@@ -378,6 +435,7 @@ async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
                 match res {
                     Ok(0) | Err(_) => return,
                     Ok(_) => {
+                        shared.raw_lines.lock().unwrap().push(line.clone());
                         let trimmed = line.trim();
                         if trimmed.is_empty() { continue; }
                         let Ok(msg) = serde_json::from_str::<Value>(trimmed) else { continue };
@@ -417,6 +475,9 @@ async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
                 match action {
                     Ok(ServerAction::SendLine(s)) => {
                         let s = if s.ends_with('\n') { s } else { format!("{s}\r\n") };
+                        if write_half.write_all(s.as_bytes()).await.is_err() { return; }
+                    }
+                    Ok(ServerAction::SendFragment(s)) => {
                         if write_half.write_all(s.as_bytes()).await.is_err() { return; }
                     }
                     Ok(ServerAction::Drop) => return,

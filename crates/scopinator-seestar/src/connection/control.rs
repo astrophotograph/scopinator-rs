@@ -699,3 +699,75 @@ mod timeout_interplay_tests {
         h.stop().await;
     }
 }
+
+/// Ports of the pyscopinator connection edge-case tests
+/// (`tests/unit/test_connection.py`) that live at the unit seam: fixed
+/// connection constants and response routing. The client-level ports of the
+/// same oracle live in `tests/control_integration.rs`, whose header comment
+/// accounts for all 43 Python tests.
+#[cfg(test)]
+mod connection_edge_case_tests {
+    use super::*;
+
+    // Python TestConnectionInit::test_fields pins the constructor defaults
+    // (host, port, 5.0 s connection/read/write timeouts, zeroed counters).
+    // Rust has no connection object to configure: the timeouts are compile-time
+    // constants, not per-instance settings, and there are no message counters.
+    // Pin the constants. DIFFERENCE vs Python: the fixture's 5.0 s connect
+    // timeout is a constructor argument there; here CONNECT_TIMEOUT is a
+    // fixed 10 s (and HEARTBEAT_INTERVAL a fixed 5 s) with no override.
+    #[test]
+    fn connect_and_heartbeat_timeouts_are_fixed_constants() {
+        assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(HEARTBEAT_INTERVAL, Duration::from_secs(5));
+    }
+
+    // Python TestRead::test_read_success: read() returns the raw JSON text of
+    // one line and bumps read_messages. The Rust counterpart of "the line was
+    // read and handed on" is handle_response routing the parsed response to
+    // the pending caller. DIFFERENCE vs Python: there is no raw-text read API
+    // and no counter — the control path delivers typed CommandResponse values.
+    #[test]
+    fn handle_response_delivers_to_registered_caller() {
+        let state = Arc::new(ControlState::new());
+        let (tx, rx) = oneshot::channel();
+        let id = state.pending.register(tx);
+
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "code": 0,
+            "result": {"answer": 42},
+        });
+        handle_response(&msg, &state);
+
+        let resp = rx
+            .blocking_recv()
+            .expect("pending caller must be resolved")
+            .expect("response must be Ok");
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.code, 0);
+        assert_eq!(resp.result.unwrap()["answer"], 42);
+    }
+
+    // No Python original: pyscopinator's read() hands raw text to the caller,
+    // so id correlation is the caller's problem there. Rust's reader routes
+    // by id, and a well-formed response whose id matches no pending request
+    // must be dropped (warn/trace) without panicking and without resolving
+    // any other pending caller.
+    #[test]
+    fn handle_response_for_unknown_id_is_dropped_without_panic() {
+        let state = Arc::new(ControlState::new());
+        let (tx, mut rx) = oneshot::channel();
+        let id = state.pending.register(tx);
+
+        let msg = serde_json::json!({"id": id + 1, "code": 0});
+        handle_response(&msg, &state);
+
+        // Our caller is still pending: the unknown-id response resolved no one.
+        assert!(rx.try_recv().is_err());
+        // And the registry still holds it, so a later correct response works.
+        let msg = serde_json::json!({"id": id, "code": 0});
+        handle_response(&msg, &state);
+        let resp = rx.blocking_recv().expect("resolved by the matching id");
+        assert!(resp.is_ok());
+    }
+}
