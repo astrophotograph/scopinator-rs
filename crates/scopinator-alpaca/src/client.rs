@@ -144,6 +144,10 @@ pub struct ConfiguredDevice {
     pub device_name: String,
     pub device_type: String,
     pub device_number: u32,
+    // The ASCOM Alpaca management API spells this key "UniqueID", not the
+    // "UniqueId" that PascalCase renaming would produce; the alias keeps
+    // tolerance for the other casing.
+    #[serde(rename = "UniqueID", alias = "UniqueId")]
     pub unique_id: String,
 }
 
@@ -553,15 +557,13 @@ pub(crate) mod tests {
     // returns the devices as a flat Vec<ConfiguredDevice> without Python's
     // "telescope" -> "mount" normalization and grouping (so the type stays
     // "Telescope"), and it requires a UniqueID field the Python mock omits
-    // (Python never reads UniqueID). Note serde's PascalCase renaming maps
-    // unique_id to the JSON key "UniqueId" with a lowercase "d", not the
-    // ASCOM API's "UniqueID" spelling — a reply using the spec spelling
-    // fails to parse.
+    // (Python never reads UniqueID); the device key follows the Alpaca
+    // management API spelling, "UniqueID".
     #[tokio::test]
     async fn get_configured_devices_parses_devices() {
         let body = r#"{"Value": [
-            {"DeviceName": "Simulator", "DeviceType": "Telescope", "DeviceNumber": 0, "UniqueId": "9e2c0f5d-1"},
-            {"DeviceName": "Camera Sim", "DeviceType": "Camera", "DeviceNumber": 0, "UniqueId": "9e2c0f5d-2"}
+            {"DeviceName": "Simulator", "DeviceType": "Telescope", "DeviceNumber": 0, "UniqueID": "9e2c0f5d-1"},
+            {"DeviceName": "Camera Sim", "DeviceType": "Camera", "DeviceNumber": 0, "UniqueID": "9e2c0f5d-2"}
         ]}"#;
         let (addr, handle) = serve("200 OK", "application/json", body, 1).await;
         let client = AlpacaClient::new(Ipv4Addr::LOCALHOST, addr.port());
@@ -583,6 +585,45 @@ pub(crate) mod tests {
             params.is_empty(),
             "the management API takes no transaction parameters"
         );
+    }
+
+    // No direct Python case: the ASCOM Alpaca management API spells the
+    // device key "UniqueID" (the Seestar Alpaca server builds its
+    // configureddevices reply that way), which serde's PascalCase renaming
+    // of unique_id does not produce on its own. Regression test for the
+    // explicit rename on ConfiguredDevice::unique_id: without it, this
+    // reply fails to parse and get_configured_devices() errors.
+    #[tokio::test]
+    async fn get_configured_devices_parses_alpaca_unique_id_key() {
+        let body = r#"{"Value": [
+            {"DeviceName": "Simulator", "DeviceType": "Telescope", "DeviceNumber": 0, "UniqueID": "9e2c0f5d-1"}
+        ]}"#;
+        let (addr, handle) = serve("200 OK", "application/json", body, 1).await;
+        let client = AlpacaClient::new(Ipv4Addr::LOCALHOST, addr.port());
+
+        let devices = client.get_configured_devices().await.unwrap();
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].unique_id, "9e2c0f5d-1");
+        assert_eq!(handle.await.unwrap().len(), 1);
+    }
+
+    // No direct Python case: the alias on ConfiguredDevice::unique_id keeps
+    // tolerance for a server that sends the PascalCase spelling "UniqueId"
+    // instead of the API's "UniqueID".
+    #[tokio::test]
+    async fn get_configured_devices_parses_unique_id_key_alias() {
+        let body = r#"{"Value": [
+            {"DeviceName": "Simulator", "DeviceType": "Telescope", "DeviceNumber": 0, "UniqueId": "9e2c0f5d-2"}
+        ]}"#;
+        let (addr, handle) = serve("200 OK", "application/json", body, 1).await;
+        let client = AlpacaClient::new(Ipv4Addr::LOCALHOST, addr.port());
+
+        let devices = client.get_configured_devices().await.unwrap();
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].unique_id, "9e2c0f5d-2");
+        assert_eq!(handle.await.unwrap().len(), 1);
     }
 
     // Mirrors TestAlpacaDiscovery::test_discover_devices_error.

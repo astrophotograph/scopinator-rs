@@ -174,13 +174,13 @@ mod tests {
     // the AlpacaPort from a reply plus the management API yield a
     // DiscoveredServer carrying the configured devices. Differences pinned
     // as-is: DeviceType stays "Telescope" (no Python "telescope" -> "mount"
-    // normalization), and the device key is "UniqueId" with a lowercase
-    // "d" (see the note in client::tests::get_configured_devices_parses_devices).
+    // normalization); the device key follows the Alpaca API spelling,
+    // "UniqueID".
     #[tokio::test]
     async fn query_server_builds_discovered_server() {
         let body = r#"{"Value": [
-            {"DeviceName": "Simulator", "DeviceType": "Telescope", "DeviceNumber": 0, "UniqueId": "u1"},
-            {"DeviceName": "Camera Sim", "DeviceType": "Camera", "DeviceNumber": 0, "UniqueId": "u2"}
+            {"DeviceName": "Simulator", "DeviceType": "Telescope", "DeviceNumber": 0, "UniqueID": "u1"},
+            {"DeviceName": "Camera Sim", "DeviceType": "Camera", "DeviceNumber": 0, "UniqueID": "u2"}
         ]}"#;
         let (addr, handle) = serve("200 OK", "application/json", body, 1).await;
 
