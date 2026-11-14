@@ -8,9 +8,9 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::auth::InteropKey;
+use crate::auth::{InteropKey, Verification};
 use crate::command::Command;
-use crate::command::serialize::serialize_command;
+use crate::command::serialize::serialize_command_marked;
 use crate::connection::reconnect::ReconnectPolicy;
 use crate::connection::registry::Registry;
 use crate::error::SeestarError;
@@ -32,6 +32,46 @@ pub(crate) struct ClientRequest {
 }
 
 type ResponseSender = oneshot::Sender<Result<CommandResponse, SeestarError>>;
+
+/// What the control loop currently knows about the link, shared with the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum LinkState {
+    /// Not connected, or negotiation has not finished.
+    #[default]
+    Unknown,
+    /// Connected; requests are framed for this verification mode.
+    Negotiated(Verification),
+    /// The last connection attempt found that the device needs an interop
+    /// key and none is configured. Commands cannot succeed.
+    KeyRequired,
+}
+
+/// Shared, cheaply readable [`LinkState`] (sync mutex — never held across await).
+#[derive(Debug, Default)]
+pub(crate) struct Link(std::sync::Mutex<LinkState>);
+
+impl Link {
+    pub(crate) fn get(&self) -> LinkState {
+        *self.0.lock().expect("link mutex poisoned")
+    }
+
+    fn set(&self, state: LinkState) {
+        *self.0.lock().expect("link mutex poisoned") = state;
+    }
+}
+
+/// Whether requests must carry the `verify` marker.
+///
+/// A verified socket never needs it. Marker mode always does. A legacy device
+/// keeps the pyscopinator rule: mark unless the firmware is known to predate
+/// the marker.
+fn needs_marker(mode: Verification, firmware: Option<FirmwareVersion>) -> bool {
+    match mode {
+        Verification::Handshake => false,
+        Verification::Marker => true,
+        Verification::Legacy => firmware.is_none_or(|fw| fw.requires_verify()),
+    }
+}
 
 /// Shared state for the control connection.
 pub(crate) struct ControlState {
@@ -76,6 +116,7 @@ pub(crate) async fn run(
     connected: Arc<AtomicBool>,
     shutdown: tokio::sync::watch::Receiver<bool>,
     interop_key: Option<Arc<InteropKey>>,
+    link: Arc<Link>,
 ) {
     let state = Arc::new(ControlState::new());
     let mut policy = ReconnectPolicy::new();
@@ -92,53 +133,65 @@ pub(crate) async fn run(
         info!("connecting to telescope control at {addr}");
 
         match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
-            Ok(Ok(mut stream)) => {
+            Ok(Ok(stream)) => {
                 if let Err(e) = stream.set_nodelay(true) {
                     warn!("failed to set TCP_NODELAY: {e}");
                 }
                 info!("connected to telescope control at {addr}");
 
-                // Authenticate before advertising the connection as ready.
-                if let Some(key) = &interop_key {
-                    if let Err(e) = crate::auth::authenticate(&mut stream, key).await {
-                        error!("authentication failed: {e}");
-                        // Fall through to the backoff delay below rather than
-                        // continuing immediately — avoids hammering the scope.
-                    } else {
+                // One buffered reader for the socket's lifetime: bytes it
+                // buffers during negotiation belong to the reader task.
+                let (read_half, mut write_half) = tokio::io::split(stream);
+                let mut reader = BufReader::new(read_half);
+
+                // Negotiate before advertising the connection as ready. An
+                // unverified socket silently consumes requests.
+                match crate::auth::negotiate(&mut reader, &mut write_half, interop_key.as_deref())
+                    .await
+                {
+                    Ok(negotiated) => {
+                        link.set(LinkState::Negotiated(negotiated.mode));
+                        for msg in &negotiated.deferred {
+                            if json_rpc::is_event(msg) {
+                                handle_event(msg, &event_tx);
+                            }
+                        }
                         connected.store(true, Ordering::Release);
                         policy.reset();
+
                         run_connected(
-                            stream,
+                            reader,
+                            write_half,
+                            negotiated.mode,
                             Arc::clone(&state),
                             Arc::clone(&request_rx),
                             event_tx.clone(),
                             shutdown.clone(),
                         )
                         .await;
+
                         connected.store(false, Ordering::Release);
+                        link.set(LinkState::Unknown);
                         info!("control connection lost, will reconnect");
                     }
-                    // Both paths fall through to flush_pending + backoff.
-                    flush_pending(&state);
-                    let wait = policy.next_backoff();
-                    tokio::time::sleep(wait).await;
-                    continue;
+                    Err(SeestarError::VerificationRequired) => {
+                        error!("{}", SeestarError::VerificationRequired);
+                        link.set(LinkState::KeyRequired);
+                        // Queued commands can never be sent; fail them now
+                        // instead of letting each one run out its timeout.
+                        let mut rx = request_rx.lock().await;
+                        while let Ok(req) = rx.try_recv() {
+                            let _ = req
+                                .response_tx
+                                .send(Err(SeestarError::VerificationRequired));
+                        }
+                    }
+                    Err(e) => {
+                        // Falls through to the backoff delay below rather than
+                        // retrying immediately — avoids hammering the scope.
+                        error!("verification negotiation failed: {e}");
+                    }
                 }
-
-                connected.store(true, Ordering::Release);
-                policy.reset();
-
-                run_connected(
-                    stream,
-                    Arc::clone(&state),
-                    Arc::clone(&request_rx),
-                    event_tx.clone(),
-                    shutdown.clone(),
-                )
-                .await;
-
-                connected.store(false, Ordering::Release);
-                info!("control connection lost, will reconnect");
             }
             Ok(Err(e)) => {
                 warn!("failed to connect to {addr}: {e}");
@@ -158,14 +211,14 @@ pub(crate) async fn run(
 
 /// Run while connected: spawns reader, writer, and heartbeat tasks.
 async fn run_connected(
-    stream: TcpStream,
+    reader: BufReader<tokio::io::ReadHalf<TcpStream>>,
+    write_half: tokio::io::WriteHalf<TcpStream>,
+    mode: Verification,
     state: Arc<ControlState>,
     request_rx: Arc<Mutex<mpsc::Receiver<ClientRequest>>>,
     event_tx: broadcast::Sender<SeestarEvent>,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let (read_half, write_half) = tokio::io::split(stream);
-
     // Channel for the writer task to send serialized messages
     let (write_tx, mut write_rx) = mpsc::channel::<String>(256);
 
@@ -175,7 +228,7 @@ async fn run_connected(
     // Writer task
     let writer_handle = {
         let state = Arc::clone(&state);
-        let write_tx_for_hb = write_tx.clone();
+        let shutdown = shutdown.clone();
 
         tokio::spawn(async move {
             writer_task(
@@ -183,8 +236,8 @@ async fn run_connected(
                 &mut write_rx,
                 request_rx,
                 state,
+                mode,
                 reader_dead_rx,
-                write_tx_for_hb,
                 shutdown,
             )
             .await;
@@ -195,25 +248,34 @@ async fn run_connected(
     let reader_handle = {
         let state = Arc::clone(&state);
         tokio::spawn(async move {
-            reader_task(read_half, state, event_tx).await;
+            reader_task(reader, state, event_tx).await;
             let _ = reader_dead_tx.send(());
         })
     };
+
+    // Heartbeat: fixed for the connection. It is marked, as it always was,
+    // except on a socket verified by the handshake.
+    let hb_handle = tokio::spawn(heartbeat_task(
+        write_tx,
+        shutdown,
+        mode != Verification::Handshake,
+    ));
 
     // Wait for either task to finish
     tokio::select! {
         _ = writer_handle => {},
         _ = reader_handle => {},
     }
+
+    hb_handle.abort();
 }
 
 /// Reader task: reads lines from TCP, routes responses and events.
 async fn reader_task(
-    read_half: tokio::io::ReadHalf<TcpStream>,
+    mut reader: BufReader<tokio::io::ReadHalf<TcpStream>>,
     state: Arc<ControlState>,
     event_tx: broadcast::Sender<SeestarEvent>,
 ) {
-    let mut reader = BufReader::new(read_half);
     let mut line = String::new();
 
     loop {
@@ -323,13 +385,10 @@ async fn writer_task(
     write_rx: &mut mpsc::Receiver<String>,
     request_rx: Arc<Mutex<mpsc::Receiver<ClientRequest>>>,
     state: Arc<ControlState>,
+    mode: Verification,
     mut reader_dead_rx: oneshot::Receiver<()>,
-    heartbeat_tx: mpsc::Sender<String>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    // Spawn heartbeat
-    let hb_handle = tokio::spawn(heartbeat_task(heartbeat_tx, shutdown.clone()));
-
     loop {
         let mut req_rx = request_rx.lock().await;
         tokio::select! {
@@ -339,7 +398,7 @@ async fn writer_task(
                 let fw = state.firmware_version();
                 let method = req.command.method();
                 let id = state.pending.register(req.response_tx);
-                let msg = serialize_command(&req.command, id, fw);
+                let msg = serialize_command_marked(&req.command, id, needs_marker(mode, fw));
                 let line = format!("{}\r\n", msg);
 
                 trace!(id, method, "sending command");
@@ -373,14 +432,14 @@ async fn writer_task(
             }
         }
     }
-
-    hb_handle.abort();
 }
 
-/// Heartbeat task: sends `pi_get_time` every 5 seconds.
+/// Heartbeat task: sends `pi_get_time` every 5 seconds, with the `verify`
+/// marker if `marker` is set.
 async fn heartbeat_task(
     tx: mpsc::Sender<String>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    marker: bool,
 ) {
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
     // Skip the first immediate tick
@@ -390,11 +449,13 @@ async fn heartbeat_task(
         tokio::select! {
             _ = interval.tick() => {
                 // Use a fixed low ID for heartbeats that we don't track
-                let msg = serde_json::json!({
+                let mut msg = serde_json::json!({
                     "id": 1,
                     "method": "pi_get_time",
-                    "params": ["verify"],
                 });
+                if marker {
+                    msg["params"] = serde_json::json!(["verify"]);
+                }
                 let line = format!("{}\r\n", msg);
                 if tx.send(line).await.is_err() {
                     break;
@@ -420,12 +481,18 @@ fn flush_pending(state: &Arc<ControlState>) {
 #[cfg(test)]
 mod heartbeat_tests {
     use super::*;
+    use crate::command::serialize::serialize_command;
 
-    /// Run the real heartbeat task under paused time and return the first line it sends.
+    /// Run the real heartbeat task (marked, as on an unverified socket) under
+    /// paused time and return the first line it sends.
     async fn first_heartbeat_line() -> String {
+        heartbeat_line(true).await
+    }
+
+    async fn heartbeat_line(marker: bool) -> String {
         let (tx, mut rx) = mpsc::channel::<String>(4);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let handle = tokio::spawn(heartbeat_task(tx, shutdown_rx));
+        let handle = tokio::spawn(heartbeat_task(tx, shutdown_rx, marker));
 
         // Nothing is sent before the first interval elapses.
         tokio::task::yield_now().await;
@@ -450,6 +517,27 @@ mod heartbeat_tests {
             line,
             "{\"id\":1,\"method\":\"pi_get_time\",\"params\":[\"verify\"]}\r\n"
         );
+    }
+
+    // On a socket verified by the handshake the heartbeat carries no marker
+    // (hardware, S50 fw 6.70: unmarked pi_get_time is served once verified).
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_is_unmarked_on_a_verified_socket() {
+        let line = heartbeat_line(false).await;
+        assert_eq!(line, "{\"id\":1,\"method\":\"pi_get_time\"}\r\n");
+    }
+
+    #[test]
+    fn marker_follows_the_negotiated_mode() {
+        let old = Some(FirmwareVersion(FirmwareVersion::VERIFY_THRESHOLD));
+        let new = Some(FirmwareVersion(2670));
+        for fw in [None, old, new] {
+            assert!(!needs_marker(Verification::Handshake, fw));
+            assert!(needs_marker(Verification::Marker, fw));
+        }
+        assert!(needs_marker(Verification::Legacy, None));
+        assert!(needs_marker(Verification::Legacy, new));
+        assert!(!needs_marker(Verification::Legacy, old));
     }
 
     // The heartbeat task takes no firmware input, so its bytes are identical
@@ -533,6 +621,7 @@ mod timeout_interplay_tests {
     struct Harness {
         conns: mpsc::UnboundedReceiver<Conn>,
         connected: Arc<AtomicBool>,
+        link: Arc<Link>,
         shutdown_tx: tokio::sync::watch::Sender<bool>,
         _request_tx: mpsc::Sender<ClientRequest>,
         handle: tokio::task::JoinHandle<()>,
@@ -573,6 +662,7 @@ mod timeout_interplay_tests {
         let (request_tx, request_rx) = mpsc::channel(8);
         let (event_tx, _) = broadcast::channel(8);
         let connected = Arc::new(AtomicBool::new(false));
+        let link = Arc::new(Link::default());
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let handle = tokio::spawn(run(
             addr,
@@ -581,10 +671,12 @@ mod timeout_interplay_tests {
             Arc::clone(&connected),
             shutdown_rx,
             key,
+            Arc::clone(&link),
         ));
         Harness {
             conns,
             connected,
+            link,
             shutdown_tx,
             _request_tx: request_tx,
             handle,
@@ -624,7 +716,21 @@ mod timeout_interplay_tests {
     async fn heartbeat_restarts_with_fresh_interval_after_reconnect() {
         let mut h = start(None).await;
 
+        // This telescope never answers, so each connection first spends
+        // PROBE_TIMEOUT on the unanswered `get_verify_str` before it is
+        // treated as legacy and advertised as connected.
+        async fn settle(h: &Harness, c: &mut Conn) {
+            assert!(!h.connected.load(Ordering::Acquire));
+            assert_eq!(h.link.get(), LinkState::Unknown);
+            run_for(crate::auth::PROBE_TIMEOUT + Duration::from_millis(50)).await;
+            let probe = c.lines.try_recv().expect("negotiation request");
+            assert!(probe.contains("get_verify_str"), "got {probe:?}");
+            assert!(h.connected.load(Ordering::Acquire));
+            assert_eq!(h.link.get(), LinkState::Negotiated(Verification::Legacy));
+        }
+
         let mut c1 = h.next_conn(Duration::from_secs(1)).await;
+        settle(&h, &mut c1).await;
         run_for(HEARTBEAT_INTERVAL + Duration::from_millis(100)).await;
         let hb = c1.lines.try_recv().expect("first heartbeat");
         assert!(hb.contains("pi_get_time"), "got {hb:?}");
@@ -641,10 +747,10 @@ mod timeout_interplay_tests {
             backoff >= Duration::from_secs(1) && backoff <= Duration::from_secs(1) + TOL,
             "reconnected after {backoff:?}"
         );
-        assert!(h.connected.load(Ordering::Acquire));
+        settle(&h, &mut c2).await;
 
         // No heartbeat until (almost) a full interval on the new connection...
-        run_for(HEARTBEAT_INTERVAL - Duration::from_millis(200)).await;
+        run_for(HEARTBEAT_INTERVAL - Duration::from_millis(300)).await;
         assert!(c2.lines.try_recv().is_err(), "heartbeat arrived early");
         // ...then exactly one.
         run_for(Duration::from_millis(400)).await;

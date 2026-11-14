@@ -13,9 +13,19 @@ pub fn serialize_command(
     id: u64,
     firmware_version: Option<FirmwareVersion>,
 ) -> Value {
+    let needs_verify = firmware_version.is_none_or(|fw| fw.requires_verify());
+    serialize_command_marked(cmd, id, needs_verify)
+}
+
+/// Serialize a command, adding the `verify` marker only if `marker` is set.
+///
+/// The control connection decides `marker` from the verification mode it
+/// negotiated: a socket verified by the handshake needs no marker, and
+/// `set_setting` rejects it (code 109) even there.
+pub fn serialize_command_marked(cmd: &Command, id: u64, marker: bool) -> Value {
     let method = cmd.method();
     let params = command_params(cmd);
-    let needs_verify = firmware_version.is_none_or(|fw| fw.requires_verify());
+    let needs_verify = marker;
 
     let mut msg = json!({
         "id": id,

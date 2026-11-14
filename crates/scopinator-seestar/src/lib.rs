@@ -7,6 +7,6 @@ pub mod event;
 pub mod protocol;
 pub mod response;
 
-pub use auth::InteropKey;
+pub use auth::{InteropKey, Verification};
 pub use client::{SeestarClient, SeestarConfig};
 pub use error::SeestarError;

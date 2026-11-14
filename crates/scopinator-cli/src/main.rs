@@ -15,7 +15,7 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// Path to RSA interoperability PEM key for firmware 7.18+ authentication
+    /// Path to RSA interoperability PEM key for the verify_client handshake (firmware 6.70+)
     #[arg(long, env = "SEESTAR_INTEROP_PEM", value_name = "PATH")]
     interop_pem: Option<PathBuf>,
 

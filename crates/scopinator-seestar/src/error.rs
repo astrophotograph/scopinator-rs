@@ -32,6 +32,15 @@ pub enum SeestarError {
     #[error("authentication failed: {0}")]
     AuthFailed(String),
 
+    /// The device has the verification handshake, no interop key is
+    /// configured, and it does not serve requests carrying the `verify`
+    /// marker. Every command would be silently consumed.
+    #[error(
+        "this telescope's firmware requires client verification: \
+         configure an interop key (SeestarConfig::interop_key)"
+    )]
+    VerificationRequired,
+
     #[error("failed to load interoperability key: {0}")]
     InteropKeyLoad(String),
 }

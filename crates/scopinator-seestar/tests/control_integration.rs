@@ -142,7 +142,7 @@ use scopinator_seestar::command::Command;
 use scopinator_seestar::error::SeestarError;
 use scopinator_seestar::event::SeestarEvent;
 use scopinator_seestar::protocol::json_rpc;
-use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig};
+use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig, Verification};
 use serde_json::{Value, json};
 
 const LOCALHOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -156,6 +156,19 @@ async fn connect(fake: &FakeSeestar) -> SeestarClient {
         .await
         .expect("control connected");
     client
+}
+
+/// The raw lines the fake received after the connect-time negotiation, whose
+/// single `get_verify_str` line (CRLF-terminated like any other) comes first.
+fn command_lines(fake: &FakeSeestar) -> Vec<String> {
+    let mut raw = fake.raw_lines();
+    let first = raw.remove(0);
+    assert!(first.contains("get_verify_str"), "got {first:?}");
+    assert!(
+        first.ends_with("\r\n"),
+        "negotiation line is CRLF-terminated"
+    );
+    raw
 }
 
 /// A 127.0.0.1 address nothing listens on: bind a listener, take its port,
@@ -678,13 +691,15 @@ async fn never_connected_client_stays_disconnected_and_times_out() {
 // exist, but the internal connected flag is still False, so is_connected()
 // is False. The Rust analog under the tokio architecture: an interop-key
 // client against a plain (non-authenticating) fake. The TCP connection IS
-// established — the fake accepted it — but authenticate() fails on the fake's
-// echo reply (no result.str), so `connected` is never advertised true.
+// established — the fake accepted it — but negotiation fails on a
+// `get_verify_str` reply with no challenge (no result.str), so `connected` is
+// never advertised true.
 #[tokio::test]
 async fn auth_failure_leaves_tcp_up_but_never_advertised() {
     use rsa::pkcs8::EncodePrivateKey;
 
     let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_verify_str", json!({}));
     let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 512).unwrap();
     let pem = private.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
     let config = SeestarConfig {
@@ -745,7 +760,7 @@ async fn command_lines_are_crlf_terminated() {
         .await
         .expect("response");
 
-    let raw = fake.raw_lines();
+    let raw = command_lines(&fake);
     assert_eq!(raw.len(), 1, "one command must write exactly one line");
     assert!(raw[0].ends_with("\r\n"), "line must be CRLF-terminated");
     let msg: Value = serde_json::from_str(raw[0].trim()).expect("line is valid JSON");
@@ -771,7 +786,7 @@ async fn two_commands_write_two_lines() {
         .await
         .expect("response 2");
 
-    let raw = fake.raw_lines();
+    let raw = command_lines(&fake);
     assert_eq!(raw.len(), 2);
     let msgs: Vec<Value> = raw
         .iter()
@@ -981,5 +996,274 @@ async fn split_line_reassembles_into_one_event() {
         .expect("event within timeout")
         .expect("event recv");
     assert!(matches!(ev, SeestarEvent::PiStatus(_)));
+    client.shutdown().await;
+}
+
+// ============================================================================
+// Verification negotiation at connect (Forge task "Negotiate verification at
+// connect"). The device behaviours modelled here were observed on an S50,
+// firmware 6.70, on 2026-11-14; the 103 and key-envelope cases follow the
+// seestar-spec session-handshake chapter (R28c, R29).
+// ============================================================================
+
+fn test_key() -> InteropKey {
+    use rsa::pkcs8::EncodePrivateKey;
+    let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 512).unwrap();
+    let pem = private.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+    InteropKey::from_pem(pem.as_str()).unwrap()
+}
+
+async fn connect_with(fake: &FakeSeestar, config: SeestarConfig) -> SeestarClient {
+    SeestarClient::connect_with_ports_and_config(
+        LOCALHOST,
+        fake.control_addr,
+        fake.imaging_addr,
+        config,
+    )
+    .await
+    .expect("client spawns")
+}
+
+fn methods(received: &[Value]) -> Vec<&str> {
+    received
+        .iter()
+        .map(|m| m["method"].as_str().unwrap_or(""))
+        .collect()
+}
+
+// A legacy device answers get_verify_str with 103. Nothing else is probed and
+// commands keep the firmware-rule marker, with or without a key configured: a
+// key against a legacy device must not loop on a failing handshake.
+#[tokio::test]
+async fn legacy_device_connects_with_or_without_a_key() {
+    for key in [None, Some(test_key())] {
+        let fake = FakeSeestar::start().await;
+        let client = connect_with(
+            &fake,
+            SeestarConfig {
+                interop_key: key,
+                response_timeout: None,
+            },
+        )
+        .await;
+        client
+            .wait_for_connection(Duration::from_secs(2))
+            .await
+            .expect("connected");
+        assert_eq!(client.verification(), Some(Verification::Legacy));
+
+        client
+            .send_command(Command::TestConnection)
+            .await
+            .expect("command");
+        let received = fake.received();
+        assert_eq!(methods(&received), ["get_verify_str", "test_connection"]);
+        assert_eq!(received[1]["params"], json!(["verify"]));
+        assert_eq!(fake.connection_count(), 1);
+        client.shutdown().await;
+    }
+}
+
+// With a key, the handshake verifies the socket and nothing carries the
+// marker afterwards. set_setting in particular must not: the firmware rejects
+// the extra member with 109 even on a verified socket.
+#[tokio::test]
+async fn handshake_mode_sends_no_marker() {
+    for verify_result in [json!(0), json!({"key_envelope": {"v": 1}})] {
+        let fake = FakeSeestar::start().await;
+        fake.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+        fake.respond_ok("verify_client", verify_result);
+        let client = connect_with(
+            &fake,
+            SeestarConfig {
+                interop_key: Some(test_key()),
+                response_timeout: None,
+            },
+        )
+        .await;
+        client
+            .wait_for_connection(Duration::from_secs(2))
+            .await
+            .expect("connected");
+        assert_eq!(client.verification(), Some(Verification::Handshake));
+
+        client
+            .send_command(Command::GetDeviceState)
+            .await
+            .expect("device state");
+        client
+            .send_command(Command::SetSetting(
+                scopinator_seestar::command::params::SettingParams {
+                    stack_lenhance: Some(true),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .expect("set_setting");
+
+        let received = fake.received();
+        assert_eq!(
+            methods(&received),
+            [
+                "get_verify_str",
+                "verify_client",
+                "get_device_state",
+                "set_setting"
+            ]
+        );
+        assert_eq!(received[1]["params"]["data"], "fake-challenge");
+        assert!(received[2].get("params").is_none(), "{}", received[2]);
+        assert!(received[3]["params"].get("verify").is_none());
+        client.shutdown().await;
+    }
+}
+
+// A rejected signature (207) never advertises the connection, and the loop
+// retries with backoff rather than proceeding unverified.
+#[tokio::test]
+async fn rejected_handshake_is_not_connected() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+    fake.respond_error("verify_client", 207, "fail to operate");
+    let client = connect_with(
+        &fake,
+        SeestarConfig {
+            interop_key: Some(test_key()),
+            response_timeout: Some(Duration::from_millis(250)),
+        },
+    )
+    .await;
+
+    let err = client
+        .wait_for_connection(Duration::from_millis(500))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SeestarError::Timeout(_)), "got {err:?}");
+    assert_eq!(client.verification(), None);
+    assert_eq!(
+        methods(&fake.received()),
+        ["get_verify_str", "verify_client"]
+    );
+    client.shutdown().await;
+}
+
+// No key, and the device serves marked requests on an unverified socket
+// (firmware 6.70 / 7.06): marker mode. Every command carries the marker even
+// after the firmware is known, and unmarked requests would get no reply.
+#[tokio::test]
+async fn marker_mode_without_a_key() {
+    let fake = FakeSeestar::start().await;
+    fake.require_verify_marker();
+    fake.respond("get_device_state", device_state_response(2670, "6.70"));
+    let client = connect(&fake).await;
+    assert_eq!(client.verification(), Some(Verification::Marker));
+
+    client
+        .send_command(Command::GetDeviceState)
+        .await
+        .expect("device state");
+    client
+        .send_command(Command::PiStationState)
+        .await
+        .expect("station state");
+
+    let received = fake.received();
+    assert_eq!(
+        methods(&received),
+        [
+            "get_verify_str",
+            "test_connection",
+            "get_device_state",
+            "pi_station_state"
+        ]
+    );
+    for msg in &received[1..] {
+        assert_eq!(msg["params"], json!(["verify"]), "{msg}");
+    }
+    client.shutdown().await;
+}
+
+// No key, and the device ignores the marker too: every command would be
+// silently consumed. The client must say so within the probe timeout rather
+// than letting each command run out its 30 s response timeout.
+#[tokio::test]
+async fn no_key_and_no_marker_reports_verification_required() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+    fake.silent_on("test_connection");
+    let client = connect_with(&fake, SeestarConfig::default()).await;
+
+    // Queued before negotiation finishes: failed as soon as the answer is known.
+    let started = std::time::Instant::now();
+    let err = client
+        .send_command(Command::GetDeviceState)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SeestarError::VerificationRequired),
+        "got {err:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "took {:?}",
+        started.elapsed()
+    );
+
+    // Later calls fail at once.
+    let err = client
+        .wait_for_connection(Duration::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SeestarError::VerificationRequired));
+    let err = client
+        .send_command(Command::GetDeviceState)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SeestarError::VerificationRequired));
+    assert!(!client.is_control_connected());
+    assert_eq!(client.verification(), None);
+    client.shutdown().await;
+}
+
+// An event the device sends while the handshake is in progress is delivered
+// to subscribers once the connection is up, not dropped or taken for a reply.
+#[tokio::test]
+async fn event_during_handshake_reaches_subscribers() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let event = corpus_event("PiStatus").to_string();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read, mut write) = tokio::io::split(stream);
+        let mut reader = BufReader::new(read);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let reply = r#"{"id":1001,"code":103,"error":"method not found"}"#;
+        write
+            .write_all(format!("{event}\r\n{reply}\r\n").as_bytes())
+            .await
+            .unwrap();
+        // Keep the socket open.
+        line.clear();
+        while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+            line.clear();
+        }
+    });
+
+    let imaging = dead_addr().await;
+    let client = SeestarClient::connect_with_ports(LOCALHOST, addr, imaging)
+        .await
+        .expect("client spawns");
+    let mut events = client.subscribe_events();
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .expect("connected");
+    let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("event within timeout")
+        .expect("event recv");
+    assert!(matches!(ev, SeestarEvent::PiStatus(_)), "got {ev:?}");
     client.shutdown().await;
 }

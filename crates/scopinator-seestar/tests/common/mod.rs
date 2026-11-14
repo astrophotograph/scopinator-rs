@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
@@ -217,6 +217,9 @@ struct Shared {
     /// Every raw line the server has read, exactly as it arrived on the wire
     /// (line terminator included).
     raw_lines: Mutex<Vec<String>>,
+    /// When set, requests without a `verify` marker are consumed silently
+    /// (all but `get_verify_str`), like an unverified socket on firmware 6.70.
+    marker_gate: AtomicBool,
     /// Count of accepted control connections (for reconnect assertions).
     connections: AtomicUsize,
     /// Currently-established control connections: accepted minus ended.
@@ -254,6 +257,7 @@ impl FakeSeestar {
             silent_on: Mutex::new(HashSet::new()),
             received: Mutex::new(Vec::new()),
             raw_lines: Mutex::new(Vec::new()),
+            marker_gate: AtomicBool::new(false),
             connections: AtomicUsize::new(0),
             active_control: AtomicIsize::new(0),
             actions,
@@ -346,6 +350,16 @@ impl FakeSeestar {
         self
     }
 
+    /// Behave like a device with the verification handshake: answer
+    /// `get_verify_str` with a challenge, and silently consume every other
+    /// request that lacks the `verify` marker. This is what an S50 on
+    /// firmware 6.70 does on a socket that has not been verified.
+    pub fn require_verify_marker(&self) -> &Self {
+        self.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+        self.shared.marker_gate.store(true, Ordering::SeqCst);
+        self
+    }
+
     /// Make `method` be received but never answered (so the caller times out).
     pub fn silent_on(&self, method: &str) -> &Self {
         self.shared
@@ -421,6 +435,18 @@ impl FakeSeestar {
     }
 }
 
+/// True if `params` carries the `verify` marker in any of the three forms the
+/// firmware accepts: `{"verify": true}`, an array containing `"verify"`, or
+/// the bare string.
+fn has_verify_marker(params: Option<&Value>) -> bool {
+    match params {
+        Some(Value::Object(map)) => map.get("verify") == Some(&Value::Bool(true)),
+        Some(Value::Array(arr)) => arr.iter().any(|v| v == "verify"),
+        Some(Value::String(s)) => s == "verify",
+        _ => false,
+    }
+}
+
 async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
     let _ = stream.set_nodelay(true);
     let (read_half, mut write_half) = tokio::io::split(stream);
@@ -441,6 +467,7 @@ async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
                         let Ok(msg) = serde_json::from_str::<Value>(trimmed) else { continue };
                         let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
                         let id = msg.get("id").cloned().unwrap_or(Value::Null);
+                        let msg_params = msg.get("params").cloned();
                         shared.received.lock().unwrap().push(msg);
 
                         if shared.drop_on.lock().unwrap().contains(&method) {
@@ -449,6 +476,14 @@ async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
                         if shared.silent_on.lock().unwrap().contains(&method) {
                             continue; // received, but never answered
                         }
+                        // A device behind the verification gate consumes
+                        // requests without the marker, replying to nothing.
+                        if shared.marker_gate.load(Ordering::SeqCst)
+                            && method != "get_verify_str"
+                            && !has_verify_marker(msg_params.as_ref())
+                        {
+                            continue;
+                        }
                         // Heartbeats (pi_get_time id:1) are answered generically.
                         let mut response = shared
                             .responses
@@ -456,6 +491,15 @@ async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
                             .unwrap()
                             .get(&method)
                             .cloned()
+                            // By default the fake is a legacy device: it has
+                            // no verification handshake.
+                            .or_else(|| (method == "get_verify_str").then(|| json!({
+                                "jsonrpc": "2.0",
+                                "method": method,
+                                "code": 103,
+                                "error": "method not found",
+                                "id": 0,
+                            })))
                             .unwrap_or_else(|| json!({
                                 "jsonrpc": "2.0",
                                 "method": method,

@@ -6,12 +6,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::{debug, info};
 
-use crate::auth::InteropKey;
+use crate::auth::{InteropKey, Verification};
 use crate::command::params::{
     Direction, PolarAlignParams, SetTimeParams, SetUserLocationParams, SpeedMoveParams,
 };
 use crate::command::{Command, ImagingCommand};
-use crate::connection::control::{self, ClientRequest};
+use crate::connection::control::{self, ClientRequest, Link, LinkState};
 use crate::connection::imaging::{self, ImageFrame};
 use crate::error::SeestarError;
 use crate::event::SeestarEvent;
@@ -21,8 +21,14 @@ use crate::response::CommandResponse;
 /// Configuration for connecting to a Seestar telescope.
 #[derive(Default)]
 pub struct SeestarConfig {
-    /// RSA interoperability PEM key for firmware 7.18+ challenge/response authentication.
-    /// If `None`, authentication is skipped (compatible with older firmware).
+    /// RSA interoperability key for the `verify_client` challenge/response
+    /// handshake (present on firmware 6.70 and later).
+    ///
+    /// With a key the control socket is verified at connect and requests are
+    /// sent without the `verify` marker. With `None` the client falls back to
+    /// the marker where the device still serves it; a device that does not
+    /// fails with [`SeestarError::VerificationRequired`]. See
+    /// [`SeestarClient::verification`].
     pub interop_key: Option<InteropKey>,
     /// How long [`SeestarClient::send_command`] waits for a response before
     /// returning [`SeestarError::Timeout`]. Defaults to [`DEFAULT_RESPONSE_TIMEOUT`].
@@ -69,6 +75,8 @@ pub struct SeestarClient {
     imaging_cmd_tx: mpsc::Sender<Vec<u8>>,
     /// Whether the control connection is alive.
     control_connected: Arc<AtomicBool>,
+    /// Verification state of the control connection.
+    link: Arc<Link>,
     /// Whether the imaging connection is alive.
     imaging_connected: Arc<AtomicBool>,
     /// Shutdown signal.
@@ -132,6 +140,7 @@ impl SeestarClient {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let control_connected = Arc::new(AtomicBool::new(false));
+        let link = Arc::new(Link::default());
         let imaging_connected = Arc::new(AtomicBool::new(false));
 
         let interop_key = config.interop_key.map(Arc::new);
@@ -143,6 +152,7 @@ impl SeestarClient {
             let connected = Arc::clone(&control_connected);
             let shutdown_rx = shutdown_rx.clone();
             let interop_key = interop_key.clone();
+            let link = Arc::clone(&link);
 
             tokio::spawn(async move {
                 control::run(
@@ -152,6 +162,7 @@ impl SeestarClient {
                     connected,
                     shutdown_rx,
                     interop_key,
+                    link,
                 )
                 .await;
             });
@@ -185,6 +196,7 @@ impl SeestarClient {
             frame_tx,
             imaging_cmd_tx,
             control_connected,
+            link,
             imaging_connected,
             shutdown_tx,
             response_timeout,
@@ -192,7 +204,14 @@ impl SeestarClient {
     }
 
     /// Send a command and wait for the response.
+    ///
+    /// Fails at once with [`SeestarError::VerificationRequired`] if the device
+    /// is known to need an interop key that is not configured.
     pub async fn send_command(&self, cmd: Command) -> Result<CommandResponse, SeestarError> {
+        if self.link.get() == LinkState::KeyRequired {
+            return Err(SeestarError::VerificationRequired);
+        }
+
         let (response_tx, response_rx) = oneshot::channel();
 
         let request = ClientRequest {
@@ -315,15 +334,19 @@ impl SeestarClient {
     }
 
     /// Send the basic startup commands: set the telescope clock (UTC, from the
-    /// local system clock) and the observing location, then return its
-    /// verification status.
+    /// local system clock) and the observing location, then return the
+    /// device's activation status.
     ///
     /// This does **not** perform polar alignment — call
     /// [`start_polar_align`](Self::start_polar_align) separately (EQ mode, clear
     /// sky). For a specific local time-zone string, build the [`SetTimeParams`]
     /// yourself and send [`Command::PiSetTime`] instead of using this helper.
     ///
-    /// Returns `true` if the scope reports itself verified (`pi_is_verified`).
+    /// Returns `true` if the device reports itself **activated**
+    /// (`pi_is_verified`). Despite the method's name this is a property of the
+    /// device, not of this connection: it says nothing about whether this
+    /// socket passed verification. For that see
+    /// [`verification`](Self::verification).
     pub async fn startup(&self, lat: f64, lon: f64) -> Result<bool, SeestarError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -338,7 +361,7 @@ impl SeestarClient {
         }))
         .await?;
         // `pi_is_verified` returns a bare boolean `result` (some firmware nests
-        // it under `is_verified`); treat anything else as not verified.
+        // it under `is_verified`); treat anything else as not activated.
         let resp = self.send_command(Command::PiIsVerified).await?;
         Ok(resp
             .result
@@ -367,6 +390,17 @@ impl SeestarClient {
         .await
     }
 
+    /// How the current control connection passes the device's verification
+    /// gate, or `None` while it is not connected.
+    ///
+    /// Negotiated afresh on every (re)connect.
+    pub fn verification(&self) -> Option<Verification> {
+        match self.link.get() {
+            LinkState::Negotiated(mode) => Some(mode),
+            LinkState::Unknown | LinkState::KeyRequired => None,
+        }
+    }
+
     /// Returns true if the control connection is currently alive.
     pub fn is_control_connected(&self) -> bool {
         self.control_connected.load(Ordering::Acquire)
@@ -377,10 +411,16 @@ impl SeestarClient {
         self.imaging_connected.load(Ordering::Acquire)
     }
 
-    /// Wait for the control connection to be established.
+    /// Wait for the control connection to be established and verified.
+    ///
+    /// Returns [`SeestarError::VerificationRequired`] as soon as the device
+    /// is found to need an interop key that is not configured.
     pub async fn wait_for_connection(&self, timeout: Duration) -> Result<(), SeestarError> {
         let deadline = tokio::time::Instant::now() + timeout;
         while !self.is_control_connected() {
+            if self.link.get() == LinkState::KeyRequired {
+                return Err(SeestarError::VerificationRequired);
+            }
             if tokio::time::Instant::now() >= deadline {
                 return Err(SeestarError::Timeout(timeout));
             }
