@@ -37,6 +37,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "event_parse"
+path = "fuzz_targets/event_parse.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1
 

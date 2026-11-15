@@ -1045,6 +1045,153 @@ mod tests {
         }
     }
 
+    // ── Robustness against a misbehaving peer ─────────────────────────────────
+    // (Forge task "Add auth robustness fake listener tests".) The peer here
+    // is an in-memory duplex stream under paused time, so timeouts are exact
+    // and nothing can hang the test run.
+
+    /// Run `negotiate` against a peer that reads one request and writes
+    /// `reply`, then goes silent with the socket open.
+    async fn negotiate_against(
+        key: Option<&InteropKey>,
+        replies: &'static [&'static str],
+    ) -> (Result<Negotiated, SeestarError>, Duration) {
+        let (mut client, mut server) = tokio::io::duplex(8192);
+        let peer = tokio::spawn(async move {
+            let (read, mut write) = tokio::io::split(&mut server);
+            let mut reader = BufReader::new(read);
+            for reply in replies {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                write.write_all(reply.as_bytes()).await.unwrap();
+            }
+            std::future::pending::<()>().await;
+        });
+        let started = tokio::time::Instant::now();
+        let (read, mut write) = tokio::io::split(&mut client);
+        let mut reader = BufReader::new(read);
+        let result = negotiate(&mut reader, &mut write, key).await;
+        peer.abort();
+        (result, started.elapsed())
+    }
+
+    const CHALLENGE_LINE: &str = "{\"id\":1001,\"code\":0,\"result\":{\"str\":\"c\"}}\r\n";
+
+    /// With a key, a peer that accepts and then says nothing fails after
+    /// exactly AUTH_TIMEOUT: bounded, and never treated as verified.
+    #[tokio::test(start_paused = true)]
+    async fn silent_peer_fails_after_auth_timeout() {
+        let key = interop_key_from_private(&make_test_private_key());
+        let (result, elapsed) = negotiate_against(Some(&key), &[]).await;
+        assert!(
+            matches!(result, Err(SeestarError::AuthFailed(_))),
+            "{result:?}"
+        );
+        assert_eq!(elapsed, AUTH_TIMEOUT);
+    }
+
+    /// Silence after the challenge (the peer never answers `verify_client`)
+    /// is also a bounded failure.
+    #[tokio::test(start_paused = true)]
+    async fn silence_after_challenge_fails_after_auth_timeout() {
+        let key = interop_key_from_private(&make_test_private_key());
+        let (result, elapsed) = negotiate_against(Some(&key), &[CHALLENGE_LINE]).await;
+        assert!(
+            matches!(&result, Err(SeestarError::AuthFailed(m)) if m.contains("timed out")),
+            "{result:?}"
+        );
+        assert_eq!(elapsed, AUTH_TIMEOUT);
+    }
+
+    /// A reply carrying the wrong id is not taken for the answer, however
+    /// plausible its body: a `verify_client` success sent in reply to
+    /// `get_verify_str` (wrong order), and a challenge with a foreign id.
+    #[tokio::test(start_paused = true)]
+    async fn replies_with_the_wrong_id_are_not_accepted() {
+        let key = interop_key_from_private(&make_test_private_key());
+        for reply in [
+            "{\"id\":1002,\"code\":0,\"result\":0}\r\n",
+            "{\"id\":7,\"code\":0,\"result\":{\"str\":\"c\"}}\r\n",
+            "{\"code\":0,\"result\":{\"str\":\"c\"}}\r\n",
+            "{\"id\":\"1001\",\"code\":0,\"result\":{\"str\":\"c\"}}\r\n",
+        ] {
+            let replies: &'static [&'static str] = Box::leak(Box::new([reply]));
+            let (result, elapsed) = negotiate_against(Some(&key), replies).await;
+            assert!(
+                matches!(result, Err(SeestarError::AuthFailed(_))),
+                "{reply}: {result:?}"
+            );
+            assert_eq!(elapsed, AUTH_TIMEOUT, "{reply}");
+        }
+    }
+
+    /// Truncated or non-JSON lines end the handshake at once with an error.
+    #[tokio::test(start_paused = true)]
+    async fn malformed_lines_fail_immediately() {
+        let key = interop_key_from_private(&make_test_private_key());
+        for reply in [
+            "{\"id\":1001,\"code\":0,\"result\":{\"str\":\r\n",
+            "\u{0}\u{1}\u{2}\r\n",
+            "[1001]]\r\n",
+        ] {
+            let replies: &'static [&'static str] = Box::leak(Box::new([reply]));
+            let (result, elapsed) = negotiate_against(Some(&key), replies).await;
+            assert!(
+                matches!(&result, Err(SeestarError::AuthFailed(m)) if m.contains("invalid JSON")),
+                "{reply:?}: {result:?}"
+            );
+            assert_eq!(elapsed, Duration::ZERO, "{reply:?}");
+        }
+    }
+
+    /// A challenge that is not a usable string is refused before anything is
+    /// signed or sent.
+    #[tokio::test(start_paused = true)]
+    async fn unusable_challenges_are_refused_with_a_key() {
+        let key = interop_key_from_private(&make_test_private_key());
+        for reply in [
+            "{\"id\":1001,\"code\":0,\"result\":{\"str\":42}}\r\n",
+            "{\"id\":1001,\"code\":0,\"result\":\"c\"}\r\n",
+            "{\"id\":1001,\"code\":200,\"error\":\"x\"}\r\n",
+        ] {
+            let replies: &'static [&'static str] = Box::leak(Box::new([reply]));
+            let (result, _) = negotiate_against(Some(&key), replies).await;
+            assert!(
+                matches!(&result, Err(SeestarError::AuthFailed(m)) if m.contains("result.str")),
+                "{reply}: {result:?}"
+            );
+        }
+    }
+
+    /// The peer closing mid-line (a reply cut off without its terminator) is
+    /// a closed connection, not a parsed reply.
+    #[tokio::test]
+    async fn reply_cut_off_before_its_terminator_is_a_closed_connection() {
+        let key = interop_key_from_private(&make_test_private_key());
+        let (addr, _telescope) = {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 256];
+                let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+                stream
+                    .write_all(b"{\"id\":1001,\"code\":0,\"result\":{\"str\":\"c\"}}")
+                    .await
+                    .unwrap();
+            });
+            (addr, handle)
+        };
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let err = negotiate_on(&mut stream, Some(&key)).await.unwrap_err();
+        assert!(
+            matches!(&err, SeestarError::AuthFailed(m) if m.contains("closed")),
+            "got {err:?}"
+        );
+    }
+
     /// No key and no reply to `get_verify_str` at all: carry on as legacy.
     #[tokio::test(start_paused = true)]
     async fn no_key_and_silent_device_is_legacy() {

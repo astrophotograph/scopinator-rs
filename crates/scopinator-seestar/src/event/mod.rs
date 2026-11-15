@@ -1107,4 +1107,81 @@ mod tests {
             other => panic!("expected PlateSolve, got {}", other.name()),
         }
     }
+
+    // Stable-toolchain counterpart of the `event_parse` fuzz target: whatever
+    // JSON arrives under a modeled or unmodeled event name, parsing returns
+    // an event (never panics, never errors), and it reports the name it was
+    // given.
+    mod never_panics {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arbitrary_json() -> impl Strategy<Value = serde_json::Value> {
+            let leaf = prop_oneof![
+                Just(serde_json::Value::Null),
+                any::<bool>().prop_map(serde_json::Value::from),
+                any::<i64>().prop_map(serde_json::Value::from),
+                any::<f64>().prop_map(|f| serde_json::json!(f)),
+                ".{0,12}".prop_map(serde_json::Value::from),
+            ];
+            leaf.prop_recursive(3, 24, 4, |inner| {
+                prop_oneof![
+                    proptest::collection::vec(inner.clone(), 0..4)
+                        .prop_map(serde_json::Value::from),
+                    proptest::collection::btree_map("[a-z_]{1,10}", inner, 0..4)
+                        .prop_map(|m| serde_json::Value::Object(m.into_iter().collect())),
+                ]
+            })
+        }
+
+        /// Member names the typed payloads read, so the generated objects hit
+        /// the typed fields with wrong-typed values and not only extra keys.
+        const MEMBERS: &[&str] = &[
+            "state",
+            "lapse_ms",
+            "count",
+            "hint",
+            "error",
+            "code",
+            "cur_ra_dec",
+            "dist_deg",
+            "temp",
+            "charger_status",
+            "battery_capacity",
+            "position",
+            "mode",
+            "tracking",
+            "stacked_frame",
+            "result",
+            "Timestamp",
+        ];
+
+        proptest! {
+            #[test]
+            fn any_payload_under_any_name_parses(
+                known in proptest::sample::select(known_event_names()),
+                other in "[A-Za-z0-9_]{0,12}",
+                use_known in any::<bool>(),
+                members in proptest::collection::vec(
+                    (proptest::sample::select(MEMBERS), arbitrary_json()), 0..8),
+            ) {
+                let name = if use_known { known.to_string() } else { other };
+                let mut object = serde_json::Map::new();
+                for (key, value) in members {
+                    object.insert(key.to_string(), value);
+                }
+                object.insert("Event".into(), name.clone().into());
+                let event = SeestarEvent::from_value(serde_json::Value::Object(object))
+                    .expect("an object with a string Event always parses");
+                prop_assert_eq!(event.name(), name.as_str());
+            }
+
+            #[test]
+            fn arbitrary_json_never_panics(value in arbitrary_json()) {
+                // Ok or Err, but never a panic.
+                let _ = SeestarEvent::from_value(value.clone());
+                let _ = serde_json::from_value::<SeestarEvent>(value);
+            }
+        }
+    }
 }
