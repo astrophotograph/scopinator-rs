@@ -66,7 +66,7 @@ KNOWN_RUST_COMMANDS = {
     "get_last_solve_result", "get_solve_result", "get_annotated_result",
     "scope_get_equ_coord", "scope_get_ra_dec", "scope_get_horiz_coord", "scope_sync",
     "scope_park", "scope_move_to_horizon", "scope_speed_move", "scope_set_track_state",
-    "goto_target", "iscope_start_view", "iscope_stop_view", "iscope_start_stack",
+    "iscope_start_view", "iscope_stop_view", "iscope_start_stack",
     "get_focuser_position", "move_focuser", "start_auto_focuse", "stop_auto_focuse",
     "set_user_location", "set_setting", "set_stack_setting", "set_control_value",
     "pi_output_set2", "begin_streaming", "stop_streaming", "get_stacked_img",

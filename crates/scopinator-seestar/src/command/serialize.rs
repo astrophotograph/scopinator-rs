@@ -85,7 +85,6 @@ fn command_params(cmd: &Command) -> Option<Value> {
         Command::SetControlValue(name, value) => Some(json!([name, value])),
 
         // Struct params
-        Command::GotoTarget(p) => serde_json::to_value(p).ok(),
         Command::IscopeStartView(p) => serde_json::to_value(p).ok(),
         // `stage` serializes via serde (StopStage -> "DarkLibrary"/"Stack"/"AutoGoto").
         // `None` sends no params, matching firmware 6.70's parameterless stop.
@@ -139,7 +138,7 @@ fn inject_verify(params: Option<Value>, needs_verify: bool) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::params::GotoTargetParams;
+    use crate::command::params::StartViewParams;
 
     #[test]
     fn serialize_no_param_command_with_verify() {
@@ -157,18 +156,28 @@ mod tests {
         assert!(msg.get("params").is_none());
     }
 
+    // A goto is `iscope_start_view` in star mode with a target. The expected
+    // message is the captured M44 goto from conformance/sessions/s30_fw706_small.
     #[test]
-    fn serialize_goto_with_verify() {
-        let cmd = Command::GotoTarget(GotoTargetParams {
-            target_name: "M31".into(),
-            is_j2000: true,
-            ra: 10.68,
-            dec: 41.27,
-        });
-        let msg = serialize_command(&cmd, 200, None);
-        assert_eq!(msg["method"], "goto_target");
-        assert_eq!(msg["params"]["verify"], true);
-        assert_eq!(msg["params"]["target_name"], "M31");
+    fn serialize_goto_matches_corpus_line() {
+        let cmd = Command::IscopeStartView(StartViewParams::goto(
+            "M44",
+            8.691286104794766,
+            19.514886908101506,
+        ));
+        let captured: Value = serde_json::from_str(
+            r#"{"method":"iscope_start_view","params":{"mode":"star","target_ra_dec":[8.691286104794766,19.514886908101506],"target_name":"M44","lp_filter":false,"verify":true},"id":10020}"#,
+        )
+        .unwrap();
+        assert_eq!(serialize_command(&cmd, 10020, None), captured);
+
+        // On a verified socket the same goto carries no marker.
+        let unmarked = serialize_command_marked(&cmd, 10020, false);
+        assert!(unmarked["params"].get("verify").is_none());
+        assert_eq!(
+            unmarked["params"]["target_ra_dec"],
+            captured["params"]["target_ra_dec"]
+        );
     }
 
     #[test]

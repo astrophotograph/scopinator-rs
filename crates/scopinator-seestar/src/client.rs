@@ -9,6 +9,7 @@ use tracing::{debug, info};
 use crate::auth::{InteropKey, Verification};
 use crate::command::params::{
     Direction, PolarAlignParams, SetTimeParams, SetUserLocationParams, SpeedMoveParams,
+    StartViewParams,
 };
 use crate::command::{Command, ImagingCommand};
 use crate::connection::control::{self, ClientRequest, Link, LinkState};
@@ -289,6 +290,31 @@ impl SeestarClient {
     /// the control port — `begin_streaming` starts the frame pipe, not the view.
     pub async fn begin_streaming(&self) -> Result<(), SeestarError> {
         self.send_imaging(ImagingCommand::BeginStreaming).await
+    }
+
+    /// Slew to a target and start viewing it (a "goto").
+    ///
+    /// `ra_hours` is right ascension in **hours** (0..24) and `dec_deg`
+    /// declination in degrees. This sends `iscope_start_view` in star mode
+    /// with the target, which is how the firmware slews to coordinates.
+    ///
+    /// A successful reply means the request was accepted, not that the scope
+    /// has arrived. The slew, plate solve and re-centring are reported by
+    /// `AutoGoto` / `ScopeGoto` events (see
+    /// [`subscribe_events`](Self::subscribe_events)); cancel with
+    /// [`Command::IscopeStopView`] and [`StopStage::AutoGoto`](crate::command::params::StopStage::AutoGoto).
+    pub async fn goto(
+        &self,
+        target_name: &str,
+        ra_hours: f64,
+        dec_deg: f64,
+    ) -> Result<CommandResponse, SeestarError> {
+        self.send_command(Command::IscopeStartView(StartViewParams::goto(
+            target_name,
+            ra_hours,
+            dec_deg,
+        )))
+        .await
     }
 
     /// Manually jog the mount toward a cardinal [`Direction`].

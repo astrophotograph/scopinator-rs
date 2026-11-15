@@ -1,16 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Parameters for `goto_target`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GotoTargetParams {
-    pub target_name: String,
-    pub is_j2000: bool,
-    /// RA in degrees (0.0..360.0).
-    pub ra: f64,
-    /// Dec in degrees (-90.0..90.0).
-    pub dec: f64,
-}
-
 /// Parameters for `iscope_start_view`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartViewParams {
@@ -24,6 +13,25 @@ pub struct StartViewParams {
     pub target_type: Option<SolarTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lp_filter: Option<bool>,
+}
+
+impl StartViewParams {
+    /// A goto: enter star mode and slew to a target.
+    ///
+    /// This is how the firmware slews to coordinates; there is no separate
+    /// goto method. `ra_hours` is right ascension in **hours** (0..24),
+    /// `dec_deg` declination in degrees. The reply only says the request was
+    /// accepted; progress and the outcome arrive as `AutoGoto` / `ScopeGoto`
+    /// events.
+    pub fn goto(target_name: impl Into<String>, ra_hours: f64, dec_deg: f64) -> Self {
+        Self {
+            mode: Some(ViewMode::Star),
+            target_name: Some(target_name.into()),
+            target_ra_dec: Some((ra_hours, dec_deg)),
+            target_type: None,
+            lp_filter: Some(false),
+        }
+    }
 }
 
 /// View modes for `iscope_start_view`.

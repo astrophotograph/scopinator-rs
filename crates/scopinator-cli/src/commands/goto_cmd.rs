@@ -2,8 +2,6 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use scopinator_seestar::command::Command;
-use scopinator_seestar::command::params::GotoTargetParams;
 use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig};
 use scopinator_types::Coordinates;
 
@@ -32,14 +30,9 @@ pub async fn goto(
 
     println!("Slewing to {name} ({coords})...");
 
-    let cmd = Command::GotoTarget(GotoTargetParams {
-        target_name: name.to_string(),
-        is_j2000: true,
-        ra: coords.ra.as_degrees(),
-        dec: coords.dec.as_degrees(),
-    });
-
-    let response = client.send_command(cmd).await?;
+    let response = client
+        .goto(name, coords.ra.as_hours(), coords.dec.as_degrees())
+        .await?;
     if response.is_success() {
         println!("Goto command accepted. Telescope is slewing.");
     } else {

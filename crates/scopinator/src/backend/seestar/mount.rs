@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
-use scopinator_seestar::command::params::GotoTargetParams;
 use scopinator_types::{Coordinates, DecDegrees, DeviceId, RaDegrees};
 
 use crate::device::capabilities::MountCapabilities;
@@ -67,17 +66,16 @@ impl Mount for SeestarMount {
     }
 
     async fn slew_to_coordinates(&self, coords: &Coordinates) -> Result<(), ScopinatorError> {
-        let cmd = Command::GotoTarget(GotoTargetParams {
-            target_name: format!(
-                "RA {:.4} Dec {:.4}",
-                coords.ra.as_hours(),
-                coords.dec.as_degrees()
-            ),
-            is_j2000: true,
-            ra: coords.ra.as_degrees(),
-            dec: coords.dec.as_degrees(),
-        });
-        self.client.send_and_validate(cmd).await?;
+        let (ra_hours, dec_deg) = (coords.ra.as_hours(), coords.dec.as_degrees());
+        let name = format!("RA {ra_hours:.4} Dec {dec_deg:.4}");
+        self.client
+            .goto(&name, ra_hours, dec_deg)
+            .await?
+            .into_result()
+            .map_err(|e| scopinator_seestar::SeestarError::CommandFailed {
+                code: e.code,
+                message: e.message,
+            })?;
         Ok(())
     }
 

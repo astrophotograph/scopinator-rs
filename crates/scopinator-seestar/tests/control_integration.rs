@@ -1267,3 +1267,29 @@ async fn event_during_handshake_reaches_subscribers() {
     assert!(matches!(ev, SeestarEvent::PiStatus(_)), "got {ev:?}");
     client.shutdown().await;
 }
+
+// A goto is `iscope_start_view` in star mode with the target; the firmware has
+// no `goto_target` method (103 on an S50, firmware 6.70). RA goes out in hours.
+#[tokio::test]
+async fn goto_sends_iscope_start_view_with_target() {
+    let fake = FakeSeestar::start().await;
+    let client = connect(&fake).await;
+
+    let resp = client.goto("M44", 8.69, 19.51).await.expect("goto");
+    assert!(resp.is_success());
+
+    let received = fake.received();
+    let goto = received.last().expect("goto request");
+    assert_eq!(goto["method"], "iscope_start_view");
+    assert_eq!(
+        goto["params"],
+        json!({
+            "mode": "star",
+            "target_ra_dec": [8.69, 19.51],
+            "target_name": "M44",
+            "lp_filter": false,
+            "verify": true,
+        })
+    );
+    client.shutdown().await;
+}

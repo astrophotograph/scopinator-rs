@@ -46,7 +46,6 @@ pub enum Command {
     ScopeSetTrackState(bool),
 
     // -- Observation --
-    GotoTarget(GotoTargetParams),
     IscopeStartView(StartViewParams),
     /// Stop the live view. The `stage` parameter is optional: firmware 6.70
     /// is observed to accept a parameterless `iscope_stop_view` (just the
@@ -134,7 +133,6 @@ pub fn command_method_names() -> &'static [&'static str] {
         "scope_move_to_horizon",
         "scope_speed_move",
         "scope_set_track_state",
-        "goto_target",
         "iscope_start_view",
         "iscope_stop_view",
         "iscope_start_stack",
@@ -192,7 +190,6 @@ impl Command {
             Self::ScopeMoveToHorizon => "scope_move_to_horizon",
             Self::ScopeSpeedMove(_) => "scope_speed_move",
             Self::ScopeSetTrackState(_) => "scope_set_track_state",
-            Self::GotoTarget(_) => "goto_target",
             Self::IscopeStartView(_) => "iscope_start_view",
             Self::IscopeStopView(_) => "iscope_stop_view",
             Self::IscopeStartStack(_) => "iscope_start_stack",
@@ -316,12 +313,6 @@ mod tests {
                 percent: 0,
             }),
             Command::ScopeSetTrackState(true),
-            Command::GotoTarget(GotoTargetParams {
-                target_name: "M31".into(),
-                is_j2000: true,
-                ra: 0.0,
-                dec: 0.0,
-            }),
             Command::IscopeStartView(StartViewParams {
                 mode: None,
                 target_name: None,

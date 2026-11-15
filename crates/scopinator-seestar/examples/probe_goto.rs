@@ -3,8 +3,8 @@
 //!   1. enter star mode (`iscope_start_view {mode:star}`) — unparks/activates.
 //!   2. if still poleward, goto a near-zenith target via
 //!      `iscope_start_view {mode:star, target_ra_dec:[RA_h, Dec_deg], ...}`
-//!      (seestar_alp's actual "goto" — a bare goto_target is what the firmware
-//!      rejects as invalid).
+//!      (seestar_alp's actual "goto"; the firmware has no separate goto
+//!      method).
 //!
 //! The target is the meridian at the observer's latitude (≈ zenith), computed
 //! from the device's location + system UTC, so it's above the horizon. Absolute
