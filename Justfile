@@ -68,6 +68,10 @@ parity-update-golden:
 cov:
     cargo llvm-cov --workspace --all-features --summary-only
 
+# The nightly coverage gate (same floor as .github/workflows/extended.yml).
+cov-check:
+    cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 78
+
 cov-html:
     cargo llvm-cov --workspace --all-features --html
     @echo "open target/llvm-cov/html/index.html"

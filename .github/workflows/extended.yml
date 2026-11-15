@@ -36,7 +36,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
-      - run: cargo llvm-cov report --summary-only
+      # Floor: workspace line coverage measured 81.98% on 2026-11-14. The floor
+      # sits a few points below so that timing-dependent paths do not flake it;
+      # raise it when coverage rises.
+      - run: cargo llvm-cov report --summary-only --fail-under-lines 78
       - uses: actions/upload-artifact@v4
         with:
           name: lcov
@@ -53,6 +56,7 @@ jobs:
           - frame_parse
           - json_rpc_classify
           - discovery_parse
+          - event_parse
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -64,7 +68,13 @@ jobs:
           tool: cargo-fuzz
       - name: smoke run (60s)
         working-directory: fuzz
-        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60
+        # A target with committed seeds (fuzz/seeds/<target>) starts from them;
+        # fuzz/corpus is the scratch corpus and is not committed.
+        run: |
+          mkdir -p "corpus/${{ matrix.target }}"
+          SEEDS=""
+          if [ -d "seeds/${{ matrix.target }}" ]; then SEEDS="seeds/${{ matrix.target }}"; fi
+          cargo +nightly fuzz run ${{ matrix.target }} "corpus/${{ matrix.target }}" $SEEDS -- -max_total_time=60
       - name: upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
