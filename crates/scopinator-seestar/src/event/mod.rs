@@ -95,7 +95,7 @@ seestar_events! {
     Internal(serde_json::Value) = "Internal",
     PlateSolve(serde_json::Value) = "PlateSolve",
     ScanSun(serde_json::Value) = "ScanSun",
-    SecondView(serde_json::Value) = "SecondView",
+    SecondView(ViewEventData) = "SecondView",
     SelectCamera(serde_json::Value) = "SelectCamera",
     Setting(serde_json::Value) = "Setting",
     ThreePPA(serde_json::Value) = "3PPA",

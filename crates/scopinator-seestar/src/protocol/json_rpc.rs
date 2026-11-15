@@ -6,6 +6,13 @@ pub const CONTROL_PORT: u16 = 4700;
 /// Default imaging port.
 pub const IMAGING_PORT: u16 = 4800;
 
+/// Control port of the wide camera's own imager process on two-camera
+/// models. It has the same methods and its own verification gate.
+pub const WIDE_CONTROL_PORT: u16 = 4702;
+
+/// Image port of the wide camera on two-camera models.
+pub const WIDE_IMAGING_PORT: u16 = 4804;
+
 /// Default discovery port (UDP).
 pub const DISCOVERY_PORT: u16 = 4720;
 

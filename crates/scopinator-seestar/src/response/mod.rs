@@ -162,8 +162,44 @@ pub struct DeviceSummary {
     /// True if the reply had a `second_camera` section (the wide camera on
     /// dual-camera models).
     pub has_second_camera: Option<bool>,
+    /// The wide camera's sensor and optics, from the `second_camera` section.
+    pub second_camera: Option<SensorSummary>,
     /// The `device.can_*` capability flags, by their wire names.
     pub capabilities: std::collections::BTreeMap<String, bool>,
+}
+
+/// Sensor and optics of one camera, as reported in `get_device_state`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SensorSummary {
+    /// `chip_size` as (width, height) in pixels.
+    pub chip_size: Option<(u32, u32)>,
+    pub pixel_size_um: Option<f64>,
+    /// `focal_len`: focal length in millimetres.
+    pub focal_length_mm: Option<f64>,
+    /// `debayer_pattern`, e.g. `RG`.
+    pub debayer_pattern: Option<String>,
+}
+
+impl SensorSummary {
+    fn from_section(section: &serde_json::Value) -> Self {
+        let size = section.get("chip_size").and_then(|v| v.as_array());
+        let chip_size = match size.map(Vec::as_slice) {
+            Some([w, h]) => w
+                .as_u64()
+                .zip(h.as_u64())
+                .map(|(w, h)| (w as u32, h as u32)),
+            _ => None,
+        };
+        Self {
+            chip_size,
+            pixel_size_um: section.get("pixel_size_um").and_then(|v| v.as_f64()),
+            focal_length_mm: section.get("focal_len").and_then(|v| v.as_f64()),
+            debayer_pattern: section
+                .get("debayer_pattern")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        }
+    }
 }
 
 impl DeviceSummary {
@@ -213,8 +249,11 @@ impl DeviceSummary {
         }
         // A full (unkeyed) reply always has both sections; only then does the
         // absence of `second_camera` mean there is none.
-        if device.is_some() && camera.is_some() {
-            self.has_second_camera = Some(result.get("second_camera").is_some());
+        if let Some(second) = result.get("second_camera") {
+            self.second_camera = Some(SensorSummary::from_section(second));
+            self.has_second_camera = Some(true);
+        } else if device.is_some() && camera.is_some() {
+            self.has_second_camera = Some(false);
         }
         device.is_some() || camera.is_some()
     }

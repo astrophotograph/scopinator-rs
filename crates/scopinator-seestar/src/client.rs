@@ -16,11 +16,11 @@ use crate::connection::control::{self, ClientRequest, Link, LinkState};
 use crate::connection::imaging::{self, ImageFrame};
 use crate::error::SeestarError;
 use crate::event::SeestarEvent;
-use crate::protocol::json_rpc::{CONTROL_PORT, IMAGING_PORT};
+use crate::protocol::json_rpc::{CONTROL_PORT, IMAGING_PORT, WIDE_CONTROL_PORT, WIDE_IMAGING_PORT};
 use crate::response::CommandResponse;
 
 /// Configuration for connecting to a Seestar telescope.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SeestarConfig {
     /// RSA interoperability key for the `verify_client` challenge/response
     /// handshake (present on firmware 6.70 and later).
@@ -208,6 +208,26 @@ impl SeestarClient {
     ) -> Result<Self, SeestarError> {
         let control_addr = SocketAddr::V4(SocketAddrV4::new(ip, CONTROL_PORT));
         let imaging_addr = SocketAddr::V4(SocketAddrV4::new(ip, IMAGING_PORT));
+
+        Self::connect_internal(ip, control_addr, imaging_addr, config).await
+    }
+
+    /// Connect to the **wide camera** of a two-camera Seestar: its own imager
+    /// process on control port 4702 and image port 4804.
+    ///
+    /// The wide camera is a second device in most respects. It has its own
+    /// verification gate (the same key works), its own view (`SecondView`,
+    /// started with `iscope_start_view` on this connection, which does not
+    /// move the mount) and its own settings. Its frames come from
+    /// `begin_streaming` on its image port; on the S30 it only streams, and
+    /// one-shot image requests answer "there is no image now".
+    ///
+    /// Whether a device has one is reported by
+    /// [`DeviceSummary::has_second_camera`](crate::DeviceSummary) on the main
+    /// connection. Connecting to a one-camera device simply never connects.
+    pub async fn connect_wide(ip: Ipv4Addr, config: SeestarConfig) -> Result<Self, SeestarError> {
+        let control_addr = SocketAddr::V4(SocketAddrV4::new(ip, WIDE_CONTROL_PORT));
+        let imaging_addr = SocketAddr::V4(SocketAddrV4::new(ip, WIDE_IMAGING_PORT));
 
         Self::connect_internal(ip, control_addr, imaging_addr, config).await
     }
