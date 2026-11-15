@@ -364,10 +364,29 @@ mod tests {
         match event {
             SeestarEvent::ScopeTrack(data) => {
                 assert!(data.tracking);
-                assert_eq!(data.state.as_deref(), Some("on"));
+                assert_eq!(data.state, Some(TrackState::On));
+                assert!(data.route.is_empty());
             }
             _ => panic!("expected ScopeTrack"),
         }
+    }
+
+    // The shape the spec gives for tracking stopped below the horizon
+    // (docs/guider/events/ScopeTrack.md, READ).
+    #[test]
+    fn scope_track_off_carries_the_reason() {
+        let json = r#"{"Event":"ScopeTrack","Timestamp":"1234.123456789","state":"off",
+            "tracking":false,"manual":false,"error":"below horizon","code":270,
+            "route":["AutoGoto"]}"#;
+        let event: SeestarEvent = serde_json::from_str(json).unwrap();
+        let SeestarEvent::ScopeTrack(data) = event else {
+            panic!("expected ScopeTrack");
+        };
+        assert_eq!(data.state, Some(TrackState::Off));
+        assert!(!data.tracking);
+        assert_eq!(data.error.as_deref(), Some("below horizon"));
+        assert_eq!(data.code, 270);
+        assert_eq!(data.route, ["AutoGoto"]);
     }
 
     // ==================================================================

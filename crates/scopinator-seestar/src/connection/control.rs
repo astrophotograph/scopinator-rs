@@ -445,7 +445,16 @@ fn handle_response(msg: &serde_json::Value, state: &Arc<ControlState>) {
     let response: CommandResponse = match serde_json::from_value(msg.clone()) {
         Ok(r) => r,
         Err(e) => {
-            warn!("failed to deserialize response: {e}");
+            // The device answered, but not in a form this crate can read.
+            // Tell the waiting caller now instead of letting it time out.
+            warn!(id, "failed to deserialize response: {e}");
+            if let Some(sender) = state.pending.take(id) {
+                let _ = sender.send(Err(SeestarError::MalformedResponse {
+                    id,
+                    reason: e.to_string(),
+                    raw: msg.to_string(),
+                }));
+            }
             return;
         }
     };

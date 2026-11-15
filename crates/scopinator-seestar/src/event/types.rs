@@ -153,16 +153,30 @@ pub struct ScopeHomeEventData {
     pub close: bool,
 }
 
+open_string_enum! {
+    /// The `state` of a `ScopeTrack` event. It mirrors `tracking`.
+    TrackState {
+        On = "on",
+        Off = "off",
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScopeTrackEventData {
-    pub state: Option<String>,
+    pub state: Option<TrackState>,
     #[serde(default)]
     pub tracking: bool,
+    /// Set when a tracking command caused the device to check its state.
     #[serde(default)]
     pub manual: bool,
+    /// Why tracking is off, when the device gives a reason (for example
+    /// `below horizon`, code 270).
     pub error: Option<String>,
     #[serde(default)]
     pub code: i32,
+    /// The functions this event was raised under, outermost first.
+    #[serde(default)]
+    pub route: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -26,6 +26,16 @@ pub enum SeestarError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// The device answered a request with a message that could not be read
+    /// as a response (for example a member of the wrong type). `raw` is the
+    /// message as received.
+    #[error("unreadable response to request {id}: {reason}")]
+    MalformedResponse {
+        id: u64,
+        reason: String,
+        raw: String,
+    },
+
     #[error("line too long: {size} bytes (limit: {limit})")]
     LineTooLong { size: usize, limit: usize },
 

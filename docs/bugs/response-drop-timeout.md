@@ -1,5 +1,11 @@
 # Undeserializable response is warn-and-dropped; caller eats the full response timeout
 
+> **Fixed 2026-11-15.** A response that cannot be deserialized is now delivered to the caller
+> waiting on its id as `SeestarError::MalformedResponse { id, reason, raw }`, at once, and the
+> registry entry is released. Pinned by `malformed_response_for_pending_id_fails_the_caller_at_once`
+> (`crates/scopinator-seestar/tests/control_integration.rs`). The text below describes the
+> behaviour before the fix.
+
 Filed from Forge task "Characterize silent drop paths and write bug report" (Scopinator, testing sweep).
 Status: **open, not adjudicated.** This report describes current behaviour and what a caller would
 want instead; it changes no production code.

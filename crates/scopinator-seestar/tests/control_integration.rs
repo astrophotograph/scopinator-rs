@@ -532,22 +532,18 @@ async fn response_timeout_fires_during_reconnect_window() {
     client.shutdown().await;
 }
 
-// Characterizes docs/bugs/response-drop-timeout.md (Forge task "Characterize
-// silent drop paths and write bug report"). A response-shaped message (id +
-// code present, so `json_rpc::is_response` classifies it) whose body fails
-// `CommandResponse` deserialization is warn-and-dropped in `handle_response`
-// (control.rs) — even when its id matches a pending request. Pinned: the
-// waiting caller gets no correlation error and eats the full configured
-// response timeout (500 ms here; `DEFAULT_RESPONSE_TIMEOUT` = 30 s in
-// production), while the connection stays healthy — the error is `Timeout`,
-// not `Disconnected`, and the reader keeps processing (the event pushed after
-// the garbage body still arrives).
+// docs/bugs/response-drop-timeout.md. A response-shaped message (id + code
+// present, so `json_rpc::is_response` classifies it) whose body fails
+// `CommandResponse` deserialization used to be dropped, leaving the caller to
+// wait out the whole response timeout. It is now delivered to the caller that
+// is waiting on that id as `MalformedResponse`, at once, with the raw line;
+// the connection stays healthy and the reader keeps processing.
 #[tokio::test(start_paused = true)]
-async fn malformed_response_for_pending_id_is_dropped_and_caller_times_out() {
+async fn malformed_response_for_pending_id_fails_the_caller_at_once() {
     let fake = FakeSeestar::start().await;
     fake.silent_on("get_view_state");
     let config = SeestarConfig {
-        response_timeout: Some(Duration::from_millis(500)),
+        response_timeout: Some(Duration::from_secs(30)),
         ..Default::default()
     };
     let client = std::sync::Arc::new(
@@ -574,8 +570,7 @@ async fn malformed_response_for_pending_id_is_dropped_and_caller_times_out() {
 
     // Wait (bounded, virtual time) until the command reaches the fake, then
     // read back the id the registry allocated for it. By then the request is
-    // registered as pending, so the garbage below really is dropped for a
-    // live waiter.
+    // registered as pending, so the garbage below reaches a live waiter.
     let mut id = None;
     for _ in 0..200 {
         if let Some(msg) = fake
@@ -598,7 +593,7 @@ async fn malformed_response_for_pending_id_is_dropped_and_caller_times_out() {
         r#"{{"jsonrpc":"2.0","id":{id},"method":"get_view_state","code":"garbage"}}"#
     ));
 
-    // The reader survives the warn-and-drop: a later event still flows.
+    // The reader carries on: a later event still flows.
     fake.send_event(corpus_event("PiStatus"));
 
     let err = tokio::time::timeout(Duration::from_secs(5), send)
@@ -606,12 +601,20 @@ async fn malformed_response_for_pending_id_is_dropped_and_caller_times_out() {
         .expect("send_command must not hang")
         .expect("send task join")
         .unwrap_err();
-    // The caller ate the full timeout rather than erroring promptly.
-    assert!(start.elapsed() >= Duration::from_millis(500));
-    assert!(
-        matches!(err, SeestarError::Timeout(d) if d == Duration::from_millis(500)),
-        "got {err:?}"
-    );
+    // Well inside the 30 s response timeout.
+    assert!(start.elapsed() < Duration::from_secs(5));
+    match err {
+        SeestarError::MalformedResponse {
+            id: got,
+            reason,
+            raw,
+        } => {
+            assert_eq!(got, id);
+            assert!(!reason.is_empty());
+            assert!(raw.contains("garbage"), "raw line kept: {raw}");
+        }
+        other => panic!("got {other:?}"),
+    }
 
     let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
         .await
