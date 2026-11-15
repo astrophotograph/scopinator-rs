@@ -1674,3 +1674,60 @@ async fn disk_volume_uses_the_object_marker() {
     );
     client.shutdown().await;
 }
+
+// ============================================================================
+// Connection limit (Forge task "Back off on connection-limit rejection"). The
+// device admits two client addresses (eight with guest mode); beyond that it
+// sends Alert 429 to the new socket and closes it.
+// ============================================================================
+
+#[tokio::test]
+async fn connection_limit_is_reported_and_backed_off() {
+    let fake = FakeSeestar::start().await;
+    fake.refuse_connections(true);
+    let client = connect_with(&fake, SeestarConfig::default()).await;
+
+    // The caller is told why, promptly, instead of waiting out a timeout.
+    let started = std::time::Instant::now();
+    let err = client
+        .wait_for_connection(Duration::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SeestarError::ConnectionLimit), "got {err:?}");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let err = client
+        .send_command(Command::GetDeviceState)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SeestarError::ConnectionLimit), "got {err:?}");
+    assert!(!client.is_control_connected());
+
+    // Backoff grows: waits are 1 s then 2 s, each plus up to 1 s of jitter,
+    // so the second attempt lands within 2 s and the third not before 3 s.
+    // A loop that reset its backoff on every accepted TCP connection would
+    // have made three or more attempts by now.
+    tokio::time::sleep(Duration::from_millis(2500).saturating_sub(started.elapsed())).await;
+    assert_eq!(fake.connection_count(), 2, "attempts after 2.5 s");
+
+    // Once the device has room again, a later attempt connects and the
+    // error clears by itself.
+    fake.refuse_connections(false);
+    client
+        .wait_for_connection(Duration::from_millis(1))
+        .await
+        .expect_err("still refused until the next attempt");
+    let mut connected = false;
+    for _ in 0..80 {
+        if client.is_control_connected() {
+            connected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(connected, "client did not recover after the limit cleared");
+    client
+        .send_command(Command::TestConnection)
+        .await
+        .expect("command after recovery");
+    client.shutdown().await;
+}

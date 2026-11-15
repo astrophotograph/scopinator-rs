@@ -270,10 +270,12 @@ impl SeestarClient {
     /// Send a command and wait for the response.
     ///
     /// Fails at once with [`SeestarError::VerificationRequired`] if the device
-    /// is known to need an interop key that is not configured.
+    /// is known to need an interop key that is not configured, and with
+    /// [`SeestarError::ConnectionLimit`] while the device is refusing the
+    /// connection for having too many clients.
     pub async fn send_command(&self, cmd: Command) -> Result<CommandResponse, SeestarError> {
-        if self.link.get() == LinkState::KeyRequired {
-            return Err(SeestarError::VerificationRequired);
+        if let Some(error) = self.link.get().blocking_error() {
+            return Err(error);
         }
 
         let (response_tx, response_rx) = oneshot::channel();
@@ -635,7 +637,7 @@ impl SeestarClient {
     pub fn verification(&self) -> Option<Verification> {
         match self.link.get() {
             LinkState::Negotiated(mode) => Some(mode),
-            LinkState::Unknown | LinkState::KeyRequired => None,
+            LinkState::Unknown | LinkState::KeyRequired | LinkState::ConnectionLimit => None,
         }
     }
 
@@ -673,12 +675,15 @@ impl SeestarClient {
     /// Wait for the control connection to be established and verified.
     ///
     /// Returns [`SeestarError::VerificationRequired`] as soon as the device
-    /// is found to need an interop key that is not configured.
+    /// is found to need an interop key that is not configured, and
+    /// [`SeestarError::ConnectionLimit`] as soon as it refuses the connection
+    /// for having too many clients (the client keeps retrying in the
+    /// background, so a later call can succeed).
     pub async fn wait_for_connection(&self, timeout: Duration) -> Result<(), SeestarError> {
         let deadline = tokio::time::Instant::now() + timeout;
         while !self.is_control_connected() {
-            if self.link.get() == LinkState::KeyRequired {
-                return Err(SeestarError::VerificationRequired);
+            if let Some(error) = self.link.get().blocking_error() {
+                return Err(error);
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(SeestarError::Timeout(timeout));

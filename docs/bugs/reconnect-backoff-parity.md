@@ -1,5 +1,12 @@
 # Reconnect backoff: Rust `ReconnectPolicy` vs pyscopinator `connection.py`
 
+> **Partly resolved 2026-11-14.** The control and imaging reconnect loops now add up to 1 s of
+> random delay to every wait (`ReconnectPolicy::with_jitter`, `DEFAULT_JITTER`), matching
+> pyscopinator's normal path. `ReconnectPolicy::new()` remains the deterministic schedule and is
+> what the unit tests pin. Divergence 2 (the reboot-detected schedule) is still open. Also new: a
+> connection the device refuses with Alert 429 does not reset the backoff, and is reported as
+> `SeestarError::ConnectionLimit`.
+
 Forge task: "Add ReconnectPolicy parity spec test" (Scopinator). Compared by hand on
 2026-11-08 against `pyscopinator/src/scopinator/seestar/connection.py`, because the
 foreman worker that wrote the spec test could not read the sibling checkout.

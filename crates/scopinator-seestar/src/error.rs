@@ -50,6 +50,15 @@ pub enum SeestarError {
     )]
     VerificationRequired,
 
+    /// The device refused the connection because too many clients are
+    /// connected (Alert 429). It admits two distinct client addresses, or
+    /// eight with guest mode on. The client keeps retrying with backoff.
+    #[error(
+        "the telescope refused the connection: too many clients are connected \
+         (close another app or enable guest mode)"
+    )]
+    ConnectionLimit,
+
     #[error("failed to load interoperability key: {0}")]
     InteropKeyLoad(String),
 }

@@ -227,6 +227,9 @@ struct Shared {
     /// When `Some`, `set_setting` / `get_setting` are emulated against this
     /// store the way firmware 6.70 handles them (see `emulate_settings`).
     settings: Mutex<Option<serde_json::Map<String, Value>>>,
+    /// When set, every new control connection is sent the connection-limit
+    /// Alert (code 429) and closed, as the device does over its client limit.
+    refuse_connections: AtomicBool,
     /// Count of accepted control connections (for reconnect assertions).
     connections: AtomicUsize,
     /// Currently-established control connections: accepted minus ended.
@@ -363,6 +366,7 @@ impl FakeSeestar {
             raw_lines: Mutex::new(Vec::new()),
             marker_gate: AtomicBool::new(false),
             settings: Mutex::new(None),
+            refuse_connections: AtomicBool::new(false),
             connections: AtomicUsize::new(0),
             active_control: AtomicIsize::new(0),
             actions,
@@ -494,6 +498,15 @@ impl FakeSeestar {
             .lock()
             .unwrap()
             .insert(method.to_string(), frames);
+        self
+    }
+
+    /// Refuse (or stop refusing) new control connections the way the device
+    /// does when its client limit is reached: send `Alert` 429, then close.
+    pub fn refuse_connections(&self, refuse: bool) -> &Self {
+        self.shared
+            .refuse_connections
+            .store(refuse, Ordering::SeqCst);
         self
     }
 
@@ -638,6 +651,17 @@ fn emulate_setting_call(
 async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
     let _ = stream.set_nodelay(true);
     let (read_half, mut write_half) = tokio::io::split(stream);
+    if shared.refuse_connections.load(Ordering::SeqCst) {
+        let alert = json!({
+            "Event": "Alert", "Timestamp": "1.0", "code": 429, "Type": "error",
+            "Msg": "Exceed the maximum number of connections",
+        });
+        let _ = write_half
+            .write_all(format!("{alert}\r\n").as_bytes())
+            .await;
+        let _ = write_half.shutdown().await;
+        return;
+    }
     let mut reader = BufReader::new(read_half);
     let mut actions = shared.actions.subscribe();
     let mut line = String::new();

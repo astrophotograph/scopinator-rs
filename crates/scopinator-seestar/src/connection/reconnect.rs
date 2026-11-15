@@ -12,22 +12,52 @@ pub struct ReconnectPolicy {
     max_backoff: Duration,
     /// Number of consecutive failures.
     failures: u32,
+    /// Upper bound of the random delay added to every wait, so that several
+    /// clients that lost the same device do not reconnect in step.
+    jitter: Duration,
+}
+
+/// Default upper bound of the random delay added to each reconnect wait
+/// (pyscopinator adds `uniform(0, 1)` seconds).
+pub const DEFAULT_JITTER: Duration = Duration::from_secs(1);
+
+/// A uniformly distributed duration in `[0, max]`, from the standard
+/// library's randomly seeded hasher (no dependency on a random-number crate).
+fn random_up_to(max: Duration) -> Duration {
+    use std::hash::{BuildHasher, Hasher};
+    if max.is_zero() {
+        return Duration::ZERO;
+    }
+    let random = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    max.mul_f64((random >> 11) as f64 / (1u64 << 53) as f64)
 }
 
 impl ReconnectPolicy {
+    /// The deterministic schedule: 1, 2, 4, ... 60 seconds, no jitter.
     pub fn new() -> Self {
         Self {
             backoff: Duration::from_secs(1),
             min_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
             failures: 0,
+            jitter: Duration::ZERO,
+        }
+    }
+
+    /// The same schedule with up to `jitter` of random delay added to each wait.
+    pub fn with_jitter(jitter: Duration) -> Self {
+        Self {
+            jitter,
+            ..Self::new()
         }
     }
 
     /// Record a failure and return the duration to wait before retrying.
     pub fn next_backoff(&mut self) -> Duration {
         self.failures += 1;
-        let wait = self.backoff;
+        let wait = self.backoff + random_up_to(self.jitter);
 
         // Double the backoff, capped at max
         self.backoff = (self.backoff * 2).min(self.max_backoff);
@@ -65,6 +95,28 @@ mod tests {
 
     const MIN_BACKOFF: Duration = Duration::from_secs(1);
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn jitter_adds_a_bounded_random_delay() {
+        let jitter = Duration::from_millis(500);
+        let mut waits = Vec::new();
+        for _ in 0..50 {
+            let mut p = ReconnectPolicy::with_jitter(jitter);
+            let first = p.next_backoff();
+            assert!(
+                first >= MIN_BACKOFF && first <= MIN_BACKOFF + jitter,
+                "{first:?}"
+            );
+            let second = p.next_backoff();
+            let base = Duration::from_secs(2);
+            assert!(second >= base && second <= base + jitter, "{second:?}");
+            waits.push(first);
+        }
+        // Not all the same: the delay really is random.
+        assert!(waits.iter().any(|w| *w != waits[0]));
+        // Without jitter the schedule is exact.
+        assert_eq!(ReconnectPolicy::new().next_backoff(), MIN_BACKOFF);
+    }
 
     #[test]
     fn first_backoff_is_min() {

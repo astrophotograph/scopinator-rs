@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::command::ImagingCommand;
-use crate::connection::reconnect::ReconnectPolicy;
+use crate::connection::reconnect::{self, ReconnectPolicy};
 use crate::error::SeestarError;
 use crate::protocol::frame::{FrameHeader, HEADER_SIZE, MAX_PAYLOAD_SIZE, PayloadKind};
 use scopinator_types::FrameKind;
@@ -127,7 +127,13 @@ pub(crate) async fn run(
     shutdown: watch::Receiver<bool>,
     mut cmd_rx: mpsc::Receiver<Vec<u8>>,
 ) {
-    let mut policy = ReconnectPolicy::new();
+    // Unit tests pin exact reconnect timing, so they run without jitter.
+    let jitter = if cfg!(test) {
+        Duration::ZERO
+    } else {
+        reconnect::DEFAULT_JITTER
+    };
+    let mut policy = ReconnectPolicy::with_jitter(jitter);
 
     loop {
         if *shutdown.borrow() {

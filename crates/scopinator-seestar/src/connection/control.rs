@@ -11,7 +11,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::auth::{InteropKey, Verification};
 use crate::command::Command;
 use crate::command::serialize::WireProfile;
-use crate::connection::reconnect::ReconnectPolicy;
+use crate::connection::reconnect::{self, ReconnectPolicy};
 use crate::connection::registry::Registry;
 use crate::error::SeestarError;
 use crate::event::SeestarEvent;
@@ -44,6 +44,21 @@ pub(crate) enum LinkState {
     /// The last connection attempt found that the device needs an interop
     /// key and none is configured. Commands cannot succeed.
     KeyRequired,
+    /// The last connection attempt was refused because too many clients are
+    /// connected. The loop keeps retrying with backoff.
+    ConnectionLimit,
+}
+
+impl LinkState {
+    /// The error callers should get instead of waiting, if the link is known
+    /// to be unusable right now.
+    pub(crate) fn blocking_error(self) -> Option<SeestarError> {
+        match self {
+            Self::KeyRequired => Some(SeestarError::VerificationRequired),
+            Self::ConnectionLimit => Some(SeestarError::ConnectionLimit),
+            Self::Unknown | Self::Negotiated(_) => None,
+        }
+    }
 }
 
 /// What is known about the device behind the link.
@@ -141,7 +156,13 @@ pub(crate) async fn run(
     link: Arc<Link>,
 ) {
     let state = Arc::new(ControlState::with_link(Arc::clone(&link)));
-    let mut policy = ReconnectPolicy::new();
+    // Unit tests pin exact reconnect timing, so they run without jitter.
+    let jitter = if cfg!(test) {
+        Duration::ZERO
+    } else {
+        reconnect::DEFAULT_JITTER
+    };
+    let mut policy = ReconnectPolicy::with_jitter(jitter);
 
     // Wrap request_rx in Arc<Mutex> so we can reuse it across reconnections
     let request_rx = Arc::new(Mutex::new(request_rx));
@@ -205,16 +226,23 @@ pub(crate) async fn run(
                         link.set(LinkState::Unknown);
                         info!("control connection lost, will reconnect");
                     }
-                    Err(SeestarError::VerificationRequired) => {
-                        error!("{}", SeestarError::VerificationRequired);
-                        link.set(LinkState::KeyRequired);
-                        // Queued commands can never be sent; fail them now
+                    Err(
+                        e @ (SeestarError::VerificationRequired | SeestarError::ConnectionLimit),
+                    ) => {
+                        error!("{e}");
+                        let state = if matches!(e, SeestarError::ConnectionLimit) {
+                            LinkState::ConnectionLimit
+                        } else {
+                            LinkState::KeyRequired
+                        };
+                        link.set(state);
+                        // Queued commands cannot be sent now; fail them
                         // instead of letting each one run out its timeout.
                         let mut rx = request_rx.lock().await;
                         while let Ok(req) = rx.try_recv() {
-                            let _ = req
-                                .response_tx
-                                .send(Err(SeestarError::VerificationRequired));
+                            if let Some(error) = state.blocking_error() {
+                                let _ = req.response_tx.send(Err(error));
+                            }
                         }
                     }
                     Err(e) => {

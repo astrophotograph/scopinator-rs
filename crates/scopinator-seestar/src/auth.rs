@@ -53,6 +53,9 @@ const ID_GET_VERIFY: u64 = 1001;
 const ID_VERIFY_CLIENT: u64 = 1002;
 const ID_MARKER_PROBE: u64 = 1003;
 
+/// `code` of the Alert sent to a connection refused for exceeding the client limit.
+const CODE_CONNECTION_LIMIT: i64 = 429;
+
 /// Device error code for an unknown method.
 const CODE_METHOD_NOT_FOUND: i64 = 103;
 
@@ -323,9 +326,20 @@ where
             if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
                 return Ok(Some(msg));
             }
+            if is_connection_limit_alert(&msg) {
+                return Err(SeestarError::ConnectionLimit);
+            }
             self.deferred.push(msg);
         }
     }
+}
+
+/// True for the `Alert` the device sends to a connection it is about to close
+/// because the client limit is reached:
+/// `{"Event":"Alert","code":429,"Msg":"Exceed the maximum number of connections",...}`.
+fn is_connection_limit_alert(msg: &serde_json::Value) -> bool {
+    msg.get("Event").and_then(|e| e.as_str()) == Some("Alert")
+        && msg.get("code").and_then(|c| c.as_i64()) == Some(CODE_CONNECTION_LIMIT)
 }
 
 /// Extract the challenge string from a `get_verify_str` response.
@@ -1006,6 +1020,29 @@ mod tests {
         );
         assert_eq!(started.elapsed(), PROBE_TIMEOUT);
         telescope.abort();
+    }
+
+    /// Over the client limit the device sends Alert 429 and closes. That is
+    /// reported as such, not as a failed handshake.
+    #[tokio::test]
+    async fn connection_limit_alert_is_reported() {
+        let key = interop_key_from_private(&make_test_private_key());
+        for key in [None, Some(&key)] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let alert = r#"{"Event":"Alert","Timestamp":"1.0","code":429,"Type":"error","Msg":"Exceed the maximum number of connections"}"#;
+                stream
+                    .write_all(format!("{alert}\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                // Dropping the stream closes the connection.
+            });
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let err = negotiate_on(&mut stream, key).await.unwrap_err();
+            assert!(matches!(err, SeestarError::ConnectionLimit), "got {err:?}");
+        }
     }
 
     /// No key and no reply to `get_verify_str` at all: carry on as legacy.
