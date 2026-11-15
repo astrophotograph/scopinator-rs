@@ -51,7 +51,20 @@ impl DeviceManager {
         &self,
         ip: std::net::Ipv4Addr,
     ) -> Result<(), crate::error::ScopinatorError> {
-        let backend = SeestarBackend::connect(ip, Arc::clone(&self.event_bus)).await?;
+        self.add_seestar_with_config(ip, Default::default()).await
+    }
+
+    /// Add a Seestar backend by IP address with a
+    /// [`SeestarConfig`](scopinator_seestar::SeestarConfig), e.g. to supply
+    /// an interop key.
+    #[cfg(feature = "seestar")]
+    pub async fn add_seestar_with_config(
+        &self,
+        ip: std::net::Ipv4Addr,
+        config: scopinator_seestar::SeestarConfig,
+    ) -> Result<(), crate::error::ScopinatorError> {
+        let backend =
+            SeestarBackend::connect_with_config(ip, config, Arc::clone(&self.event_bus)).await?;
         let key = ip.to_string();
         let mut backends = self.seestar_backends.lock().await;
         backends.insert(key, backend);

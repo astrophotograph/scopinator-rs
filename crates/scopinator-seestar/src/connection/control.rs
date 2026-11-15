@@ -16,7 +16,7 @@ use crate::connection::registry::Registry;
 use crate::error::SeestarError;
 use crate::event::SeestarEvent;
 use crate::protocol::json_rpc::{self, INITIAL_COMMAND_ID, MAX_LINE_BYTES};
-use crate::response::CommandResponse;
+use crate::response::{CommandResponse, DeviceSummary};
 use scopinator_types::FirmwareVersion;
 
 /// Connection timeout for TCP connect.
@@ -50,10 +50,8 @@ pub(crate) enum LinkState {
 #[derive(Debug, Clone, Default)]
 struct LinkInfo {
     state: LinkState,
-    /// `device.firmware_ver_int` from the last `get_device_state` reply.
-    firmware: Option<FirmwareVersion>,
-    /// `device.product_model` from the last `get_device_state` reply.
-    model: Option<String>,
+    /// Identity, optics and sensor, from `get_device_state` replies.
+    device: DeviceSummary,
 }
 
 /// Link state and device identity, shared between the control loop and the
@@ -77,12 +75,17 @@ impl Link {
     /// The device's firmware version, once a `get_device_state` reply has
     /// been seen. Kept across reconnects.
     pub(crate) fn firmware(&self) -> Option<FirmwareVersion> {
-        self.lock().firmware
+        self.lock().device.firmware
+    }
+
+    /// Everything learned about the device so far.
+    pub(crate) fn device(&self) -> DeviceSummary {
+        self.lock().device.clone()
     }
 
     /// The device's product model (e.g. `Seestar S50`), once known.
     pub(crate) fn model(&self) -> Option<String> {
-        self.lock().model.clone()
+        self.lock().device.model.clone()
     }
 }
 
@@ -371,17 +374,14 @@ fn handle_response(msg: &serde_json::Value, state: &Arc<ControlState>) {
         }
     };
 
-    // Record the firmware version and model from device state responses.
+    // Record what the device says about itself in device state responses.
     if json_rpc::method_name(msg) == Some("get_device_state")
-        && let Some(device) = msg.get("result").and_then(|r| r.get("device"))
+        && let Some(result) = msg.get("result")
     {
         let mut info = state.link.lock();
-        if let Some(fw_int) = device.get("firmware_ver_int").and_then(|v| v.as_u64()) {
-            info.firmware = Some(FirmwareVersion(fw_int as u32));
-            debug!(firmware = fw_int, "detected firmware version");
-        }
-        if let Some(model) = device.get("product_model").and_then(|v| v.as_str()) {
-            info.model = Some(model.to_string());
+        let before = info.device.firmware;
+        if info.device.update_from_device_state(result) && info.device.firmware != before {
+            debug!(firmware = ?info.device.firmware, "detected firmware version");
         }
     }
 
@@ -499,7 +499,7 @@ mod heartbeat_tests {
     /// line it sends on a connection with this mode and known firmware.
     async fn heartbeat_line(mode: Verification, firmware: Option<u32>) -> String {
         let state = Arc::new(ControlState::new());
-        state.link.lock().firmware = firmware.map(FirmwareVersion);
+        state.link.lock().device.firmware = firmware.map(FirmwareVersion);
         let (tx, mut rx) = mpsc::channel::<String>(4);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let handle = tokio::spawn(heartbeat_task(tx, shutdown_rx, state, mode));

@@ -9,7 +9,7 @@ pub use mount::SeestarMount;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use scopinator_seestar::SeestarClient;
+use scopinator_seestar::{DeviceSummary, SeestarClient, SeestarConfig};
 use scopinator_types::DeviceId;
 
 use crate::event::UnifiedEventBus;
@@ -23,12 +23,24 @@ pub struct SeestarBackend {
 }
 
 impl SeestarBackend {
-    /// Create a new Seestar backend connected to the given IP.
+    /// Create a new Seestar backend connected to the given IP, with the
+    /// default configuration (no interop key).
     pub async fn connect(
         ip: Ipv4Addr,
         event_bus: Arc<UnifiedEventBus>,
     ) -> Result<Self, scopinator_seestar::SeestarError> {
-        let client = SeestarClient::connect(ip).await?;
+        Self::connect_with_config(ip, SeestarConfig::default(), event_bus).await
+    }
+
+    /// Create a new Seestar backend with a [`SeestarConfig`], e.g. to supply
+    /// the interop key the device's verification handshake needs, or a
+    /// response timeout.
+    pub async fn connect_with_config(
+        ip: Ipv4Addr,
+        config: SeestarConfig,
+        event_bus: Arc<UnifiedEventBus>,
+    ) -> Result<Self, scopinator_seestar::SeestarError> {
+        let client = SeestarClient::connect_with_config(ip, config).await?;
         let client = Arc::new(client);
         let device_id = DeviceId::new(format!("seestar:{ip}"));
 
@@ -59,6 +71,12 @@ impl SeestarBackend {
     /// Get the underlying client (for advanced use).
     pub fn client(&self) -> &Arc<SeestarClient> {
         &self.client
+    }
+
+    /// What the device has reported about itself (model, firmware, optics,
+    /// sensor, capability flags). Fields are `None` until known.
+    pub fn device_info(&self) -> DeviceSummary {
+        self.client.device_info()
     }
 
     /// Get the device ID.

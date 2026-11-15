@@ -647,6 +647,14 @@ impl SeestarClient {
         self.link.firmware()
     }
 
+    /// What the device has reported about itself: firmware, model, optics,
+    /// sensor size and capability flags. Fields are `None` until a
+    /// `get_device_state` reply has carried them; the client requests one as
+    /// soon as the control connection is up.
+    pub fn device_info(&self) -> crate::response::DeviceSummary {
+        self.link.device()
+    }
+
     /// The device's product model (e.g. `Seestar S50`), once known.
     pub fn product_model(&self) -> Option<String> {
         self.link.model()

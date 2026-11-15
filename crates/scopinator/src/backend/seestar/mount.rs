@@ -54,9 +54,17 @@ impl Mount for SeestarMount {
             .send_and_validate(Command::ScopeGetEquCoord)
             .await?;
 
-        // Response result contains ra (hours) and dec (degrees)
-        let ra_hours = response.get("ra").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let dec_deg = response.get("dec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        // Response result contains ra (hours) and dec (degrees). A reply
+        // without them is an error: (0, 0) is a real position, not "unknown".
+        let coord = |name: &str| {
+            response.get(name).and_then(|v| v.as_f64()).ok_or_else(|| {
+                ScopinatorError::Backend(format!(
+                    "scope_get_equ_coord reply has no numeric `{name}`: {response}"
+                ))
+            })
+        };
+        let ra_hours = coord("ra")?;
+        let dec_deg = coord("dec")?;
 
         let ra =
             RaDegrees::from_hours(ra_hours).map_err(|e| ScopinatorError::Backend(e.to_string()))?;

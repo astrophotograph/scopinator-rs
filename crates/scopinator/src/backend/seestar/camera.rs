@@ -114,15 +114,23 @@ impl Camera for SeestarCamera {
             }
         };
         // One value per pixel with the debayer flag set is a Bayer mosaic.
-        // The header does not name the pattern; the Seestar sensors are GRBG.
+        // The header does not name the pattern; the device state does
+        // (`camera.debayer_pattern`, "GR" on the S50 and S30). GRBG is the
+        // fallback until that is known.
         let bayer = !is_color && header.can_debayer != 0;
+        let pattern = match self.client.device_info().debayer_pattern.as_deref() {
+            Some("RG") => BayerPattern::Rggb,
+            Some("BG") => BayerPattern::Bggr,
+            Some("GB") => BayerPattern::Gbrg,
+            _ => BayerPattern::Grbg,
+        };
         Ok(ImageData {
             width: header.width as u32,
             height: header.height as u32,
             data,
             bit_depth,
             is_color: is_color || bayer,
-            bayer_pattern: bayer.then_some(BayerPattern::Grbg),
+            bayer_pattern: bayer.then_some(pattern),
             frame_kind: frame.kind,
         })
     }
@@ -141,14 +149,17 @@ impl Camera for SeestarCamera {
     }
 
     fn capabilities(&self) -> CameraCapabilities {
+        // Sensor size and pixel size are what this device reported in
+        // `get_device_state`, not constants for one model; they are `None`
+        // until the device has been heard from.
+        let info = self.client.device_info();
         CameraCapabilities {
             can_expose: true,
             can_abort_exposure: true,
             can_stream: true,
-            // Seestar S50 specs
-            max_width: Some(1920),
-            max_height: Some(1080),
-            pixel_size_um: Some(3.0),
+            max_width: info.chip_size.map(|(width, _)| width),
+            max_height: info.chip_size.map(|(_, height)| height),
+            pixel_size_um: info.pixel_size_um,
             bit_depth: Some(12),
         }
     }

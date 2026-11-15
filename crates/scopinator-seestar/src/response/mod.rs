@@ -132,6 +132,94 @@ pub struct ViewInfo {
     pub continuous_exposure: Option<serde_json::Value>,
 }
 
+/// What the device says about itself in `get_device_state`: identity, optics
+/// and sensor. The client fills this in at connect and keeps it up to date
+/// from every later `get_device_state` reply; see
+/// [`SeestarClient::device_info`](crate::client::SeestarClient::device_info).
+///
+/// Every field is optional because replies can be partial (a keyed
+/// `get_device_state` returns only the sections asked for) and because
+/// firmware versions differ in what they report.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceSummary {
+    /// `device.firmware_ver_int`, e.g. 2670 for firmware 6.70.
+    pub firmware: Option<scopinator_types::FirmwareVersion>,
+    /// `device.firmware_ver_string`, e.g. `6.70`.
+    pub firmware_string: Option<String>,
+    /// `device.product_model`, e.g. `Seestar S50`.
+    pub model: Option<String>,
+    /// `device.focal_len`: focal length in millimetres.
+    pub focal_length_mm: Option<f64>,
+    /// `device.fnumber`: focal ratio.
+    pub f_number: Option<f64>,
+    /// `camera.chip_size` as (width, height) in pixels, in the orientation
+    /// the image socket delivers frames (1080 x 1920 on an S50).
+    pub chip_size: Option<(u32, u32)>,
+    /// `camera.pixel_size_um`.
+    pub pixel_size_um: Option<f64>,
+    /// `camera.debayer_pattern`, e.g. `GR`.
+    pub debayer_pattern: Option<String>,
+    /// True if the reply had a `second_camera` section (the wide camera on
+    /// dual-camera models).
+    pub has_second_camera: Option<bool>,
+    /// The `device.can_*` capability flags, by their wire names.
+    pub capabilities: std::collections::BTreeMap<String, bool>,
+}
+
+impl DeviceSummary {
+    /// Update from the `result` of a `get_device_state` reply. Members that
+    /// are absent from this reply keep their previous values. Returns true
+    /// if the reply carried a `device` or `camera` section.
+    pub fn update_from_device_state(&mut self, result: &serde_json::Value) -> bool {
+        let device = result.get("device");
+        let camera = result.get("camera");
+        if let Some(device) = device {
+            if let Some(v) = device.get("firmware_ver_int").and_then(|v| v.as_u64()) {
+                self.firmware = Some(scopinator_types::FirmwareVersion(v as u32));
+            }
+            if let Some(v) = device.get("firmware_ver_string").and_then(|v| v.as_str()) {
+                self.firmware_string = Some(v.to_string());
+            }
+            if let Some(v) = device.get("product_model").and_then(|v| v.as_str()) {
+                self.model = Some(v.to_string());
+            }
+            if let Some(v) = device.get("focal_len").and_then(|v| v.as_f64()) {
+                self.focal_length_mm = Some(v);
+            }
+            if let Some(v) = device.get("fnumber").and_then(|v| v.as_f64()) {
+                self.f_number = Some(v);
+            }
+            if let Some(members) = device.as_object() {
+                for (name, value) in members {
+                    if let (true, Some(flag)) = (name.starts_with("can_"), value.as_bool()) {
+                        self.capabilities.insert(name.clone(), flag);
+                    }
+                }
+            }
+        }
+        if let Some(camera) = camera {
+            let size = camera.get("chip_size").and_then(|v| v.as_array());
+            if let Some([w, h]) = size.map(Vec::as_slice)
+                && let (Some(w), Some(h)) = (w.as_u64(), h.as_u64())
+            {
+                self.chip_size = Some((w as u32, h as u32));
+            }
+            if let Some(v) = camera.get("pixel_size_um").and_then(|v| v.as_f64()) {
+                self.pixel_size_um = Some(v);
+            }
+            if let Some(v) = camera.get("debayer_pattern").and_then(|v| v.as_str()) {
+                self.debayer_pattern = Some(v.to_string());
+            }
+        }
+        // A full (unkeyed) reply always has both sections; only then does the
+        // absence of `second_camera` mean there is none.
+        if device.is_some() && camera.is_some() {
+            self.has_second_camera = Some(result.get("second_camera").is_some());
+        }
+        device.is_some() || camera.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

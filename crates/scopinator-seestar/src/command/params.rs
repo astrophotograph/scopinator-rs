@@ -66,12 +66,24 @@ pub struct StopViewParams {
     pub stage: StopStage,
 }
 
-/// Stage to stop in `iscope_stop_view`.
+/// Stage to stop in `iscope_stop_view`: the names the official app sends.
+/// The device takes the stage as a free string, so this list is not closed
+/// on its side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StopStage {
+    /// Three-point polar alignment.
+    #[serde(rename = "3PPA")]
+    ThreePPA,
+    AutoExp,
     DarkLibrary,
-    Stack,
+    /// A goto in progress. This cancels the slew but leaves the view running
+    /// (observed on firmware 6.70); send `iscope_stop_view` with no stage to
+    /// leave the view.
     AutoGoto,
+    Initialise,
+    ObjectTrack,
+    ScanSun,
+    Stack,
 }
 
 /// Parameters for `scope_speed_move`.

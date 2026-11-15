@@ -368,3 +368,59 @@ fn dedup(mut v: Vec<String>) -> Vec<String> {
     v.dedup();
     v
 }
+
+// The device's self-description is read from real `get_device_state` replies:
+// the S50 and S30 captures give different models, firmware and optics, which
+// is what the high-level backend builds its capabilities from.
+#[test]
+fn device_summary_is_read_from_captured_device_state() {
+    use scopinator_seestar::DeviceSummary;
+
+    let mut by_model: std::collections::BTreeMap<String, DeviceSummary> = Default::default();
+    for session in load_corpus() {
+        for msg in session.telescope_messages() {
+            if msg.get("method").and_then(Value::as_str) != Some("get_device_state") {
+                continue;
+            }
+            let Some(result) = msg.get("result") else {
+                continue;
+            };
+            let mut summary = DeviceSummary::default();
+            if summary.update_from_device_state(result)
+                && let Some(model) = summary.model.clone()
+            {
+                by_model
+                    .entry(model)
+                    .or_default()
+                    .update_from_device_state(result);
+            }
+        }
+    }
+
+    let s50 = &by_model["Seestar S50"];
+    let s30 = &by_model["Seestar S30"];
+    assert_eq!(s50.firmware, Some(FirmwareVersion(2670)));
+    assert_eq!(s30.firmware, Some(FirmwareVersion(2706)));
+    assert_eq!(s50.focal_length_mm, Some(250.0));
+    assert_eq!(s30.focal_length_mm, Some(150.0));
+    for summary in [s50, s30] {
+        assert_eq!(summary.chip_size, Some((1080, 1920)));
+        assert_eq!(summary.pixel_size_um, Some(2.9));
+        assert_eq!(summary.debayer_pattern.as_deref(), Some("GR"));
+        assert_eq!(summary.capabilities.get("can_wide_cam_af"), Some(&false));
+    }
+    // Only the S30 has a second (wide) camera section.
+    assert_eq!(s50.has_second_camera, Some(false));
+    assert_eq!(s30.has_second_camera, Some(true));
+
+    // A keyed reply with only one section updates that section and keeps the rest.
+    let mut partial = s50.clone();
+    assert!(
+        partial
+            .update_from_device_state(&serde_json::json!({"device": {"firmware_ver_int": 2700}}))
+    );
+    assert_eq!(partial.firmware, Some(FirmwareVersion(2700)));
+    assert_eq!(partial.chip_size, s50.chip_size);
+    assert_eq!(partial.has_second_camera, s50.has_second_camera);
+    assert!(!partial.update_from_device_state(&serde_json::json!({"mount": {}})));
+}
