@@ -12,7 +12,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::command::ImagingCommand;
 use crate::connection::reconnect::ReconnectPolicy;
 use crate::error::SeestarError;
-use crate::protocol::frame::{self, FrameHeader, HEADER_SIZE, MAX_PAYLOAD_SIZE};
+use crate::protocol::frame::{FrameHeader, HEADER_SIZE, MAX_PAYLOAD_SIZE, PayloadKind};
 use scopinator_types::FrameKind;
 
 /// Connection timeout for TCP connect.
@@ -21,12 +21,51 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Heartbeat interval on the imaging port.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// An image frame received from the imaging port.
+/// Request ids this client uses on the image socket. The device echoes the
+/// low byte of the request id in every reply header, and pushed stream frames
+/// repeat the id of the `begin_streaming` request, so these ids are how the
+/// client tells its own replies apart. They are this client's choice, not
+/// values defined by the device.
+pub mod request_id {
+    /// `begin_streaming` (and so every pushed stream frame).
+    pub const STREAM: u8 = 21;
+    /// `get_stacked_img`.
+    pub const STACK: u8 = 23;
+    /// The `test_connection` heartbeat.
+    pub const HEARTBEAT: u8 = 99;
+}
+
+/// A frame received from the imaging port: an image, or a text reply.
 #[derive(Debug, Clone)]
 pub struct ImageFrame {
     pub header: FrameHeader,
     pub data: Bytes,
+    /// Coarse classification for consumers: `Status` for text replies,
+    /// otherwise `Stack` or `Preview`.
     pub kind: FrameKind,
+}
+
+impl ImageFrame {
+    /// What the payload is (text, error text, raw, zip, JPEG).
+    pub fn payload_kind(&self) -> PayloadKind {
+        self.header.payload_kind()
+    }
+
+    /// The payload of a text reply (`server connected!`, `done`, or an error
+    /// message), if this is one.
+    pub fn text(&self) -> Option<std::borrow::Cow<'_, str>> {
+        matches!(
+            self.payload_kind(),
+            PayloadKind::Text | PayloadKind::ErrorText
+        )
+        .then(|| String::from_utf8_lossy(&self.data))
+    }
+
+    /// The error message, if this frame is the device refusing a request
+    /// (e.g. `there is no image now`, `unknown mothod`).
+    pub fn error_text(&self) -> Option<std::borrow::Cow<'_, str>> {
+        (self.payload_kind() == PayloadKind::ErrorText).then(|| String::from_utf8_lossy(&self.data))
+    }
 }
 
 /// Run the imaging connection loop (reconnecting on failure).
@@ -99,7 +138,7 @@ async fn run_imaging_connected(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let mut msg = ImagingCommand::TestConnection.serialize(99);
+                let mut msg = ImagingCommand::TestConnection.serialize(u64::from(request_id::HEARTBEAT));
                 msg.extend_from_slice(b"\r\n");
                 if let Err(e) = write_half.write_all(&msg).await {
                     debug!("imaging heartbeat write error: {e}");
@@ -133,8 +172,16 @@ async fn reader_loop(
             result = read_frame(&mut read_half, &mut header_buf) => {
                 match result {
                     Ok(Some(frame)) => {
+                        if let Some(text) = frame.error_text() {
+                            warn!(
+                                request_id = frame.header.request_id,
+                                error = %text,
+                                "imaging request refused"
+                            );
+                        }
                         trace!(
-                            id = frame.header.id,
+                            request_id = frame.header.request_id,
+                            kind = ?frame.payload_kind(),
                             width = frame.header.width,
                             height = frame.header.height,
                             size = frame.header.size,
@@ -174,6 +221,12 @@ where
 
     let header = FrameHeader::parse(header_buf);
 
+    // Without the magic the stream is out of step: nothing after this point
+    // can be trusted, so the connection is dropped and re-established.
+    if !header.has_valid_magic() {
+        return Err(SeestarError::InvalidFrame);
+    }
+
     if header.size > MAX_PAYLOAD_SIZE {
         return Err(SeestarError::FrameTooLarge {
             size: header.size,
@@ -189,13 +242,16 @@ where
         Err(e) => return Err(SeestarError::Connection(e)),
     }
 
-    // Only VIEW/PREVIEW/STACK carry image data. Everything else on the imaging
-    // socket (e.g. `test_connection` heartbeat echoes) is a status frame — do
-    // not mislabel it as a preview image.
-    let kind = match header.id {
-        frame::frame_id::STACK => FrameKind::Stack,
-        frame::frame_id::VIEW | frame::frame_id::PREVIEW => FrameKind::Preview,
-        _ => FrameKind::Status,
+    // What the payload is comes from the header's dataType/imgType. Text
+    // replies (heartbeat echoes, `done`, error messages) are status frames.
+    // Among images, the request-id byte only says which of this client's
+    // requests is being answered: the stacked-image request, or the stream.
+    let kind = if !header.payload_kind().is_image() {
+        FrameKind::Status
+    } else if header.request_id == request_id::STACK {
+        FrameKind::Stack
+    } else {
+        FrameKind::Preview
     };
 
     Ok(Some(ImageFrame {
@@ -208,11 +264,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::frame::frame_id;
+    use crate::protocol::frame::MAGIC;
 
+    /// Request ids as the old tests named them.
+    mod frame_id {
+        pub const VIEW: u8 = super::request_id::STREAM;
+        pub const STACK: u8 = super::request_id::STACK;
+    }
+
+    /// A raw (dataType 2, 2 bytes/pixel) image header answering request `id`.
     fn make_header(size: u32, id: u8, width: u16, height: u16) -> [u8; HEADER_SIZE] {
+        make_typed_header(size, id, width, height, 2)
+    }
+
+    fn make_typed_header(
+        size: u32,
+        id: u8,
+        width: u16,
+        height: u16,
+        data_type: u8,
+    ) -> [u8; HEADER_SIZE] {
         let mut buf = [0u8; HEADER_SIZE];
+        buf[0..2].copy_from_slice(&MAGIC.to_be_bytes());
+        buf[2..4].copy_from_slice(&2u16.to_be_bytes());
+        buf[4..6].copy_from_slice(&80u16.to_be_bytes());
         buf[6..10].copy_from_slice(&size.to_be_bytes());
+        buf[13] = 1;
+        buf[14] = data_type;
         buf[15] = id;
         buf[16..18].copy_from_slice(&width.to_be_bytes());
         buf[18..20].copy_from_slice(&height.to_be_bytes());
@@ -232,7 +310,7 @@ mod tests {
         let mut buf = [0u8; HEADER_SIZE];
         let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
         assert_eq!(frame.header.size, 5);
-        assert_eq!(frame.header.id, frame_id::VIEW);
+        assert_eq!(frame.header.request_id, frame_id::VIEW);
         assert_eq!(frame.header.width, 100);
         assert_eq!(frame.header.height, 200);
         assert_eq!(&frame.data[..], b"hello");
@@ -256,9 +334,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_frame_non_image_id_maps_to_status() {
-        // A `test_connection` heartbeat echo (or any non-VIEW/PREVIEW/STACK id)
-        // must be classified Status, not mislabeled as a Preview image.
-        let header = make_header(17, 99, 0, 0);
+        // A `test_connection` heartbeat echo is a text reply (dataType 0):
+        // Status, whatever request id it carries.
+        let header = make_typed_header(17, 99, 0, 0, 0);
         let payload = [0u8; 17];
         let mut mock = tokio_test::io::Builder::new()
             .read(&header)
@@ -271,8 +349,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kind_comes_from_the_payload_type_not_the_request_id() {
+        async fn kind_of(header: [u8; HEADER_SIZE]) -> FrameKind {
+            let mut mock = tokio_test::io::Builder::new()
+                .read(&header)
+                .read(b"abc")
+                .build();
+            let mut buf = [0u8; HEADER_SIZE];
+            read_frame(&mut mock, &mut buf).await.unwrap().unwrap().kind
+        }
+        // A text reply to `begin_streaming` ("done") or to the stacked-image
+        // request carries those requests' ids and is still not an image.
+        for data_type in [0, 1] {
+            for id in [request_id::STREAM, request_id::STACK, 20, 2] {
+                let header = make_typed_header(3, id, 1080, 1920, data_type);
+                assert_eq!(kind_of(header).await, FrameKind::Status);
+            }
+        }
+        // An image answering any other request id is a preview, not dropped.
+        for id in [0, 20, 77, 200] {
+            let header = make_typed_header(3, id, 1080, 1920, 2);
+            assert_eq!(kind_of(header).await, FrameKind::Preview);
+        }
+        let header = make_typed_header(3, request_id::STACK, 1080, 1920, 3);
+        assert_eq!(kind_of(header).await, FrameKind::Stack);
+    }
+
+    #[tokio::test]
+    async fn error_text_reply_is_exposed_as_an_error() {
+        let text = b"there is no image now";
+        let header = make_typed_header(text.len() as u32, request_id::STACK, 0, 0, 1);
+        let mut mock = tokio_test::io::Builder::new()
+            .read(&header)
+            .read(text)
+            .build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();
+        assert_eq!(frame.kind, FrameKind::Status);
+        assert_eq!(frame.error_text().as_deref(), Some("there is no image now"));
+        assert_eq!(frame.text().as_deref(), Some("there is no image now"));
+    }
+
+    #[tokio::test]
+    async fn bad_magic_is_a_broken_connection() {
+        let mut header = make_header(5, request_id::STREAM, 100, 200);
+        header[0] = b'{';
+        header[1] = b'"';
+        // The payload is never read: the stream cannot be trusted.
+        let mut mock = tokio_test::io::Builder::new().read(&header).build();
+        let mut buf = [0u8; HEADER_SIZE];
+        let err = read_frame(&mut mock, &mut buf).await.unwrap_err();
+        assert!(matches!(err, SeestarError::InvalidFrame), "got {err:?}");
+    }
+
+    #[tokio::test]
     async fn read_frame_zero_payload_succeeds() {
-        let header = make_header(0, frame_id::HANDSHAKE, 0, 0);
+        let header = make_typed_header(0, 2, 0, 0, 0);
         let mut mock = tokio_test::io::Builder::new().read(&header).build();
         let mut buf = [0u8; HEADER_SIZE];
         let frame = read_frame(&mut mock, &mut buf).await.unwrap().unwrap();

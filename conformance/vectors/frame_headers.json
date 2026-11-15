@@ -1,5 +1,5 @@
 {
-  "description": "Shared 80-byte frame header vectors, struct format >HHHIHHBBHH. Used by frame.rs tests and conformance/parity/check_frame_vectors.py. Forge task: Add shared frame header differential vectors.",
+  "description": "Shared 80-byte image-socket frame header vectors. Layout per zmerlynn/seestar-spec spec/media/image-sockets.md (Reply framing): magic 0x03C3, version, header length, payload length, imgType @13, dataType @14, request-id low byte @15, width, height, hfdX, hfdY, hfd, canDebayer, image id. Used by the frame.rs unit test and conformance/parity/check_frame_vectors.py. The older vectors predate the magic check and have no magic; they still pin field offsets.",
   "header_size": 80,
   "vectors": [
     {
@@ -7,11 +7,22 @@
       "description": "All 80 bytes zero",
       "header_hex": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 0,
-        "code": 0,
-        "id": 0,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 0,
         "width": 0,
-        "height": 0
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
@@ -19,83 +30,160 @@
       "description": "All 80 bytes 0xff: max of every field",
       "header_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "expected": {
+        "magic": 65535,
+        "version": 65535,
+        "header_len": 65535,
         "size": 4294967295,
-        "code": 255,
-        "id": 255,
+        "img_type": 255,
+        "data_type": 255,
+        "request_id": 255,
         "width": 65535,
-        "height": 65535
+        "height": 65535,
+        "hfd_x": 65535,
+        "hfd_y": 65535,
+        "hfd": 65535,
+        "can_debayer": 65535,
+        "image_id": -1,
+        "valid_magic": false,
+        "payload_kind": "unknown"
       }
     },
     {
-      "name": "handshake",
-      "description": "Handshake frame, 17-byte payload",
+      "name": "legacy_no_magic_text",
+      "description": "Text reply without magic (pre-magic vector): 17-byte payload, request id 2",
       "header_hex": "0000000000000000001100000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 17,
-        "code": 0,
-        "id": 2,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 2,
         "width": 0,
-        "height": 0
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
-      "name": "view_preview",
-      "description": "Live view frame (1080x1920), values from the Rust unit tests",
+      "name": "legacy_no_magic_zip",
+      "description": "No magic, dataType 3, request id 20, 1080x1920",
       "header_hex": "000000000000001bf9cb00000000031404380780000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 1833419,
-        "code": 3,
-        "id": 20,
+        "img_type": 0,
+        "data_type": 3,
+        "request_id": 20,
         "width": 1080,
-        "height": 1920
+        "height": 1920,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "zip"
       }
     },
     {
-      "name": "streaming_preview",
-      "description": "Streaming preview frame id 21",
+      "name": "legacy_no_magic_request_21",
+      "description": "No magic, request id 21",
       "header_hex": "000000000000001bf9cb00000000031504380780000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 1833419,
-        "code": 3,
-        "id": 21,
+        "img_type": 0,
+        "data_type": 3,
+        "request_id": 21,
         "width": 1080,
-        "height": 1920
+        "height": 1920,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "zip"
       }
     },
     {
-      "name": "stacked_image",
-      "description": "Stacked image ZIP frame 4056x3040",
+      "name": "legacy_no_magic_request_23",
+      "description": "No magic, request id 23, 4056x3040",
       "header_hex": "000000000000004c4b400000000000170fd80be0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 5000000,
-        "code": 0,
-        "id": 23,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 23,
         "width": 4056,
-        "height": 3040
+        "height": 3040,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
       "name": "size_1000",
-      "description": "Rust is_image() needs size > 1000: largest non-image size",
+      "description": "Payload length 1000",
       "header_hex": "000000000000000003e800000000001400640064000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 1000,
-        "code": 0,
-        "id": 20,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 20,
         "width": 100,
-        "height": 100
+        "height": 100,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
       "name": "size_1001",
-      "description": "Smallest size for which Rust is_image() is true",
+      "description": "Payload length 1001",
       "header_hex": "000000000000000003e900000000001400640064000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 1001,
-        "code": 0,
-        "id": 20,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 20,
         "width": 100,
-        "height": 100
+        "height": 100,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
@@ -103,11 +191,22 @@
       "description": "Max u32 size",
       "header_hex": "000000000000ffffffff00000000001700010001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 4294967295,
-        "code": 0,
-        "id": 23,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 23,
         "width": 1,
-        "height": 1
+        "height": 1,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
@@ -115,11 +214,22 @@
       "description": "One above MAX_PAYLOAD_SIZE (50 MiB); parse still extracts it",
       "header_hex": "0000000000000320000100000000001700640064000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 52428801,
-        "code": 0,
-        "id": 23,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 23,
         "width": 100,
-        "height": 100
+        "height": 100,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
@@ -127,11 +237,22 @@
       "description": "Max u16 width and height",
       "header_hex": "000000000000000007d0000000000014ffffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 2000,
-        "code": 0,
-        "id": 20,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 20,
         "width": 65535,
-        "height": 65535
+        "height": 65535,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
@@ -139,11 +260,22 @@
       "description": "Zero width, large size",
       "header_hex": "000000000000001e848000000000001400000438000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 2000000,
-        "code": 0,
-        "id": 20,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 20,
         "width": 0,
-        "height": 1080
+        "height": 1080,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
@@ -151,23 +283,45 @@
       "description": "Zero height, large size",
       "header_hex": "000000000000001e848000000000001407800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 2000000,
-        "code": 0,
-        "id": 20,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 20,
         "width": 1920,
-        "height": 0
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     },
     {
-      "name": "code_max_id_zero",
-      "description": "code=255 id=0",
+      "name": "data_type_max_request_zero",
+      "description": "dataType=255 (unknown), request id 0",
       "header_hex": "0000000000000000000100000000ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 1,
-        "code": 255,
-        "id": 0,
+        "img_type": 0,
+        "data_type": 255,
+        "request_id": 0,
         "width": 0,
-        "height": 0
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "unknown"
       }
     },
     {
@@ -175,11 +329,22 @@
       "description": "Non-zero bytes in unread regions must not affect fields",
       "header_hex": "deadbeefcafe0001e240123456780715012c0190000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b",
       "expected": {
+        "magic": 57005,
+        "version": 48879,
+        "header_len": 51966,
         "size": 123456,
-        "code": 7,
-        "id": 21,
+        "img_type": 120,
+        "data_type": 7,
+        "request_id": 21,
         "width": 300,
-        "height": 400
+        "height": 400,
+        "hfd_x": 1,
+        "hfd_y": 515,
+        "hfd": 1029,
+        "can_debayer": 1543,
+        "image_id": 2057,
+        "valid_magic": false,
+        "payload_kind": "unknown"
       }
     },
     {
@@ -187,11 +352,183 @@
       "description": "Distinct bytes per field to expose endianness bugs",
       "header_hex": "000000000000010203040000000005060708090a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
+        "magic": 0,
+        "version": 0,
+        "header_len": 0,
         "size": 16909060,
-        "code": 5,
-        "id": 6,
+        "img_type": 0,
+        "data_type": 5,
+        "request_id": 6,
         "width": 1800,
-        "height": 2314
+        "height": 2314,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": false,
+        "payload_kind": "unknown"
+      }
+    },
+    {
+      "name": "text_ok_hardware",
+      "description": "test_connection reply observed on an S50, fw 6.70, 2026-11-14: request id 77, payload \"server connected!\" (first/last payload bytes at 10/11 left zero)",
+      "header_hex": "03c3000200500000001100000000004d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "magic": 963,
+        "version": 2,
+        "header_len": 80,
+        "size": 17,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 77,
+        "width": 0,
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": true,
+        "payload_kind": "text"
+      }
+    },
+    {
+      "name": "text_ok_request_id_low_byte",
+      "description": "Same reply for request id 300: byte 15 is 300 & 0xff = 44",
+      "header_hex": "03c3000200500000001100000000002c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "magic": 963,
+        "version": 2,
+        "header_len": 80,
+        "size": 17,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 44,
+        "width": 0,
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 0,
+        "can_debayer": 0,
+        "image_id": 0,
+        "valid_magic": true,
+        "payload_kind": "text"
+      }
+    },
+    {
+      "name": "text_error",
+      "description": "Error text reply (dataType 1), e.g. \"there is no image now\" (21 bytes)",
+      "header_hex": "03c30002005000000015000000000182000000000000000003e80000ffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "magic": 963,
+        "version": 2,
+        "header_len": 80,
+        "size": 21,
+        "img_type": 0,
+        "data_type": 1,
+        "request_id": 130,
+        "width": 0,
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 1000,
+        "can_debayer": 0,
+        "image_id": -1,
+        "valid_magic": true,
+        "payload_kind": "error_text"
+      }
+    },
+    {
+      "name": "raw_16bit_stream",
+      "description": "Uncompressed 2 byte/pixel stream frame 1080x1920, Bayer, repeating the begin_streaming id 21",
+      "header_hex": "03c300020050003f4800000000010215043807800000000003e8000100070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "magic": 963,
+        "version": 2,
+        "header_len": 80,
+        "size": 4147200,
+        "img_type": 1,
+        "data_type": 2,
+        "request_id": 21,
+        "width": 1080,
+        "height": 1920,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 1000,
+        "can_debayer": 1,
+        "image_id": 7,
+        "valid_magic": true,
+        "payload_kind": "raw"
+      }
+    },
+    {
+      "name": "zip_raw_stack",
+      "description": "Zip-compressed raw stack 1080x1920, 3 bytes/pixel",
+      "header_hex": "03c300020050004c4b40000000020383043807800000000003e80000ffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "magic": 963,
+        "version": 2,
+        "header_len": 80,
+        "size": 5000000,
+        "img_type": 2,
+        "data_type": 3,
+        "request_id": 131,
+        "width": 1080,
+        "height": 1920,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 1000,
+        "can_debayer": 0,
+        "image_id": -1,
+        "valid_magic": true,
+        "payload_kind": "zip"
+      }
+    },
+    {
+      "name": "jpeg",
+      "description": "JPEG image (imgType 4, dataType 2)",
+      "header_hex": "03c3000200500003d090000000040284043807800000000003e80000ffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "magic": 963,
+        "version": 2,
+        "header_len": 80,
+        "size": 250000,
+        "img_type": 4,
+        "data_type": 2,
+        "request_id": 132,
+        "width": 1080,
+        "height": 1920,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 1000,
+        "can_debayer": 0,
+        "image_id": -1,
+        "valid_magic": true,
+        "payload_kind": "jpeg"
+      }
+    },
+    {
+      "name": "bad_magic",
+      "description": "Plausible fields behind a wrong magic: the connection must be dropped",
+      "header_hex": "7b22000200500000001100000000004d000000000000000003e80000ffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "magic": 31522,
+        "version": 2,
+        "header_len": 80,
+        "size": 17,
+        "img_type": 0,
+        "data_type": 0,
+        "request_id": 77,
+        "width": 0,
+        "height": 0,
+        "hfd_x": 0,
+        "hfd_y": 0,
+        "hfd": 1000,
+        "can_debayer": 0,
+        "image_id": -1,
+        "valid_magic": false,
+        "payload_kind": "text"
       }
     }
   ]

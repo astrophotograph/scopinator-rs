@@ -96,9 +96,10 @@ fn setting_matches(actual: &serde_json::Value, expected: &serde_json::Value) -> 
 /// Default command response timeout.
 pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Fixed `id` used for client-issued imaging-port commands. The imaging port
-/// does not correlate responses to ids, so the exact value is immaterial.
-const IMAGING_CMD_ID: u64 = 21;
+/// `id` used for client-issued imaging-port commands. The device echoes its
+/// low byte in every reply header, and stream frames repeat the id of
+/// `begin_streaming`.
+const IMAGING_CMD_ID: u64 = imaging::request_id::STREAM as u64;
 
 /// Client for communicating with a Seestar smart telescope.
 ///

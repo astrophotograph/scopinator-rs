@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-indi"
-version = "0.1.2"
+version = "0.5.0"
 dependencies = [
  "quick-xml",
  "scopinator-types",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-seestar"
-version = "0.1.2"
+version = "0.5.0"
 dependencies = [
  "base64",
  "bytes",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "scopinator-types"
-version = "0.1.2"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "serde",

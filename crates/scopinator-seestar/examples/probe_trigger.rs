@@ -45,7 +45,7 @@ async fn collect(
     loop {
         match tokio::time::timeout_at(deadline, frames.recv()).await {
             Ok(Ok(f)) => {
-                *hist.entry(f.header.id).or_default() += 1;
+                *hist.entry(f.header.request_id).or_default() += 1;
                 max_payload = max_payload.max(f.data.len());
             }
             Ok(Err(_)) => continue, // lagged

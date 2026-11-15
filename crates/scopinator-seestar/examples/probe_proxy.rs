@@ -122,7 +122,7 @@ async fn main() -> Result<(), Err> {
                         println!(
                             "  frame #{n}: kind={:?} hdr.size={} {}x{} id={} code={} payload={}B",
                             f.kind, f.header.size, f.header.width, f.header.height,
-                            f.header.id, f.header.code, f.data.len()
+                            f.header.request_id, f.header.data_type, f.data.len()
                         );
                     }
                 }

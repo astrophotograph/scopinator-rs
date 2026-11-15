@@ -10,5 +10,9 @@ fuzz_target!(|data: &[u8]| {
     let mut buf = [0u8; HEADER_SIZE];
     buf.copy_from_slice(&data[..HEADER_SIZE]);
     let header = FrameHeader::parse(&buf);
+    // Every accessor must be total for any 80 bytes.
     let _ = header.is_image();
+    let _ = header.has_valid_magic();
+    let _ = header.payload_kind();
+    let _ = header.bytes_per_pixel();
 });
