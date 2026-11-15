@@ -41,6 +41,7 @@ conformance/
   sessions/<name>/manifest.json   # model / firmware / message counts
   parity/pyscopinator_report.py   # pyscopinator -> normalized report
   parity/compare.py               # diff two reports, flag divergences
+  parity/golden/pyscopinator.json # committed pyscopinator report (the CI gate)
   reports/                        # generated reports (gitignored)
 ```
 
@@ -110,6 +111,18 @@ cd ~/Projects/erewhon/pyscopinator && uv run python \
   ~/Projects/erewhon/scopinator-rs/conformance/sessions > /tmp/py.json
 python3 conformance/parity/compare.py conformance/reports/rust.json /tmp/py.json
 ```
+
+CI runs the comparison against a **committed golden report** instead of a live
+pyscopinator, so it needs no Python checkout:
+
+```bash
+just parity-golden          # scopinator-rs (live) vs conformance/parity/golden/pyscopinator.json
+just parity-update-golden   # regenerate the golden; needs pyscopinator at ../pyscopinator
+```
+
+In golden mode the capability gaps must match `KNOWN_CAPABILITY_GAPS` in
+`compare.py` exactly: an unlisted gap, or a listed one that no longer occurs,
+fails. Regenerate the golden whenever the corpus or pyscopinator changes.
 
 The comparator distinguishes two kinds of difference:
 

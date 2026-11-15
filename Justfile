@@ -23,8 +23,9 @@ test:
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
-# Run fmt-check + clippy + test + doc in one shot. What CI (.github/workflows/ci.yml) runs.
-ci: fmt-check lint test doc
+# Run fmt-check + clippy + test + doc + the parity gate in one shot. What CI
+# (.github/workflows/ci.yml) runs.
+ci: fmt-check lint test doc parity-golden
 
 # --- Session corpus / conformance / cross-language parity. ---
 
@@ -50,6 +51,16 @@ replay:
 # and diff the normalized reports. Needs cargo + pyscopinator (uv).
 parity:
     python3 conformance/parity/compare.py --run
+
+# The CI parity gate: scopinator-rs against the committed pyscopinator golden
+# report. Needs cargo only.
+parity-golden:
+    python3 conformance/parity/compare.py --golden
+
+# Regenerate the golden report after the corpus or pyscopinator changes.
+# Needs pyscopinator (uv) at ../pyscopinator.
+parity-update-golden:
+    python3 conformance/parity/compare.py --update-golden
 
 # --- Coverage (cargo-llvm-cov). ---
 # Install once: `cargo install cargo-llvm-cov` and `rustup component add llvm-tools-preview`.

@@ -27,6 +27,17 @@ Usage:
     # or generate both and diff in one shot (needs cargo + pyscopinator/uv)
     python3 compare.py --run
 
+    # CI gate: live scopinator-rs report against the committed pyscopinator
+    # golden report (needs cargo only; no Python checkout)
+    python3 compare.py --golden
+
+    # regenerate the golden after the corpus or pyscopinator changes
+    python3 compare.py --update-golden
+
+In `--golden` mode a capability gap must be listed in KNOWN_CAPABILITY_GAPS;
+an unlisted one fails, so a change in what either library models is a
+deliberate edit here rather than a silent drift.
+
 Exit code is non-zero if any HARD divergence is found (capability gaps alone do
 not fail, but are printed).
 """
@@ -40,6 +51,20 @@ import sys
 
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 PYSCOPINATOR_DIR = os.path.normpath(os.path.join(REPO_ROOT, "..", "pyscopinator"))
+GOLDEN_PATH = os.path.join(REPO_ROOT, "conformance", "parity", "golden", "pyscopinator.json")
+
+# Commands that one library models and the other does not, as (method, impl
+# that models it). Only commands that occur in the corpus can show up as gaps.
+# Differences that do not appear here because the corpus never exercises them
+# are noted for the record: `begin_streaming` / `stop_streaming` are
+# image-socket commands (`ImagingCommand`) in scopinator-rs and control
+# commands in pyscopinator; pyscopinator special-cases the verify marker for
+# `set_wheel_position`; scopinator-rs alone models `scope_move_to_horizon` and
+# `start_polar_align`.
+KNOWN_CAPABILITY_GAPS = {
+    ("pi_station_state", "scopinator-rs"),
+    ("play_sound", "scopinator-rs"),
+}
 
 
 def load(path):
@@ -96,17 +121,20 @@ def compare(rust, py):
     return hard, gaps
 
 
-def generate_reports():
+def generate_rust_report():
     rust_path = os.path.join(REPO_ROOT, "conformance", "reports", "rust.json")
-    py_path = os.path.join(REPO_ROOT, "conformance", "reports", "pyscopinator.json")
     os.makedirs(os.path.dirname(rust_path), exist_ok=True)
-
     print("generating scopinator-rs report…", file=sys.stderr)
     with open(rust_path, "w") as fh:
         subprocess.run(
             ["cargo", "run", "-q", "-p", "scopinator-seestar", "--example", "conformance_report"],
             cwd=REPO_ROOT, stdout=fh, check=True,
         )
+    return rust_path
+
+
+def generate_python_report(py_path):
+    os.makedirs(os.path.dirname(py_path), exist_ok=True)
     print("generating pyscopinator report…", file=sys.stderr)
     script = os.path.join(REPO_ROOT, "conformance", "parity", "pyscopinator_report.py")
     corpus = os.path.join(REPO_ROOT, "conformance", "sessions")
@@ -115,7 +143,37 @@ def generate_reports():
             ["uv", "run", "python", script, corpus],
             cwd=PYSCOPINATOR_DIR, stdout=fh, check=True,
         )
+    return py_path
+
+
+def generate_reports():
+    rust_path = generate_rust_report()
+    py_path = generate_python_report(
+        os.path.join(REPO_ROOT, "conformance", "reports", "pyscopinator.json"))
     return rust_path, py_path
+
+
+def write_golden():
+    """Regenerate the committed pyscopinator report, one message per line."""
+    tmp = generate_python_report(
+        os.path.join(REPO_ROOT, "conformance", "reports", "pyscopinator.json"))
+    report = load(tmp)
+    os.makedirs(os.path.dirname(GOLDEN_PATH), exist_ok=True)
+    dumps = lambda v: json.dumps(v, separators=(",", ":"), sort_keys=True)
+    with open(GOLDEN_PATH, "w") as fh:
+        head = {k: v for k, v in report.items() if k != "sessions"}
+        fh.write("{" + dumps(head)[1:-1] + ',"sessions":[\n')
+        for si, session in enumerate(report["sessions"]):
+            shead = {k: v for k, v in session.items() if k != "messages"}
+            fh.write("{" + dumps(shead)[1:-1] + ',"messages":[\n')
+            lines = [dumps(m) for m in session["messages"]]
+            fh.write(",\n".join(lines))
+            fh.write("\n]}" + ("," if si + 1 < len(report["sessions"]) else "") + "\n")
+        fh.write("]}\n")
+    assert load(GOLDEN_PATH) == report, "golden does not round-trip"
+    total = sum(len(s["messages"]) for s in report["sessions"])
+    print(f"wrote {os.path.relpath(GOLDEN_PATH, REPO_ROOT)}: "
+          f"{len(report['sessions'])} sessions, {total} messages")
 
 
 def main(argv=None):
@@ -123,14 +181,24 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("reports", nargs="*", help="two report JSON files (rust, pyscopinator)")
     ap.add_argument("--run", action="store_true", help="generate both reports first")
+    ap.add_argument("--golden", action="store_true",
+                    help="compare a live scopinator-rs report with the committed golden; "
+                         "unlisted capability gaps fail")
+    ap.add_argument("--update-golden", action="store_true",
+                    help="regenerate the committed pyscopinator golden report and exit")
     args = ap.parse_args(argv)
 
-    if args.run:
+    if args.update_golden:
+        write_golden()
+        return 0
+    if args.golden:
+        rust_path, py_path = generate_rust_report(), GOLDEN_PATH
+    elif args.run:
         rust_path, py_path = generate_reports()
     elif len(args.reports) == 2:
         rust_path, py_path = args.reports
     else:
-        ap.error("provide two report files or --run")
+        ap.error("provide two report files, --run, --golden or --update-golden")
 
     rust, py = load(rust_path), load(py_path)
     # Normalize which is which by the "impl" field.
@@ -153,6 +221,18 @@ def main(argv=None):
             print(f"  … and {len(hard) - 200} more")
         print("\nPARITY: FAIL")
         return 1
+
+    if args.golden:
+        unlisted = sorted(set(gap_set) - KNOWN_CAPABILITY_GAPS)
+        stale = sorted(KNOWN_CAPABILITY_GAPS - set(gap_set))
+        for method, only in stale:
+            print(f"  note: listed gap {method!r} ({only} only) no longer occurs; "
+                  f"remove it from KNOWN_CAPABILITY_GAPS")
+        if unlisted or stale:
+            for method, only in unlisted:
+                print(f"  ✗ unlisted capability gap: {method!r} modeled by {only} only")
+            print("\nPARITY: FAIL (capability gaps differ from KNOWN_CAPABILITY_GAPS)")
+            return 1
 
     print(f"\nPARITY: OK  (capability gaps: {len(set(gaps))}, hard divergences: 0)")
     return 0

@@ -10,3 +10,6 @@ logs/
 # Coverage output
 /lcov.info
 /target/llvm-cov-target/
+
+# Python bytecode
+__pycache__/

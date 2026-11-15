@@ -45,6 +45,17 @@ jobs:
       - run: cargo build --workspace --all-features
       - run: cargo test --workspace --all-features --no-fail-fast
 
+  parity:
+    name: parity (golden)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # scopinator-rs replays the corpus live; pyscopinator's side is the
+      # committed golden report, so no Python checkout is needed.
+      - run: python3 conformance/parity/compare.py --golden
+
   doc:
     name: doc
     runs-on: ubuntu-latest
