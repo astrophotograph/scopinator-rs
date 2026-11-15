@@ -5,6 +5,20 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+### Changed
+
+- `scopinator goto` sets the telescope's clock when it is clearly wrong, using this computer's
+  local time and time zone. Some models lose their clock when powered off, and a goto does
+  nothing without it. `--sync-clock` sets it regardless and no longer switches the telescope to
+  UTC; `--no-sync-clock` only warns.
+- `scopinator goto` waits for the outcome instead of stopping at "accepted": it reports that the
+  mount is slewing, or exits with an error naming the failed stage and code (for example
+  `ScopeGoto: mount goto failed (code 501)`), or says the mount never started moving.
+
+### Added
+
+- `ScopeGotoEventData` carries `error` and `code` for a failed slew.
+
 ## [0.6.0] - 2026-11-15
 
 An audit of the Seestar client against the [seestar-spec](https://github.com/zmerlynn/seestar-spec) protocol specification and two real telescopes (S50 on firmware 6.70, S30 on firmware 9.75). 0.5.0 could not talk to firmware 9.75 at all and sent several requests no firmware accepts; this release fixes that. **It has breaking changes** — see the upgrade section.

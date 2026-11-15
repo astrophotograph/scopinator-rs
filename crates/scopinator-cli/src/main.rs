@@ -51,11 +51,15 @@ enum Commands {
         /// Target name
         #[arg(short, long, default_value = "Target")]
         name: String,
-        /// Set the telescope's clock from this computer before the goto.
-        /// The telescope needs a correct clock to find the target. This sets
-        /// its clock to UTC and its time zone to "UTC".
-        #[arg(long)]
+        /// Set the telescope's clock from this computer even if it looks
+        /// right. By default the clock is set only when it is clearly wrong
+        /// (some models lose it when powered off), because the telescope
+        /// cannot find a target without it.
+        #[arg(long, conflicts_with = "no_sync_clock")]
         sync_clock: bool,
+        /// Never set the telescope's clock; only warn when it looks wrong.
+        #[arg(long)]
+        no_sync_clock: bool,
     },
     /// Park the telescope
     Park {
@@ -123,8 +127,14 @@ async fn main() -> Result<()> {
             dec,
             name,
             sync_clock,
+            no_sync_clock,
         } => {
-            commands::goto(host, ra, dec, &name, interop_key, sync_clock).await?;
+            let clock = match (sync_clock, no_sync_clock) {
+                (true, _) => commands::ClockPolicy::Always,
+                (_, true) => commands::ClockPolicy::Never,
+                _ => commands::ClockPolicy::IfWrong,
+            };
+            commands::goto(host, ra, dec, &name, interop_key, clock).await?;
         }
         Commands::Park { host } => {
             commands::park(host, interop_key).await?;

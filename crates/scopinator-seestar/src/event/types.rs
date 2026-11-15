@@ -142,6 +142,9 @@ pub struct ScopeGotoEventData {
     pub cur_ra_dec: Option<(f64, f64)>,
     #[serde(default)]
     pub dist_deg: f64,
+    /// Why the slew failed, when `state` is `fail`.
+    pub error: Option<String>,
+    pub code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

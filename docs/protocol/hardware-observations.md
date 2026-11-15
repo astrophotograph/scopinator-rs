@@ -207,7 +207,25 @@ The device clock read 2020-10-10 when first seen (never set).
 | `iscope_stop_view` (no stage), then `scope_park` | View cancelled; `ScopeHome` working then complete after 23 s, `close: true` |
 
 A client must set the clock before a goto. A wrong clock makes the device treat the target as
-unreachable and it says nothing.
+unreachable, and the reply to the request never says so.
+
+Observed again on 2026-11-15, same telescope:
+
+- **The clock does not survive a power cycle.** It was set on 2026-11-14 and read 2020-10-10
+  again the next day, after the telescope had been off overnight.
+- **The failure is not always silent, and is never in the reply.** Three gotos with the clock
+  wrong, all answered with code 0:
+  1. (2026-11-14) no `AutoGoto` event, nothing in the view state; the mount stayed parked.
+  2. About 9 s after the request, `get_view_state` showed `View` > `AutoGoto` working >
+     `ScopeGoto` with `state: fail`, code 501 "mount goto failed"; the mount stayed parked.
+  3. (clock deliberately set back to 2020) nothing failed within 12 s and `mount.move_type` was
+     never `ScopeGoto`, but `mount.close` was `false` afterwards.
+- With the clock set, the same request slewed and `tracking` came on: `mount.move_type` was
+  `ScopeGoto` within 6 s, and the mount reported RA 20.6917 h, Dec 45.279° for a request of
+  RA 20.69 h, Dec 45.28°.
+
+So a client cannot rely on any one signal. `scopinator goto` sets the clock when it is clearly
+wrong, then waits for the mount to start moving or for a failed stage, from events and by polling.
 
 During the goto, on port 4800:
 
