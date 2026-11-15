@@ -58,12 +58,20 @@ GOLDEN_PATH = os.path.join(REPO_ROOT, "conformance", "parity", "golden", "pyscop
 # Differences that do not appear here because the corpus never exercises them
 # are noted for the record: `begin_streaming` / `stop_streaming` are
 # image-socket commands (`ImagingCommand`) in scopinator-rs and control
-# commands in pyscopinator; pyscopinator special-cases the verify marker for
-# `set_wheel_position`; scopinator-rs alone models `scope_move_to_horizon` and
+# commands in pyscopinator; pyscopinator wraps list params as [params, "verify"]
+# except for `set_wheel_position` (adjudicated 2026-11-15: appending, as
+# scopinator-rs does for every method, is what the device accepts); scopinator-rs alone models `scope_move_to_horizon` and
 # `start_polar_align`.
 KNOWN_CAPABILITY_GAPS = {
     ("pi_station_state", "scopinator-rs"),
     ("play_sound", "scopinator-rs"),
+    # Real methods pyscopinator lacks (code 0 or 207 on firmware 6.70).
+    ("get_annotate_result", "scopinator-rs"),
+    ("get_sequence_setting", "scopinator-rs"),
+    # Names the device does not have (103 on 6.70 and 9.75); removed from
+    # scopinator-rs. See docs/bugs/pyscopinator-wire-forms.md.
+    ("get_annotated_result", "pyscopinator"),
+    ("get_stack_setting", "pyscopinator"),
 }
 
 

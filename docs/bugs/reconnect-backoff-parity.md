@@ -3,7 +3,8 @@
 > **Partly resolved 2026-11-14.** The control and imaging reconnect loops now add up to 1 s of
 > random delay to every wait (`ReconnectPolicy::with_jitter`, `DEFAULT_JITTER`), matching
 > pyscopinator's normal path. `ReconnectPolicy::new()` remains the deterministic schedule and is
-> what the unit tests pin. Divergence 2 (the reboot-detected schedule) is still open. Also new: a
+> what the unit tests pin. Divergence 2 (the reboot-detected schedule) was waived on 2026-11-15: there is no evidence the
+> slower schedule matters, and Rust has no reboot detection to hang it on. Also new: a
 > connection the device refuses with Alert 429 does not reset the backoff, and is reported as
 > `SeestarError::ConnectionLimit`.
 

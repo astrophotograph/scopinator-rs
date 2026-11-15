@@ -1,5 +1,10 @@
 # RA 360° / 24h and Alt/Az validation: Rust and Python differ
 
+> **Adjudicated 2026-11-15: Rust's behaviour stands.** RA 360° / 24 h is the same sky position as 0
+> and is normalized to it; rejecting a mount's own wrap-point reading helps nobody. Alt/Az stays
+> unvalidated for now. The divergence from pyscopinator is intended and waived; the tests named
+> below pin it.
+
 Filed from Forge task "Add differential coordinate tests mirroring core types oracle".
 Status: **open, not adjudicated.** This report describes both behaviours and gives no verdict.
 

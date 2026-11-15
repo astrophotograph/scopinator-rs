@@ -48,6 +48,12 @@ conformance/
 Session naming encodes the variant: `s50_fw670_a` = Seestar S50, firmware 6.70.
 The corpus currently covers **firmware 6.70 (S50)** and **7.06 (S30)**.
 
+`s50_fw670_nokey` is different in kind from the app captures: it was taken directly on
+2026-11-15 by a client with no interop key, sending only read-only requests, to record the
+verification gate. In it the unmarked requests get no reply at all, `get_verify_str` answers
+without a marker, each marker form is shown on a getter, and two names the device does not have
+return 103.
+
 ### `control.jsonl` format
 
 One JSON record per line:

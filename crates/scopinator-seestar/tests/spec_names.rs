@@ -20,11 +20,7 @@ use serde_json::Value;
 /// Names that are not in the spec catalog, with the evidence for keeping them.
 const METHODS_OUTSIDE_SPEC: &[(&str, &str)] = &[];
 
-const EVENTS_OUTSIDE_SPEC: &[(&str, &str)] = &[(
-    "Internal",
-    "a client-side model in pyscopinator, never seen on the wire: not in \
-     the spec catalog and not in the corpus (docs/bugs/event-tag-set-drift.md).",
-)];
+const EVENTS_OUTSIDE_SPEC: &[(&str, &str)] = &[];
 
 fn spec() -> Value {
     serde_json::from_str(include_str!(

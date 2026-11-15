@@ -43,6 +43,8 @@ REDACT_STRING = {
     "netmask": "0.0.0.0",
     "bssid": "00:00:00:00:00:00",
     "mac": "00:00:00:00:00:00",
+    # The device zone narrows down where the owner lives.
+    "time_zone": "UTC",
 }
 # Keys whose value is a [lon, lat] pair (home location).
 REDACT_LATLON = {"location_lon_lat"}

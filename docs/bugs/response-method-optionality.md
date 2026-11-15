@@ -1,5 +1,9 @@
 # CommandResponse: `method` is optional in Rust, required in Python
 
+> **Adjudicated 2026-11-15: Rust's behaviour stands.** `method` stays optional. Every captured
+> response carries it, so leniency costs nothing and a response without it is still routed by id.
+> The divergence from pyscopinator is intended and waived.
+
 Source: Forge task "Add differential response parsing tests" (Scopinator, testing sweep).
 Status: unadjudicated. This report describes both behaviours and gives no verdict.
 

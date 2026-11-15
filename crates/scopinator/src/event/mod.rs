@@ -13,6 +13,8 @@ pub enum EventType {
     SlewStarted,
     SlewCompleted,
     TrackingChanged,
+    /// A camera's live view started, stopped or changed mode.
+    ViewChanged,
     ExposureStarted,
     ExposureCompleted,
     StackFrameCompleted,
@@ -48,8 +50,27 @@ pub enum EventPayload {
         dropped: i32,
         total: i32,
     },
+    /// The state of a camera's live view.
+    View {
+        /// Which camera the view belongs to.
+        camera: ViewCamera,
+        /// Whether the view is running.
+        active: bool,
+        /// The backend's name for the view mode (for a Seestar: `star`,
+        /// `moon`, `sun`, `scenery`, ...), when it reports one.
+        mode: Option<String>,
+    },
     /// An error occurred.
     Error { code: i32, message: String },
     /// Status update with free-form data.
     Status(serde_json::Value),
+}
+
+/// Which camera of a device an event refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewCamera {
+    /// The main (telephoto) camera.
+    Main,
+    /// The wide-angle camera, on devices that have one.
+    Wide,
 }

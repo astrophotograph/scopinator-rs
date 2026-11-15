@@ -1,5 +1,10 @@
 # Event tag set drift: Rust models `Internal`, which Python's EventTypes union deliberately excludes
 
+> **Adjudicated 2026-11-15: Python is right.** `Internal` is a client-side model, absent from the
+> spec and never seen on the wire. The `Internal` variant was removed; such a message now parses as
+> `SeestarEvent::Unknown`, like any other unmodeled tag (Rust keeps it rather than raising). Pinned
+> by `internal_is_not_a_wire_event`. The text below describes the behaviour before the change.
+
 Filed from Forge task "Port pyscopinator event parsing cases to Rust" (Scopinator, testing sweep).
 Status: **open, not adjudicated.** This report describes current behaviour on both sides and changes
 no production code.

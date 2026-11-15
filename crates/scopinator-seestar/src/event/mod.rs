@@ -92,7 +92,6 @@ seestar_events! {
     Client(serde_json::Value) = "Client",
     EqModePA(serde_json::Value) = "EqModePA",
     GoPixel(serde_json::Value) = "GoPixel",
-    Internal(serde_json::Value) = "Internal",
     PlateSolve(serde_json::Value) = "PlateSolve",
     ScanSun(serde_json::Value) = "ScanSun",
     SecondView(ViewEventData) = "SecondView",
@@ -193,9 +192,6 @@ mod tests {
     //   (`missing_timestamp_is_ignored`).
     // - Unknown tags map to SeestarEvent::Unknown instead of raising
     //   (`unknown_event_tag_parses_to_unknown`).
-    // - "Internal" is a parseable variant in Rust but deliberately excluded
-    //   from Python's EventTypes union (`internal_event_parses_to_variant`,
-    //   docs/bugs/event-tag-set-drift.md).
     // - cur_ra_dec is Option<(f64, f64)> in Rust (a 2-element array on the
     //   wire) where Python takes a {"ra": .., "dec": ..} object
     //   (`scopegoto_event_with_coordinates`).
@@ -921,40 +917,22 @@ mod tests {
         }
     }
 
-    // Mirrors TestInternalEvent::test_construction: an Internal event carries
-    // its params on the variant payload (Python's InternalEvent.params).
+    // Mirrors TestInternalEvent::test_internal_not_in_discriminated_union:
+    // `Internal` is a client-side model in pyscopinator, absent from the
+    // spec and never seen on the wire, so it is not a modeled wire event
+    // here either. Where Python raises, this crate keeps it as `Unknown`
+    // (docs/bugs/event-tag-set-drift.md, adjudicated 2026-11-15).
     #[test]
-    fn internal_event_construction() {
-        let event = SeestarEvent::Internal(json!({"params": {"key": "value"}}));
-        assert_eq!(event.name(), "Internal");
-        match event {
-            SeestarEvent::Internal(v) => {
-                assert_eq!(v["params"]["key"], json!("value"));
-            }
-            _ => panic!("expected Internal"),
-        }
-    }
-
-    // Mirrors TestInternalEvent::test_internal_not_in_discriminated_union.
-    // Difference from Python: Python's EventTypes union deliberately keeps
-    // InternalEvent out — parse({"Event": "Internal"}) raises
-    // ValidationError there (it is a client-side model, not a wire event);
-    // the Rust enum has an Internal variant, so the same message parses and
-    // reaches subscribers. Filed in docs/bugs/event-tag-set-drift.md.
-    #[test]
-    fn internal_event_parses_to_variant() {
+    fn internal_is_not_a_wire_event() {
         let event: SeestarEvent = serde_json::from_value(json!({
             "Event": "Internal",
             "Timestamp": TIMESTAMP,
             "params": {"key": "value"},
         }))
         .unwrap();
-        match event {
-            SeestarEvent::Internal(v) => {
-                assert_eq!(v["params"]["key"], json!("value"));
-            }
-            _ => panic!("expected Internal"),
-        }
+        assert!(event.is_unknown());
+        assert_eq!(event.name(), "Internal");
+        assert!(!known_event_names().contains(&"Internal"));
     }
 
     // Mirrors TestDiskSpaceEvent::test_defaults.
@@ -1024,10 +1002,8 @@ mod tests {
     // event tags this crate models, so membership or spelling drift in
     // known_event_names() fails loudly. Python's EventTypes union
     // (pyscopinator, src/scopinator/seestar/events/__init__.py:385) has 32
-    // arms; the Rust set is identical except it additionally models
-    // "Internal", which Python deliberately keeps out of the union (see
-    // `internal_event_parses_to_variant` and
-    // docs/bugs/event-tag-set-drift.md).
+    // arms; the Rust set has all of them, plus the operational events
+    // typed since from the spec and hardware.
     #[test]
     fn known_event_names_lists_the_full_tag_set() {
         let expected = [
@@ -1056,7 +1032,6 @@ mod tests {
             "Client",
             "EqModePA",
             "GoPixel",
-            "Internal",
             "PlateSolve",
             "ScanSun",
             "SecondView",
@@ -1083,7 +1058,7 @@ mod tests {
     // parse to its own (non-Unknown) variant. This also covers the 14 tags
     // with no isinstance case in the Python suite (Exposure, SaveImage,
     // ScopeHome, ScopeMoveToHorizon, ScopeTrack, AutoGotoStep, EqModePA,
-    // GoPixel, Internal, ScanSun, SecondView, Setting, 3PPA, ViewPlan) and
+    // GoPixel, ScanSun, SecondView, Setting, 3PPA, ViewPlan) and
     // exercises every variant arm of name().
     #[test]
     fn every_known_event_name_parses_to_its_variant() {

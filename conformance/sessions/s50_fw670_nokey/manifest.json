@@ -1,0 +1,10 @@
+{
+  "source_session": "direct capture 2026-11-15, no interop key, read-only requests",
+  "telescope_model": "Seestar S50",
+  "firmware_version": "6.70",
+  "firmware_ver_int": 2670,
+  "client_message_count": 29,
+  "telescope_message_count": 26,
+  "sanitized": true,
+  "note": "Secrets redacted by tools/sanitize_session.py. Do not restore raw values."
+}

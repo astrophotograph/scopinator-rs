@@ -305,15 +305,14 @@ fn firmware_specific_command_drift_is_pinned() {
     };
 
     let fw670 = methods_for(&|n| n.contains("fw670"));
+    assert!(fw670.contains("get_setting"), "6.70 answers get_setting");
     let fw706 = methods_for(&|n| n.contains("fw706"));
 
-    // Added in 7.06 (absent from the 6.70 captures).
-    for added in [
-        "play_sound",
-        "set_sequence_setting",
-        "iscope_start_stack",
-        "get_setting",
-    ] {
+    // Sent by the 7.06 app and absent from the 6.70 captures. This pins what
+    // the captured clients sent, not what the firmware has: `get_setting`
+    // used to be listed here, and 6.70 answers it with code 0
+    // (s50_fw670_nokey, captured directly on 2026-11-15).
+    for added in ["play_sound", "set_sequence_setting", "iscope_start_stack"] {
         assert!(fw706.contains(added), "expected {added} in 7.06 captures");
         assert!(
             !fw670.contains(added),

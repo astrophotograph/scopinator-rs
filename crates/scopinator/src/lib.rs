@@ -7,6 +7,6 @@ pub mod sequencer;
 
 pub use device::*;
 pub use error::ScopinatorError;
-pub use event::{EventPayload, EventType, UnifiedEvent, UnifiedEventBus};
+pub use event::{EventPayload, EventType, UnifiedEvent, UnifiedEventBus, ViewCamera};
 pub use manager::DeviceManager;
 pub use scopinator_types as types;

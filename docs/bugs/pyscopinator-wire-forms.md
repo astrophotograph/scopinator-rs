@@ -3,7 +3,7 @@
 Draft for filing against pyscopinator (github.com/astrophotograph/pyscopinator). Written
 2026-11-15 from a read of pyscopinator at `1ee4495` and from
 [`docs/protocol/hardware-observations.md`](../protocol/hardware-observations.md) (Seestar S50 on
-firmware 6.70, Seestar S30 on firmware 9.75, both observed 2026-11-14). Status: **not filed.**
+firmware 6.70, Seestar S30 on firmware 9.75, both observed 2026-11-14). Status: **filed as Forge follow-up tasks on 2026-11-15** (project Scopinator), not as GitHub issues.
 scopinator-rs had every one of these and fixed them on 2026-11-14.
 
 Each item is a separate defect and can be filed as its own issue.
@@ -28,7 +28,8 @@ method. Commands this breaks:
 | `pi_set_time` | `[[{...}], "verify"]` | works only as `[{...}, "verify"]` |
 | `scope_sync`, `set_control_value` (tuple params) | `[[a, b], "verify"]` | not observed; the flat form is the one the spec gives |
 
-Fix: append for all lists and drop the `set_wheel_position` special case.
+Fix: append for all lists and drop the `set_wheel_position` special case. (Adjudicated 2026-11-15:
+the Rust serializer, which appends for every method, is the correct one.)
 
 ## 3. `set_setting` with the marker reports failure, and can skip members
 

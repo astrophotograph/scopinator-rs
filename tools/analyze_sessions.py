@@ -81,7 +81,7 @@ KNOWN_RUST_EVENTS = {
     "Exposure", "FocuserMove", "Initialise", "PiStatus", "RTSP", "SaveImage",
     "ScopeGoto", "ScopeHome", "ScopeMoveToHorizon", "ScopeTrack", "Stack", "View",
     "WheelMove", "Annotate", "AutoGotoStep", "BatchStack", "Client", "EqModePA",
-    "GoPixel", "Internal", "PlateSolve", "ScanSun", "SecondView", "SelectCamera",
+    "GoPixel", "PlateSolve", "ScanSun", "SecondView", "SelectCamera",
     "Setting", "3PPA", "ViewPlan",
 }
 
