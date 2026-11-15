@@ -372,3 +372,87 @@ mod tests {
         );
     }
 }
+
+/// A view plan: a schedule of targets the telescope works through by itself.
+///
+/// Sending one with [`Command::SetViewPlan`](crate::command::Command::SetViewPlan)
+/// **replaces the plan the device holds** and starts it. The device holds one
+/// plan at a time, and the official app's saved plan is that same plan.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewPlan {
+    /// The plan's name. Its presence is what makes this a new plan rather
+    /// than a restart of the held one; an empty string is accepted.
+    pub plan_name: String,
+    /// Date of the last edit as the app writes it (`YYYY.MM.DD`). Not used
+    /// by the device for scheduling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_time_seestar: Option<String>,
+    /// Autofocus before each target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_target_af: Option<bool>,
+    /// Park when the plan ends. The device also consults its own
+    /// `viewplan_gohome` setting, so this alone does not guarantee it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewplan_gohome: Option<bool>,
+    /// Targets in start order. The device does not sort them.
+    pub list: Vec<ViewPlanTarget>,
+    /// Members not named here, kept so that a plan read back from the
+    /// device can be sent again unchanged.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One target of a [`ViewPlan`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewPlanTarget {
+    /// An id of the caller's choosing (the app uses a Unix timestamp). It is
+    /// stored as a signed 32-bit value and identifies the target in events.
+    pub target_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias_name: Option<String>,
+    /// RA in hours, Dec in degrees.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_ra_dec: Option<(f64, f64)>,
+    /// Start time in minutes after the device's local midnight. Values of
+    /// 1440 and above run past midnight.
+    pub start_min: i32,
+    /// How long to stay on the target, in minutes.
+    pub duration_min: i32,
+    /// Which camera images the target. Required by 64-bit firmware; a plan
+    /// read back from the device may omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_mode: Option<PlanCameraMode>,
+    /// Use the light-pollution filter (moves the filter wheel).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lp_filter: Option<bool>,
+    /// A skipped target is not run but still occupies its slot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub star_type: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mosaic: Option<serde_json::Value>,
+    /// Wide-camera stack options, for `wide` and `dual` targets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub second_camera: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mount: Option<serde_json::Value>,
+    /// Members not named here (state, code and error when the plan is read
+    /// back from the device).
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Which camera a [`ViewPlanTarget`] uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanCameraMode {
+    /// The main (telephoto) camera.
+    Tele,
+    /// The wide camera, on models that can image with it.
+    Wide,
+    /// Both cameras.
+    Dual,
+}

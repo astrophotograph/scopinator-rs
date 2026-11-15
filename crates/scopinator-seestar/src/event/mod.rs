@@ -99,7 +99,7 @@ seestar_events! {
     SelectCamera(serde_json::Value) = "SelectCamera",
     Setting(serde_json::Value) = "Setting",
     ThreePPA(serde_json::Value) = "3PPA",
-    ViewPlan(serde_json::Value) = "ViewPlan",
+    ViewPlan(ViewPlanEventData) = "ViewPlan",
     // Operational events typed from the spec cards.
     Version(VersionEventData) = "Version",
     Target(TargetEventData) = "Target",
@@ -1257,6 +1257,47 @@ mod tests {
         let odd = parse(json!({"Event": "AutoExp", "exp_us": "long"}));
         assert!(odd.is_unknown());
         assert_eq!(odd.name(), "AutoExp");
+    }
+
+    // The shape a Seestar S30 on firmware 9.75 reported for its held plan
+    // (`iscope_get_app_state`, 2026-11-14; names changed). A plan read back
+    // carries per-target state, and can be sent again unchanged.
+    #[test]
+    fn view_plan_event_as_reported_by_hardware() {
+        use crate::command::params::ViewPlan;
+        let raw = json!({
+            "Event": "ViewPlan", "Timestamp": "91537.611118618", "lapse_ms": 207161,
+            "state": "cancel",
+            "plan": {"plan_name": "Example plan", "update_time_seestar": "2025.01.17", "list": [
+                {"alias_name": "M 109", "code": 253, "duration_min": 10, "error": "aborted",
+                 "lapse_ms": 0, "lp_filter": false, "skip": false, "start_min": 1470,
+                 "state": "fail", "target_id": 1737095058, "target_name": "M 109",
+                 "target_ra_dec": [11.960171, 53.36882]},
+                {"alias_name": "M 44", "code": 253, "duration_min": 10, "error": "aborted",
+                 "lapse_ms": 0, "lp_filter": false, "skip": false, "start_min": 1490,
+                 "state": "fail", "target_id": 1737095143, "target_name": "M 44",
+                 "target_ra_dec": [8.673787, 19.668512]},
+            ]},
+        });
+        let event: SeestarEvent = serde_json::from_value(raw.clone()).unwrap();
+        let SeestarEvent::ViewPlan(data) = event else {
+            panic!("expected ViewPlan");
+        };
+        assert_eq!(data.state, Some(EventState::Cancel));
+        let plan = data.plan.expect("plan");
+        assert_eq!(plan.plan_name, "Example plan");
+        assert_eq!(plan.list.len(), 2);
+        let first = &plan.list[0];
+        assert_eq!((first.start_min, first.duration_min), (1470, 10));
+        assert_eq!(first.target_ra_dec, Some((11.960171, 53.36882)));
+        assert_eq!(first.camera_mode, None, "the device did not report one");
+        assert_eq!(first.extra["state"], "fail");
+        assert_eq!(first.extra["code"], 253);
+
+        // Lossless: serializing the plan gives back exactly what was sent.
+        let again: ViewPlan = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+        assert_eq!(again, plan);
+        assert_eq!(serde_json::to_value(&plan).unwrap(), raw["plan"]);
     }
 
     // Stable-toolchain counterpart of the `event_parse` fuzz target: whatever

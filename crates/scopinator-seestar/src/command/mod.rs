@@ -129,8 +129,18 @@ pub enum Command {
     StartPolarAlign(PolarAlignParams),
 
     // -- Plans --
-    SetViewPlan(serde_json::Value),
+    /// `set_view_plan` with a plan: replace the held plan and start it.
+    SetViewPlan(Box<ViewPlan>),
+    /// `set_view_plan` with no params: start the plan the device holds.
+    RestartViewPlan,
+    /// `stop_func {"name": "ViewPlan"}`: stop the running plan.
     StopViewPlan,
+    /// `clear_view_plan`: stop the plan and, on most firmware, **remove**
+    /// the held plan (observed on 6.70; 9.75 deletes its stored file and
+    /// 9.31 keeps the plan, per the protocol specification).
+    ClearViewPlan,
+    /// `get_view_plan_stack_result`: the saved stack of the last plan target.
+    GetViewPlanStackResult,
 }
 
 /// Every JSON-RPC method string the [`Command`] enum can produce.
@@ -185,6 +195,8 @@ pub fn command_method_names() -> &'static [&'static str] {
         "start_scan_planet",
         "start_polar_align",
         "set_view_plan",
+        "clear_view_plan",
+        "get_view_plan_stack_result",
         "stop_func",
     ]
 }
@@ -240,7 +252,9 @@ impl Command {
             Self::StartSolve => "start_solve",
             Self::StartScanPlanet => "start_scan_planet",
             Self::StartPolarAlign(_) => "start_polar_align",
-            Self::SetViewPlan(_) => "set_view_plan",
+            Self::SetViewPlan(_) | Self::RestartViewPlan => "set_view_plan",
+            Self::ClearViewPlan => "clear_view_plan",
+            Self::GetViewPlanStackResult => "get_view_plan_stack_result",
             Self::StopViewPlan => "stop_func",
         }
     }
@@ -403,7 +417,10 @@ pub(crate) mod tests {
                 restart: true,
                 dec_pos_index: 0,
             }),
-            Command::SetViewPlan(json!({})),
+            Command::SetViewPlan(Box::default()),
+            Command::RestartViewPlan,
+            Command::ClearViewPlan,
+            Command::GetViewPlanStackResult,
             Command::StopViewPlan,
         ]
     }

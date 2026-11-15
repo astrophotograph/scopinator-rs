@@ -350,6 +350,20 @@ pub struct StationEventData {
     pub error: Option<String>,
 }
 
+/// `ViewPlan`: state of the plan worker, with the held plan attached.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ViewPlanEventData {
+    pub state: Option<EventState>,
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub lapse_ms: i64,
+    pub error: Option<String>,
+    pub code: Option<i32>,
+    /// The held plan. Each target also carries its own `state`, `code` and
+    /// `error`, which land in [`ViewPlanTarget::extra`](crate::command::params::ViewPlanTarget).
+    pub plan: Option<crate::command::params::ViewPlan>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -158,6 +158,9 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::StopAutoFocus
         | Command::StartSolve
         | Command::StartScanPlanet
+        | Command::RestartViewPlan
+        | Command::ClearViewPlan
+        | Command::GetViewPlanStackResult
         | Command::PiStationState => None,
 
         // Mount mode switch: scope_park with equ_mode param
@@ -183,7 +186,7 @@ fn command_params(cmd: &Command) -> Option<Value> {
         Command::SetUserLocation(p) => serde_json::to_value(p).ok(),
         Command::SetSetting(p) => serde_json::to_value(p).ok(),
         Command::PiOutputSet2(v) => Some(v.clone()),
-        Command::SetViewPlan(v) => Some(v.clone()),
+        Command::SetViewPlan(plan) => serde_json::to_value(plan).ok(),
         Command::StopViewPlan => Some(json!({"name": "ViewPlan"})),
         Command::PlaySound(p) => serde_json::to_value(p).ok(),
         // The settings object itself. (The nested `[[{...}]]` form seen in
@@ -453,6 +456,54 @@ mod tests {
             assert_eq!(marked.line(&cmd, 4), format!("{head}{with_marker}\r\n"));
             assert_eq!(plain.line(&cmd, 4), format!("{head}{without}\r\n"));
         }
+    }
+
+    // The inline-plan example from the protocol specification's
+    // `set_view_plan` card (shape observed from the iOS app; values invented
+    // there), and the parameterless restart.
+    #[test]
+    fn serialize_view_plan_matches_the_spec_example() {
+        use crate::command::params::{PlanCameraMode, ViewPlan, ViewPlanTarget};
+        let plan = ViewPlan {
+            plan_name: "Example plan".into(),
+            update_time_seestar: Some("2026.01.31".into()),
+            plan_target_af: Some(false),
+            viewplan_gohome: Some(true),
+            list: vec![ViewPlanTarget {
+                target_id: 1_790_000_000,
+                target_name: Some("Example target".into()),
+                alias_name: Some("Example".into()),
+                target_ra_dec: Some((12.0, 30.0)),
+                start_min: 1200,
+                duration_min: 90,
+                camera_mode: Some(PlanCameraMode::Tele),
+                lp_filter: Some(false),
+                skip: Some(false),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let expected = json!({"id": 8, "method": "set_view_plan", "params": {
+            "plan_name": "Example plan", "update_time_seestar": "2026.01.31",
+            "plan_target_af": false, "viewplan_gohome": true,
+            "list": [{"target_id": 1790000000, "target_name": "Example target",
+                "alias_name": "Example", "target_ra_dec": [12.0, 30.0], "start_min": 1200,
+                "duration_min": 90, "camera_mode": "tele", "lp_filter": false, "skip": false}]}});
+        let verified = WireProfile::new(Verification::Handshake);
+        let cmd = Command::SetViewPlan(Box::new(plan));
+        assert_eq!(verified.message(&cmd, 8), expected);
+        // In marker mode the marker is the last member of the plan object.
+        let line = WireProfile::new(Verification::Marker).line(&cmd, 8);
+        assert!(line.ends_with(",\"verify\":true}}\r\n"), "{line}");
+
+        assert_eq!(
+            verified.line(&Command::RestartViewPlan, 7),
+            "{\"id\":7,\"method\":\"set_view_plan\"}\r\n"
+        );
+        assert_eq!(
+            verified.line(&Command::ClearViewPlan, 12),
+            "{\"id\":12,\"method\":\"clear_view_plan\"}\r\n"
+        );
     }
 
     #[test]

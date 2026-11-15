@@ -9,13 +9,13 @@ use tracing::{debug, info};
 use crate::auth::{InteropKey, Verification};
 use crate::command::params::{
     Direction, PolarAlignParams, SetTimeParams, SetUserLocationParams, SettingParams,
-    SpeedMoveParams, StartViewParams,
+    SpeedMoveParams, StartViewParams, ViewPlan,
 };
 use crate::command::{Command, ImagingCommand, RawMarker};
 use crate::connection::control::{self, ClientRequest, Link, LinkState};
 use crate::connection::imaging::{self, ImageFrame};
 use crate::error::{ErrorCode, SeestarError};
-use crate::event::SeestarEvent;
+use crate::event::{SeestarEvent, ViewPlanEventData};
 use crate::protocol::json_rpc::{CONTROL_PORT, IMAGING_PORT, WIDE_CONTROL_PORT, WIDE_IMAGING_PORT};
 use crate::response::CommandResponse;
 
@@ -378,6 +378,56 @@ impl SeestarClient {
                 code: e.code,
                 message: e.message,
             })
+    }
+
+    /// Replace the plan the device holds with `plan` and start it.
+    ///
+    /// A view plan is a schedule of targets the telescope works through by
+    /// itself: it slews, focuses and stacks without further commands, so only
+    /// start one when the telescope is free to move. The device holds a
+    /// single plan, the same one the official app shows as saved; this
+    /// overwrites it. The clock must be right, since targets start at
+    /// minutes after the device's local midnight.
+    ///
+    /// A success reply means the plan worker started. Progress arrives as
+    /// `ViewPlan` and `Target` events. Fails with code 536 if a plan is
+    /// already running and 268 if a view is active.
+    pub async fn set_view_plan(&self, plan: ViewPlan) -> Result<serde_json::Value, SeestarError> {
+        self.send_and_validate(Command::SetViewPlan(Box::new(plan)))
+            .await
+    }
+
+    /// Start the plan the device already holds.
+    pub async fn restart_view_plan(&self) -> Result<serde_json::Value, SeestarError> {
+        self.send_and_validate(Command::RestartViewPlan).await
+    }
+
+    /// Stop the running plan and keep it on the device.
+    pub async fn stop_view_plan(&self) -> Result<serde_json::Value, SeestarError> {
+        self.send_and_validate(Command::StopViewPlan).await
+    }
+
+    /// Stop the running plan with `clear_view_plan`.
+    ///
+    /// This also **removes the plan the device holds**: on firmware 6.70 the
+    /// device reports no plan afterwards (observed), and firmware 9.75
+    /// deletes its stored plan file (per the protocol specification, which
+    /// says 9.31 keeps the plan). Use
+    /// [`stop_view_plan`](Self::stop_view_plan) to stop and keep the plan.
+    pub async fn clear_view_plan(&self) -> Result<serde_json::Value, SeestarError> {
+        self.send_and_validate(Command::ClearViewPlan).await
+    }
+
+    /// The plan the device holds and its state, from `iscope_get_app_state`.
+    /// `None` if the device holds no plan.
+    pub async fn view_plan_state(&self) -> Result<Option<ViewPlanEventData>, SeestarError> {
+        let state = self
+            .send_raw_and_validate("iscope_get_app_state", None)
+            .await?;
+        match state.get("ViewPlan") {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(plan) => Ok(Some(serde_json::from_value(plan.clone())?)),
+        }
     }
 
     /// Send any control method by name and wait for the response.

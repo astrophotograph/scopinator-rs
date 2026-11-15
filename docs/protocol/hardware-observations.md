@@ -114,6 +114,20 @@ marker mode: code 0; `pi_get_time` then returned the new UTC time and `time_zone
 had been "America/Chicago"). Sending local time with the original zone name put it back. So a
 non-empty `time_zone` replaces the device's zone, as the spec says.
 
+## View plan
+
+The device held no plan beforehand (`iscope_get_app_state` had no `ViewPlan` member). In marker mode:
+
+| Step | Result |
+|---|---|
+| `set_view_plan` with `plan_name`, `plan_target_af: false`, `viewplan_gohome: false` and one `tele` target starting at the current local minute, 5 minutes long | Code 0, `result: 0`. Events: `Setting`, `ViewPlan` working, `Target` working (with the `target_id` sent), `View` working in `star` mode, `AutoGoto`, `ScopeGoto`; `mount.move_type` was `ScopeGoto` |
+| `iscope_get_app_state` while running | `ViewPlan` with `state` working, `stage` "Target", and the plan with the target's `state` working |
+| `stop_func {"name": "ViewPlan"}` | Code 0. The goto was cancelled (`ScopeGoto` fail and cancel, `AutoGoto` fail and cancel), the view ended (`View` cancel, mode `none`), then `Target` cancel and `ViewPlan` cancel. **The plan stayed on the device**, with the target's state `fail` |
+| `clear_view_plan` | Code 0. **The device then held no plan** |
+
+So on 6.70 `stop_func` stops a plan and keeps it, and `clear_view_plan` removes it. Stopping a plan
+also leaves the view, unlike cancelling a single goto.
+
 ## Image socket (port 4800)
 
 | Observation | Result |
@@ -229,6 +243,14 @@ So the wide camera can be driven by a second verified control connection to 4702
 4804, with its events also visible on 4700. Selecting it through 4700 (`selected_cam`, `wide_cam`)
 was not tried.
 
+### Held plan
+
+`iscope_get_app_state` on this device returned a `ViewPlan` member holding a plan saved from the
+official app: `state` cancel, and each target with `alias_name`, `target_name`, `target_ra_dec`,
+`start_min`, `duration_min`, `lp_filter`, `skip`, `target_id`, and its own `state`, `code`,
+`error` and `lapse_ms`. There was no `camera_mode` member on the targets. No plan was set or
+cleared on this device, because that would have replaced or deleted the saved one.
+
 ## Not yet observed
 
 - Firmware between 7.06 and 9.75. The marker passes the gate on 6.70 (hardware) and 7.06 (corpus)
@@ -240,3 +262,5 @@ was not tried.
 - A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
 - `Alert` 429 on exceeding the connection limit.
 - Plate solving, stacking and annotation results (the device was indoors).
+- `set_view_plan` and `clear_view_plan` on firmware 9.75, where clearing is said to delete the
+  stored plan; a plan running to completion; `get_view_plan_stack_result` with output.
