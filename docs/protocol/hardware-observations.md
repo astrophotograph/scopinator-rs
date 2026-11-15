@@ -207,13 +207,35 @@ During the goto, on port 4800:
 `ScopeTrack` uses the state strings `on` / `off`, which are outside the usual
 start/working/complete set.
 
+### Wide camera
+
+Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused
+connections while no video page was active.
+
+| Observation | Result |
+|---|---|
+| Port 4702, unverified `test_connection` | Silently consumed: 4702 has its own verification gate |
+| Port 4702, `get_verify_str` + `verify_client` with the same key | Code 0; the socket is then served like 4700 |
+| 4702 `get_camera_info` | chip 1920×1080, 2.7 µm, colour, `debayer_pattern` "RG" (the wide camera) |
+| 4702 `get_setting` | Only the wide camera's own settings (the object that 4700 reports under `second_camera`) |
+| 4702 `iscope_start_view {"mode": "star"}` | Code 0. `get_view_state` on 4702 then has `SecondView` with `cam_id` 1, stage `ContinuousExposure`; on 4700 the main `View` is unchanged. The mount did not move |
+| Events for that view | `SecondView` and `ContinuousExposure` arrived on **both** 4702 and 4700 (forwarded) |
+| 4804 `get_current_img` and `get_camera_img` during the wide view | `there is no image now` |
+| 4804 `begin_streaming` during the wide view | `done`, then raw frames: imgType 1, dataType 2, **1920×1080**, canDebayer 1, 4 147 200 bytes, repeating the request id |
+| 4702 `iscope_stop_view` | Code 0; `SecondView` cancelled, also reported on 4700 |
+| 4700 `iscope_get_app_state` | Has a `selected_cam` member; `get_setting.wide_cam` was false |
+
+So the wide camera can be driven by a second verified control connection to 4702 and streamed from
+4804, with its events also visible on 4700. Selecting it through 4700 (`selected_cam`, `wide_cam`)
+was not tried.
+
 ## Not yet observed
 
 - Firmware between 7.06 and 9.75. The marker passes the gate on 6.70 (hardware) and 7.06 (corpus)
   and does not on 9.75 (hardware); where it stopped is unknown, so the client probes for it per
   connection.
-- A frame or a stream from the wide camera (port 4804); it had no image while the main camera held
-  the view.
+- Driving the wide camera through port 4700 (`selected_cam` / `wide_cam`), a wide-camera goto or
+  stack, and the RTSP streams.
 - A completed goto with plate solving, on any firmware (both devices were indoors).
 - A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
 - `Alert` 429 on exceeding the connection limit.
