@@ -232,6 +232,124 @@ pub struct SaveImageEventData {
 // wire-string behavior of the closed enums that live in this module at the
 // enum level; the event-level counterparts (parsing a full message through
 // SeestarEvent) are in event/mod.rs.
+// ── Operational events ───────────────────────────────────────────────────────
+//
+// Member names and types follow the event cards of zmerlynn/seestar-spec
+// (catalog/control/events, commit 14ac005; firmware 9.31 and 9.75). Every
+// member is optional: firmware versions differ in what they send, and an
+// event whose payload does not fit falls back to `SeestarEvent::Unknown`
+// with the raw payload rather than being lost.
+
+/// `Version`: the greeting a server sends to a newly accepted socket, naming
+/// the server and, for the imager, its firmware. It may not arrive before the
+/// first request is answered, so do not wait for it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VersionEventData {
+    pub name: Option<String>,
+    pub firmware_ver_int: Option<u32>,
+    pub firmware_ver_string: Option<String>,
+    /// Device activation, not verification of this socket.
+    pub is_verified: Option<bool>,
+    pub main_version: Option<String>,
+    pub modules: Option<serde_json::Value>,
+}
+
+/// `Target`: per-target state of a running view plan.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TargetEventData {
+    pub state: Option<EventState>,
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub lapse_ms: i64,
+    pub error: Option<String>,
+    pub code: Option<i32>,
+    pub target_id: Option<i64>,
+    pub camera_mode: Option<String>,
+    /// State, code and error of the wide camera's half of the target.
+    pub wide_state: Option<EventState>,
+    pub wide_code: Option<i32>,
+    pub wide_error: Option<String>,
+    pub stack_total_sec: Option<f64>,
+    pub wide_stack_total_sec: Option<f64>,
+    pub progress: Option<serde_json::Value>,
+    pub output_file: Option<serde_json::Value>,
+    pub wide_output_file: Option<serde_json::Value>,
+}
+
+/// `Sequence`: autosave sequence and frame transitions. `state` also takes
+/// `frame_start` and `frame_complete`, which arrive as [`EventState::Other`].
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SequenceEventData {
+    pub state: Option<EventState>,
+    pub id: Option<i64>,
+    pub frame: Option<i64>,
+    pub total_lapse_frame: Option<i64>,
+    pub total_frame: Option<i64>,
+    pub progress: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub code: Option<i32>,
+}
+
+/// `MeridianFlip`: range entry, flip and retry.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MeridianFlipEventData {
+    pub state: Option<EventState>,
+    pub error: Option<String>,
+    pub code: Option<i32>,
+    /// Attempt count.
+    pub count: Option<i64>,
+}
+
+/// Payload of the events that carry only a state and an optional error:
+/// `Settle` (waiting for guiding to settle), `MountSettle` (waiting for the
+/// mount after a meridian flip) and `Dither`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StateEventData {
+    pub state: Option<EventState>,
+    pub error: Option<String>,
+    pub code: Option<i32>,
+}
+
+/// `FindStar`: the star-detection worker started, finished with the detected
+/// stars, or failed.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FindStarEventData {
+    pub state: Option<EventState>,
+    pub error: Option<String>,
+    pub code: Option<i32>,
+    pub result: Option<serde_json::Value>,
+}
+
+/// `BalanceSensor`: a tilt / accelerometer sample. `code` is a validity code
+/// (0 or 1); `data` holds the sample when there is one.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BalanceSensorEventData {
+    pub code: Option<i32>,
+    pub data: Option<serde_json::Value>,
+}
+
+/// `AutoExp`: the auto-exposure loop, with the chosen exposure on completion.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AutoExpEventData {
+    pub state: Option<EventState>,
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub lapse_ms: i64,
+    pub error: Option<String>,
+    pub code: Option<i32>,
+    /// Chosen exposure in microseconds.
+    pub exp_us: Option<i64>,
+}
+
+/// `Station`: result of a Wi-Fi station-mode connection attempt.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StationEventData {
+    pub state: Option<EventState>,
+    pub station: Option<serde_json::Value>,
+    pub code: Option<i32>,
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

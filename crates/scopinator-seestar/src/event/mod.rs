@@ -100,6 +100,18 @@ seestar_events! {
     Setting(serde_json::Value) = "Setting",
     ThreePPA(serde_json::Value) = "3PPA",
     ViewPlan(serde_json::Value) = "ViewPlan",
+    // Operational events typed from the spec cards.
+    Version(VersionEventData) = "Version",
+    Target(TargetEventData) = "Target",
+    Sequence(SequenceEventData) = "Sequence",
+    MeridianFlip(MeridianFlipEventData) = "MeridianFlip",
+    Settle(StateEventData) = "Settle",
+    MountSettle(StateEventData) = "MountSettle",
+    Dither(StateEventData) = "Dither",
+    FindStar(FindStarEventData) = "FindStar",
+    BalanceSensor(BalanceSensorEventData) = "BalanceSensor",
+    AutoExp(AutoExpEventData) = "AutoExp",
+    Station(StationEventData) = "Station",
 }
 
 impl SeestarEvent {
@@ -277,16 +289,16 @@ mod tests {
     #[test]
     fn unknown_event_keeps_tag_and_payload() {
         let json = r#"{
-            "Event": "MeridianFlip",
+            "Event": "SkyReplay",
             "Timestamp": "1234567890.0",
             "state": "complete",
             "count": 3
         }"#;
         let event: SeestarEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(event.name(), "MeridianFlip");
+        assert_eq!(event.name(), "SkyReplay");
         match &event {
             SeestarEvent::Unknown { name, payload } => {
-                assert_eq!(name, "MeridianFlip");
+                assert_eq!(name, "SkyReplay");
                 assert_eq!(
                     payload,
                     &json!({"Timestamp": "1234567890.0", "state": "complete", "count": 3})
@@ -1033,6 +1045,17 @@ mod tests {
             "Setting",
             "3PPA",
             "ViewPlan",
+            "Version",
+            "Target",
+            "Sequence",
+            "MeridianFlip",
+            "Settle",
+            "MountSettle",
+            "Dither",
+            "FindStar",
+            "BalanceSensor",
+            "AutoExp",
+            "Station",
         ];
         assert_eq!(known_event_names(), expected.as_slice());
     }
@@ -1106,6 +1129,134 @@ mod tests {
             SeestarEvent::PlateSolve(v) => assert_eq!(v, json!({})),
             other => panic!("expected PlateSolve, got {}", other.name()),
         }
+    }
+
+    // ── Operational events typed from the spec cards ─────────────────────────
+
+    // Real payloads from the 2026-11-14 hardware sessions (S50 fw 6.70 and
+    // S30 fw 9.75): `{"Event":"BalanceSensor","code":0}`.
+    #[test]
+    fn balance_sensor_event_as_seen_on_hardware() {
+        let event: SeestarEvent = serde_json::from_value(json!({
+            "Event": "BalanceSensor", "Timestamp": "5140.2", "code": 0,
+        }))
+        .unwrap();
+        match event {
+            SeestarEvent::BalanceSensor(data) => {
+                assert_eq!(data.code, Some(0));
+                assert!(data.data.is_none());
+            }
+            other => panic!("expected BalanceSensor, got {}", other.name()),
+        }
+    }
+
+    #[test]
+    fn version_greeting_carries_the_firmware() {
+        let event: SeestarEvent = serde_json::from_value(json!({
+            "Event": "Version", "Timestamp": "1.0", "name": "ASI AIR imager",
+            "firmware_ver_int": 2975, "firmware_ver_string": "9.75", "is_verified": true,
+            "main_version": "9.75", "modules": [{"name": "imager"}],
+        }))
+        .unwrap();
+        match event {
+            SeestarEvent::Version(data) => {
+                assert_eq!(data.firmware_ver_int, Some(2975));
+                assert_eq!(data.firmware_ver_string.as_deref(), Some("9.75"));
+                assert_eq!(data.is_verified, Some(true));
+                assert!(data.modules.is_some());
+            }
+            other => panic!("expected Version, got {}", other.name()),
+        }
+        // The guider's greeting has only a name.
+        let event: SeestarEvent =
+            serde_json::from_value(json!({"Event": "Version", "name": "guider"})).unwrap();
+        assert!(matches!(event, SeestarEvent::Version(d) if d.firmware_ver_int.is_none()));
+    }
+
+    #[test]
+    fn target_event_reports_both_cameras() {
+        let event: SeestarEvent = serde_json::from_value(json!({
+            "Event": "Target", "state": "working", "stage": "Stack", "lapse_ms": 1200,
+            "route": ["ViewPlan"], "target_id": 3, "camera_mode": "dual",
+            "wide_state": "fail", "wide_code": 207, "wide_error": "fail to operate",
+            "stack_total_sec": 120.5, "progress": {"done": 2},
+        }))
+        .unwrap();
+        match event {
+            SeestarEvent::Target(data) => {
+                assert_eq!(data.state, Some(EventState::Working));
+                assert_eq!(data.target_id, Some(3));
+                assert_eq!(data.wide_state, Some(EventState::Fail));
+                assert_eq!(data.wide_code, Some(207));
+                assert_eq!(data.stack_total_sec, Some(120.5));
+            }
+            other => panic!("expected Target, got {}", other.name()),
+        }
+    }
+
+    #[test]
+    fn sequence_event_frame_states_are_kept() {
+        let event: SeestarEvent = serde_json::from_value(json!({
+            "Event": "Sequence", "state": "frame_complete", "id": 1,
+            "frame": 4, "total_frame": 10, "total_lapse_frame": 4,
+        }))
+        .unwrap();
+        match event {
+            SeestarEvent::Sequence(data) => {
+                assert_eq!(data.state, Some(EventState::Other("frame_complete".into())));
+                assert_eq!((data.frame, data.total_frame), (Some(4), Some(10)));
+            }
+            other => panic!("expected Sequence, got {}", other.name()),
+        }
+    }
+
+    #[test]
+    fn state_only_events_share_a_payload() {
+        for name in ["Settle", "MountSettle", "Dither"] {
+            let event: SeestarEvent = serde_json::from_value(json!({
+                "Event": name, "state": "fail", "error": "aborted", "code": 253,
+            }))
+            .unwrap();
+            assert_eq!(event.name(), name);
+            let data = match event {
+                SeestarEvent::Settle(d)
+                | SeestarEvent::MountSettle(d)
+                | SeestarEvent::Dither(d) => d,
+                other => panic!("expected a state event, got {}", other.name()),
+            };
+            assert_eq!(data.state, Some(EventState::Fail));
+            assert_eq!(data.code, Some(253));
+            assert_eq!(data.error.as_deref(), Some("aborted"));
+        }
+    }
+
+    #[test]
+    fn meridian_flip_find_star_auto_exp_and_station_parse() {
+        let parse = |v: serde_json::Value| serde_json::from_value::<SeestarEvent>(v).unwrap();
+        match parse(json!({"Event": "MeridianFlip", "state": "start", "count": 2})) {
+            SeestarEvent::MeridianFlip(d) => {
+                assert_eq!((d.state, d.count), (Some(EventState::Start), Some(2)));
+            }
+            other => panic!("got {}", other.name()),
+        }
+        match parse(json!({"Event": "FindStar", "state": "complete", "result": {"stars": []}})) {
+            SeestarEvent::FindStar(d) => assert!(d.result.is_some()),
+            other => panic!("got {}", other.name()),
+        }
+        match parse(
+            json!({"Event": "AutoExp", "state": "complete", "exp_us": 250000, "lapse_ms": 900}),
+        ) {
+            SeestarEvent::AutoExp(d) => assert_eq!((d.exp_us, d.lapse_ms), (Some(250_000), 900)),
+            other => panic!("got {}", other.name()),
+        }
+        match parse(json!({"Event": "Station", "state": "fail", "code": 207, "error": "x"})) {
+            SeestarEvent::Station(d) => assert_eq!(d.code, Some(207)),
+            other => panic!("got {}", other.name()),
+        }
+        // A payload that does not fit the type is kept as Unknown, not lost.
+        let odd = parse(json!({"Event": "AutoExp", "exp_us": "long"}));
+        assert!(odd.is_unknown());
+        assert_eq!(odd.name(), "AutoExp");
     }
 
     // Stable-toolchain counterpart of the `event_parse` fuzz target: whatever
