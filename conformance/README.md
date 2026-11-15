@@ -9,6 +9,17 @@ plus a parity harness that replays it through both implementations:
 The corpus is the shared oracle: it pins how each firmware version actually
 behaves on the wire, and the harness proves the two libraries agree.
 
+**Order of authority (decided 2026-11-14):** hardware, then the protocol
+specification ([zmerlynn/seestar-spec](https://github.com/zmerlynn/seestar-spec)),
+then pyscopinator. The corpus records what a client *sent* as well as what the
+device answered, and some captured requests were rejected by the device; parity
+with pyscopinator is a drift detector, not proof of correctness. Direct
+observations are in [`docs/protocol/hardware-observations.md`](../docs/protocol/hardware-observations.md).
+`conformance/spec/seestar-spec-names.json` is a names-only extract of the spec
+catalog; `crates/scopinator-seestar/tests/spec_names.rs` fails if this crate
+models a method or event that is in neither the spec nor an allowlist with a
+citation.
+
 ## Why
 
 There is no official Seestar protocol spec or firmware changelog. Across firmware
