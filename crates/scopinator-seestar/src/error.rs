@@ -29,6 +29,15 @@ pub enum SeestarError {
     #[error("line too long: {size} bytes (limit: {limit})")]
     LineTooLong { size: usize, limit: usize },
 
+    /// The device answered an image-socket request with an error message
+    /// instead of an image, e.g. `there is no image now`.
+    #[error("image request refused by the telescope: {0}")]
+    ImageRequest(String),
+
+    /// An image payload could not be decoded (e.g. a damaged zip archive).
+    #[error("invalid image payload: {0}")]
+    ImagePayload(String),
+
     #[error("authentication failed: {0}")]
     AuthFailed(String),
 

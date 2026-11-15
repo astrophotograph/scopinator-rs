@@ -85,26 +85,46 @@ impl Camera for SeestarCamera {
     }
 
     async fn get_image(&self) -> Result<ImageData, ScopinatorError> {
-        // Get the latest stacked image via the imaging port
-        let mut rx = self.client.subscribe_frames();
+        use scopinator_seestar::protocol::frame::PayloadKind;
 
-        // Request the stacked image
-        self.client.send_command(Command::GetStackedImage).await?;
-
-        // Wait for the next frame
-        match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
-            Ok(Ok(frame)) => Ok(ImageData {
-                width: frame.header.width as u32,
-                height: frame.header.height as u32,
-                data: frame.data.clone(),
-                bit_depth: 16,
-                is_color: true,
-                bayer_pattern: Some(BayerPattern::Grbg),
-                frame_kind: frame.kind,
-            }),
-            Ok(Err(_)) => Err(ScopinatorError::Backend("frame channel closed".into())),
-            Err(_) => Err(ScopinatorError::Timeout),
+        // The stacked image is requested on the imaging port and matched to
+        // this request, so a stream frame or heartbeat echo is never returned.
+        let frame = self.client.get_stacked_image().await?;
+        if frame.payload_kind() == PayloadKind::Jpeg {
+            return Err(ScopinatorError::Backend(
+                "the telescope sent a JPEG (image_transfer_mode is Jpg); \
+                 raw pixel data needs image_transfer_mode Raw"
+                    .into(),
+            ));
         }
+        let data = frame.image_bytes()?;
+
+        // Pixel layout comes from the frame header, not from constants.
+        let header = &frame.header;
+        let (bit_depth, is_color) = match header.bytes_per_pixel() {
+            Some(1) => (8, false),
+            Some(2) => (16, false),
+            Some(3) => (8, true),
+            Some(6) => (16, true),
+            _ => {
+                return Err(ScopinatorError::Backend(format!(
+                    "unsupported image type {} in frame header",
+                    header.img_type
+                )));
+            }
+        };
+        // One value per pixel with the debayer flag set is a Bayer mosaic.
+        // The header does not name the pattern; the Seestar sensors are GRBG.
+        let bayer = !is_color && header.can_debayer != 0;
+        Ok(ImageData {
+            width: header.width as u32,
+            height: header.height as u32,
+            data,
+            bit_depth,
+            is_color: is_color || bayer,
+            bayer_pattern: bayer.then_some(BayerPattern::Grbg),
+            frame_kind: frame.kind,
+        })
     }
 
     async fn is_exposing(&self) -> Result<bool, ScopinatorError> {

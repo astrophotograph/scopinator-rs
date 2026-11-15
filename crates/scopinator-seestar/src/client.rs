@@ -142,6 +142,10 @@ pub struct SeestarClient {
     shutdown_tx: watch::Sender<bool>,
     /// Per-command response timeout.
     response_timeout: Duration,
+    /// Serializes one-shot image requests and counts them for id allocation.
+    /// Only one may be outstanding: the device builds compressed replies in a
+    /// single fixed-name scratch file.
+    image_requests: tokio::sync::Mutex<u8>,
 }
 
 impl SeestarClient {
@@ -259,6 +263,7 @@ impl SeestarClient {
             imaging_connected,
             shutdown_tx,
             response_timeout,
+            image_requests: tokio::sync::Mutex::new(0),
         })
     }
 
@@ -332,6 +337,73 @@ impl SeestarClient {
     pub async fn send_imaging(&self, cmd: ImagingCommand) -> Result<(), SeestarError> {
         self.send_imaging_command(cmd.serialize(IMAGING_CMD_ID))
             .await
+    }
+
+    /// Request one image on the imaging port and wait for its reply.
+    ///
+    /// For [`ImagingCommand::GetStackedImage`],
+    /// [`GetCurrentImage`](ImagingCommand::GetCurrentImage) and
+    /// [`GetPhotometryImage`](ImagingCommand::GetPhotometryImage). The reply
+    /// is matched by the request id the device echoes in the frame header,
+    /// so frames of a running stream (or a heartbeat echo) are never taken
+    /// for it. Use [`ImageFrame::image_bytes`] to get the pixel data, which
+    /// inflates a zip-compressed reply.
+    ///
+    /// Errors: [`SeestarError::ImageRequest`] with the device's message when
+    /// it refuses (e.g. `there is no image now`), [`SeestarError::Timeout`]
+    /// when no reply arrives within the response timeout. Requests are
+    /// serialized; a second caller waits for the first to finish.
+    pub async fn request_image(
+        &self,
+        cmd: ImagingCommand,
+    ) -> Result<Arc<ImageFrame>, SeestarError> {
+        use imaging::request_id;
+
+        let mut counter = self.image_requests.lock().await;
+        let first = match cmd {
+            ImagingCommand::GetStackedImage => request_id::STACK_FIRST,
+            _ => request_id::ONE_SHOT_FIRST,
+        };
+        let id = first + *counter % request_id::BLOCK_LEN;
+        *counter = counter.wrapping_add(1);
+
+        // Subscribe before sending so the reply cannot be missed.
+        let mut frames = self.subscribe_frames();
+        self.send_imaging_command(cmd.serialize(u64::from(id)))
+            .await?;
+
+        let deadline = tokio::time::Instant::now() + self.response_timeout;
+        loop {
+            let frame = match tokio::time::timeout_at(deadline, frames.recv()).await {
+                Err(_) => return Err(SeestarError::Timeout(self.response_timeout)),
+                Ok(Err(broadcast::error::RecvError::Closed)) => {
+                    return Err(SeestarError::Disconnected);
+                }
+                // Skipped frames were stream frames we were not waiting for.
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Ok(frame)) => frame,
+            };
+            if frame.header.request_id != id {
+                continue;
+            }
+            if let Some(message) = frame.error_text() {
+                return Err(SeestarError::ImageRequest(message.into_owned()));
+            }
+            if !frame.payload_kind().is_image() {
+                return Err(SeestarError::Protocol(format!(
+                    "{} answered with {:?} instead of an image",
+                    cmd.method(),
+                    frame.payload_kind()
+                )));
+            }
+            return Ok(frame);
+        }
+    }
+
+    /// Fetch the stacked image ([`ImagingCommand::GetStackedImage`] through
+    /// [`request_image`](Self::request_image)).
+    pub async fn get_stacked_image(&self) -> Result<Arc<ImageFrame>, SeestarError> {
+        self.request_image(ImagingCommand::GetStackedImage).await
     }
 
     /// Start the live imaging frame stream.

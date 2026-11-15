@@ -19,6 +19,7 @@ socket2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 rand = "0.8"

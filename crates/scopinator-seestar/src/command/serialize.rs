@@ -107,7 +107,6 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::GetFocuserPosition
         | Command::StartAutoFocus
         | Command::StopAutoFocus
-        | Command::GetStackedImage
         | Command::StartSolve
         | Command::StartScanPlanet
         | Command::PiStationState => None,

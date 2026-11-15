@@ -83,7 +83,6 @@ pub enum Command {
     // JSON-RPC commands — the scope rejects `begin_streaming` on 4700 with code
     // 103. They live in [`ImagingCommand`]; use
     // [`crate::SeestarClient::send_imaging`] / `begin_streaming` to drive them.
-    GetStackedImage,
 
     // -- Plate solving --
     StartSolve,
@@ -148,7 +147,6 @@ pub fn command_method_names() -> &'static [&'static str] {
         "set_sequence_setting",
         "play_sound",
         "pi_station_state",
-        "get_stacked_img",
         "start_solve",
         "start_scan_planet",
         "start_polar_align",
@@ -205,7 +203,6 @@ impl Command {
             Self::SetSequenceSetting(_) => "set_sequence_setting",
             Self::PlaySound(_) => "play_sound",
             Self::PiStationState => "pi_station_state",
-            Self::GetStackedImage => "get_stacked_img",
             Self::StartSolve => "start_solve",
             Self::StartScanPlanet => "start_scan_planet",
             Self::StartPolarAlign(_) => "start_polar_align",
@@ -233,6 +230,16 @@ pub enum ImagingCommand {
     StopStreaming,
     /// Liveness check. Used internally as the imaging-port heartbeat.
     TestConnection,
+    /// Fetch the stacked image: a JPEG when the device's
+    /// `image_transfer_mode` is Jpg, otherwise zip-compressed raw. The device
+    /// answers `there is no image now` when nothing has been stacked.
+    GetStackedImage,
+    /// Fetch the current preview frame. `compress` (device default true)
+    /// selects zip-compressed raw; `raw` forces raw output even when the
+    /// transfer mode is Jpg.
+    GetCurrentImage { compress: Option<bool>, raw: bool },
+    /// Fetch the photometry image; encoded like the stacked image.
+    GetPhotometryImage,
 }
 
 impl ImagingCommand {
@@ -242,18 +249,34 @@ impl ImagingCommand {
             Self::BeginStreaming => "begin_streaming",
             Self::StopStreaming => "stop_streaming",
             Self::TestConnection => "test_connection",
+            Self::GetStackedImage => "get_stacked_img",
+            Self::GetCurrentImage { .. } => "get_current_img",
+            Self::GetPhotometryImage => "get_photometry_img",
         }
     }
 
     /// Serialize to the wire form — a single JSON line **without** a trailing
-    /// newline (the imaging connection appends `\r\n`). `id` is included for
-    /// protocol shape but the imaging port does not correlate responses to it.
+    /// newline (the imaging connection appends `\r\n`). The device echoes the
+    /// low byte of `id` in the header of every reply, which is how a reply is
+    /// matched to its request; `id` must be an integer.
     pub fn serialize(&self, id: u64) -> Vec<u8> {
         let method = self.method();
-        // `test_connection` carries `params:"verify"`; the others take none.
+        // `test_connection` carries `params:"verify"`; `get_current_img` is
+        // the only method that reads params; the others take none.
         let line = match self {
             Self::TestConnection => {
                 format!(r#"{{"id":{id},"method":"{method}","params":"verify"}}"#)
+            }
+            Self::GetCurrentImage { compress, raw } if compress.is_some() || *raw => {
+                let mut params = serde_json::Map::new();
+                if let Some(compress) = compress {
+                    params.insert("compress".into(), (*compress).into());
+                }
+                if *raw {
+                    params.insert("img_type".into(), "Raw".into());
+                }
+                let params = serde_json::Value::Object(params);
+                format!(r#"{{"id":{id},"method":"{method}","params":{params}}}"#)
             }
             _ => format!(r#"{{"id":{id},"method":"{method}"}}"#),
         };
@@ -341,7 +364,6 @@ mod tests {
             Command::SetSequenceSetting(vec![]),
             Command::PlaySound(PlaySoundParams { num: 0 }),
             Command::PiStationState,
-            Command::GetStackedImage,
             Command::StartSolve,
             Command::StartScanPlanet,
             Command::StartPolarAlign(PolarAlignParams {
@@ -379,6 +401,28 @@ mod tests {
             (ImagingCommand::BeginStreaming, "begin_streaming", false),
             (ImagingCommand::StopStreaming, "stop_streaming", false),
             (ImagingCommand::TestConnection, "test_connection", true),
+            (ImagingCommand::GetStackedImage, "get_stacked_img", false),
+            (
+                ImagingCommand::GetPhotometryImage,
+                "get_photometry_img",
+                false,
+            ),
+            (
+                ImagingCommand::GetCurrentImage {
+                    compress: None,
+                    raw: false,
+                },
+                "get_current_img",
+                false,
+            ),
+            (
+                ImagingCommand::GetCurrentImage {
+                    compress: Some(false),
+                    raw: true,
+                },
+                "get_current_img",
+                true,
+            ),
         ] {
             let bytes = cmd.serialize(7);
             // No trailing newline — the imaging connection appends it.

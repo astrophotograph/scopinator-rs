@@ -231,11 +231,108 @@ struct Shared {
     actions: broadcast::Sender<ServerAction>,
 }
 
+/// One frame the fake image socket sends: an 80-byte header and a payload.
+#[derive(Clone, Debug)]
+pub struct FakeFrame {
+    /// 0 text, 1 error text, 2 binary, 3 zip.
+    pub data_type: u8,
+    /// Pixel format; 4 is JPEG.
+    pub img_type: u8,
+    pub width: u16,
+    pub height: u16,
+    pub can_debayer: u16,
+    pub payload: Vec<u8>,
+    /// Header byte 15. `None` echoes the low byte of the request id, as the
+    /// device does; `Some` imitates a frame that answers another request
+    /// (e.g. a pushed stream frame).
+    pub request_id: Option<u8>,
+}
+
+impl FakeFrame {
+    pub fn error(text: &str) -> Self {
+        Self {
+            data_type: 1,
+            img_type: 0,
+            width: 0,
+            height: 0,
+            can_debayer: 0,
+            payload: text.as_bytes().to_vec(),
+            request_id: None,
+        }
+    }
+
+    /// A binary image frame of the given `data_type` (2 raw, 3 zip).
+    pub fn image(data_type: u8, img_type: u8, width: u16, height: u16, payload: Vec<u8>) -> Self {
+        Self {
+            data_type,
+            img_type,
+            width,
+            height,
+            can_debayer: 1,
+            payload,
+            request_id: None,
+        }
+    }
+
+    pub fn with_request_id(mut self, id: u8) -> Self {
+        self.request_id = Some(id);
+        self
+    }
+
+    fn encode(&self, echoed_id: u8) -> Vec<u8> {
+        let mut out = vec![0u8; 80];
+        out[0..2].copy_from_slice(&0x03C3u16.to_be_bytes());
+        out[2..4].copy_from_slice(&2u16.to_be_bytes());
+        out[4..6].copy_from_slice(&80u16.to_be_bytes());
+        out[6..10].copy_from_slice(&(self.payload.len() as u32).to_be_bytes());
+        out[13] = self.img_type;
+        out[14] = self.data_type;
+        out[15] = self.request_id.unwrap_or(echoed_id);
+        out[16..18].copy_from_slice(&self.width.to_be_bytes());
+        out[18..20].copy_from_slice(&self.height.to_be_bytes());
+        out[24..26].copy_from_slice(&1000u16.to_be_bytes());
+        out[26..28].copy_from_slice(&self.can_debayer.to_be_bytes());
+        out[28..30].copy_from_slice(&(-1i16).to_be_bytes());
+        out.extend_from_slice(&self.payload);
+        out
+    }
+}
+
+type ImageReplies = Arc<Mutex<HashMap<String, Vec<FakeFrame>>>>;
+
+/// Serve one image-socket connection: for each request line, send the frames
+/// programmed for its method, in order.
+async fn serve_imaging(stream: TcpStream, replies: ImageReplies) {
+    let (read_half, mut write_half) = tokio::io::split(stream);
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let id = (msg.get("id").and_then(Value::as_u64).unwrap_or(0) & 0xff) as u8;
+        let frames = replies.lock().unwrap().get(method).cloned();
+        for frame in frames.unwrap_or_default() {
+            if write_half.write_all(&frame.encode(id)).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
 /// Handle to a running fake telescope.
 pub struct FakeSeestar {
     pub control_addr: SocketAddr,
     pub imaging_addr: SocketAddr,
     shared: Arc<Shared>,
+    /// Programmed image-socket replies, by method.
+    image_replies: ImageReplies,
     /// Handle to the control accept-loop task, so tests can stop accepting.
     accept_task: tokio::task::JoinHandle<()>,
 }
@@ -291,29 +388,27 @@ impl FakeSeestar {
                 }
             })
         };
-        // Imaging accept loop — accept and idle so the imaging task stays quiet.
-        tokio::spawn(async move {
-            loop {
-                let Ok((stream, _)) = imaging.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    use tokio::io::AsyncReadExt;
-                    let mut s = stream;
-                    while let Ok(n) = s.read(&mut buf).await {
-                        if n == 0 {
-                            break;
-                        }
-                    }
-                });
-            }
-        });
+        // Imaging accept loop. Requests with no programmed reply (including
+        // the heartbeat) are read and ignored, so the port stays quiet unless
+        // a test asks otherwise (see `respond_image`).
+        let image_replies: ImageReplies = Arc::new(Mutex::new(HashMap::new()));
+        {
+            let image_replies = Arc::clone(&image_replies);
+            tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = imaging.accept().await else {
+                        break;
+                    };
+                    tokio::spawn(serve_imaging(stream, Arc::clone(&image_replies)));
+                }
+            });
+        }
 
         FakeSeestar {
             control_addr,
             imaging_addr,
             shared,
+            image_replies,
             accept_task,
         }
     }
@@ -386,6 +481,16 @@ impl FakeSeestar {
             .unwrap()
             .as_ref()
             .and_then(|m| m.get(key).cloned())
+    }
+
+    /// Program the image socket: each request for `method` is answered with
+    /// these frames, in order. Unprogrammed methods get no reply.
+    pub fn respond_image(&self, method: &str, frames: Vec<FakeFrame>) -> &Self {
+        self.image_replies
+            .lock()
+            .unwrap()
+            .insert(method.to_string(), frames);
+        self
     }
 
     /// Make `method` be received but never answered (so the caller times out).

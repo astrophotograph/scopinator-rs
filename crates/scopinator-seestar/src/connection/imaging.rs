@@ -29,10 +29,21 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 pub mod request_id {
     /// `begin_streaming` (and so every pushed stream frame).
     pub const STREAM: u8 = 21;
-    /// `get_stacked_img`.
-    pub const STACK: u8 = 23;
     /// The `test_connection` heartbeat.
     pub const HEARTBEAT: u8 = 99;
+    /// First id of the block used for `get_stacked_img` requests. An image
+    /// answering an id in this block is a stacked image.
+    pub const STACK_FIRST: u8 = 0x80;
+    /// First id of the block used for other one-shot image requests.
+    pub const ONE_SHOT_FIRST: u8 = 0xC0;
+    /// Number of ids in each block. Requests cycle through a block so that a
+    /// late reply to an abandoned request is not taken for the next one's.
+    pub const BLOCK_LEN: u8 = 0x40;
+
+    /// True if `id` belongs to the `get_stacked_img` block.
+    pub fn is_stack(id: u8) -> bool {
+        (STACK_FIRST..ONE_SHOT_FIRST).contains(&id)
+    }
 }
 
 /// A frame received from the imaging port: an image, or a text reply.
@@ -61,11 +72,51 @@ impl ImageFrame {
         .then(|| String::from_utf8_lossy(&self.data))
     }
 
+    /// The image bytes ready for use: the payload itself for raw and JPEG
+    /// frames, and the inflated first entry of the archive for zip frames.
+    ///
+    /// Fails with [`SeestarError::ImageRequest`] for an error-text frame and
+    /// [`SeestarError::ImagePayload`] for anything else that is not an image.
+    pub fn image_bytes(&self) -> Result<Bytes, SeestarError> {
+        match self.payload_kind() {
+            PayloadKind::Raw | PayloadKind::Jpeg => Ok(self.data.clone()),
+            PayloadKind::Zip => inflate_first_entry(&self.data).map(Bytes::from),
+            PayloadKind::ErrorText => Err(SeestarError::ImageRequest(
+                String::from_utf8_lossy(&self.data).into_owned(),
+            )),
+            kind @ (PayloadKind::Text | PayloadKind::Unknown) => Err(SeestarError::ImagePayload(
+                format!("frame is not an image ({kind:?})"),
+            )),
+        }
+    }
+
     /// The error message, if this frame is the device refusing a request
     /// (e.g. `there is no image now`, `unknown mothod`).
     pub fn error_text(&self) -> Option<std::borrow::Cow<'_, str>> {
         (self.payload_kind() == PayloadKind::ErrorText).then(|| String::from_utf8_lossy(&self.data))
     }
+}
+
+/// Inflate the first entry of a zip archive (the device sends one, holding
+/// the raw pixel data). The inflated size is capped at [`MAX_PAYLOAD_SIZE`].
+fn inflate_first_entry(archive: &[u8]) -> Result<Vec<u8>, SeestarError> {
+    use std::io::Read;
+    let bad = |e: &dyn std::fmt::Display| SeestarError::ImagePayload(format!("zip: {e}"));
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).map_err(|e| bad(&e))?;
+    if zip.is_empty() {
+        return Err(bad(&"archive has no entries"));
+    }
+    let entry = zip.by_index(0).map_err(|e| bad(&e))?;
+    let limit = u64::from(MAX_PAYLOAD_SIZE);
+    let mut out = Vec::new();
+    entry
+        .take(limit + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| bad(&e))?;
+    if out.len() as u64 > limit {
+        return Err(bad(&"inflated entry exceeds the payload size limit"));
+    }
+    Ok(out)
 }
 
 /// Run the imaging connection loop (reconnecting on failure).
@@ -248,7 +299,7 @@ where
     // requests is being answered: the stacked-image request, or the stream.
     let kind = if !header.payload_kind().is_image() {
         FrameKind::Status
-    } else if header.request_id == request_id::STACK {
+    } else if request_id::is_stack(header.request_id) {
         FrameKind::Stack
     } else {
         FrameKind::Preview
@@ -269,7 +320,7 @@ mod tests {
     /// Request ids as the old tests named them.
     mod frame_id {
         pub const VIEW: u8 = super::request_id::STREAM;
-        pub const STACK: u8 = super::request_id::STACK;
+        pub const STACK: u8 = super::request_id::STACK_FIRST;
     }
 
     /// A raw (dataType 2, 2 bytes/pixel) image header answering request `id`.
@@ -361,24 +412,26 @@ mod tests {
         // A text reply to `begin_streaming` ("done") or to the stacked-image
         // request carries those requests' ids and is still not an image.
         for data_type in [0, 1] {
-            for id in [request_id::STREAM, request_id::STACK, 20, 2] {
+            for id in [request_id::STREAM, request_id::STACK_FIRST, 20, 2] {
                 let header = make_typed_header(3, id, 1080, 1920, data_type);
                 assert_eq!(kind_of(header).await, FrameKind::Status);
             }
         }
         // An image answering any other request id is a preview, not dropped.
-        for id in [0, 20, 77, 200] {
+        for id in [0, 20, 77, request_id::ONE_SHOT_FIRST, 255] {
             let header = make_typed_header(3, id, 1080, 1920, 2);
             assert_eq!(kind_of(header).await, FrameKind::Preview);
         }
-        let header = make_typed_header(3, request_id::STACK, 1080, 1920, 3);
-        assert_eq!(kind_of(header).await, FrameKind::Stack);
+        for id in [request_id::STACK_FIRST, request_id::ONE_SHOT_FIRST - 1] {
+            let header = make_typed_header(3, id, 1080, 1920, 3);
+            assert_eq!(kind_of(header).await, FrameKind::Stack);
+        }
     }
 
     #[tokio::test]
     async fn error_text_reply_is_exposed_as_an_error() {
         let text = b"there is no image now";
-        let header = make_typed_header(text.len() as u32, request_id::STACK, 0, 0, 1);
+        let header = make_typed_header(text.len() as u32, request_id::STACK_FIRST, 0, 0, 1);
         let mut mock = tokio_test::io::Builder::new()
             .read(&header)
             .read(text)
@@ -388,6 +441,59 @@ mod tests {
         assert_eq!(frame.kind, FrameKind::Status);
         assert_eq!(frame.error_text().as_deref(), Some("there is no image now"));
         assert_eq!(frame.text().as_deref(), Some("there is no image now"));
+        let err = frame.image_bytes().unwrap_err();
+        assert!(
+            matches!(&err, SeestarError::ImageRequest(m) if m == "there is no image now"),
+            "got {err:?}"
+        );
+    }
+
+    fn frame_with(data_type: u8, payload: Vec<u8>) -> ImageFrame {
+        let raw = make_typed_header(
+            payload.len() as u32,
+            request_id::STACK_FIRST,
+            2,
+            2,
+            data_type,
+        );
+        ImageFrame {
+            header: FrameHeader::parse(&raw),
+            data: Bytes::from(payload),
+            kind: FrameKind::Stack,
+        }
+    }
+
+    #[test]
+    fn image_bytes_inflates_a_zip_payload() {
+        use std::io::Write;
+        let pixels: Vec<u8> = (0..=255).cycle().take(4096).collect();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file("raw_data", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&pixels).unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+        assert_ne!(archive, pixels);
+
+        assert_eq!(
+            &frame_with(3, archive).image_bytes().unwrap()[..],
+            &pixels[..]
+        );
+        // Raw payloads pass through untouched.
+        assert_eq!(
+            &frame_with(2, pixels.clone()).image_bytes().unwrap()[..],
+            &pixels[..]
+        );
+    }
+
+    #[test]
+    fn image_bytes_rejects_a_damaged_zip_and_text() {
+        let err = frame_with(3, b"not a zip archive".to_vec())
+            .image_bytes()
+            .unwrap_err();
+        assert!(matches!(err, SeestarError::ImagePayload(_)), "got {err:?}");
+        let err = frame_with(0, b"done".to_vec()).image_bytes().unwrap_err();
+        assert!(matches!(err, SeestarError::ImagePayload(_)), "got {err:?}");
     }
 
     #[tokio::test]

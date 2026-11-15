@@ -137,7 +137,7 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use common::{FakeSeestar, device_state_response, load_corpus};
+use common::{FakeFrame, FakeSeestar, device_state_response, load_corpus};
 use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::SettingParams;
 use scopinator_seestar::error::SeestarError;
@@ -1442,5 +1442,134 @@ async fn set_setting_on_a_verified_socket_is_one_plain_request() {
         matches!(err, SeestarError::CommandFailed { code: 109, .. }),
         "got {err:?}"
     );
+    client.shutdown().await;
+}
+
+// ============================================================================
+// One-shot image requests on the image socket (Forge task "Send
+// get_stacked_img on the image socket and fix Camera::get_image").
+// `get_stacked_img` is an image-socket method: on the control port an S50 on
+// firmware 6.70 answers 103. Replies are matched by the request-id byte the
+// device echoes in the frame header.
+// ============================================================================
+
+async fn connect_imaging(fake: &FakeSeestar) -> SeestarClient {
+    let client = connect(fake).await;
+    for _ in 0..50 {
+        if client.is_imaging_connected() {
+            return client;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("imaging port never connected");
+}
+
+fn zipped(pixels: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file("raw_data", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(pixels).unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+#[tokio::test]
+async fn stacked_image_request_returns_its_own_reply() {
+    let pixels: Vec<u8> = (0..=255u8).cycle().take(2 * 4 * 6).collect();
+    let fake = FakeSeestar::start().await;
+    // A running stream pushes frames carrying the begin_streaming id (21), and
+    // a heartbeat echo carries 99. Neither may satisfy the request, even
+    // though they arrive first.
+    fake.respond_image(
+        "get_stacked_img",
+        vec![
+            FakeFrame::image(2, 1, 4, 6, vec![0xEE; 48]).with_request_id(21),
+            FakeFrame {
+                data_type: 0,
+                img_type: 0,
+                width: 0,
+                height: 0,
+                can_debayer: 0,
+                payload: b"server connected!".to_vec(),
+                request_id: Some(99),
+            },
+            FakeFrame::image(3, 1, 4, 6, zipped(&pixels)),
+        ],
+    );
+    let client = connect_imaging(&fake).await;
+
+    let frame = client.get_stacked_image().await.expect("stacked image");
+    assert_eq!((frame.header.width, frame.header.height), (4, 6));
+    assert_eq!(frame.kind, scopinator_types::FrameKind::Stack);
+    assert_eq!(frame.header.bytes_per_pixel(), Some(2));
+    assert_eq!(&frame.image_bytes().expect("inflate")[..], &pixels[..]);
+
+    // It went to the image socket, not the control port.
+    assert!(
+        fake.received()
+            .iter()
+            .all(|m| m["method"] != "get_stacked_img")
+    );
+
+    // A second request uses a different id, so a late reply to an abandoned
+    // request cannot be mistaken for it.
+    let again = client.get_stacked_image().await.expect("second request");
+    assert_ne!(again.header.request_id, frame.header.request_id);
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn image_request_error_text_is_a_typed_error() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_image(
+        "get_stacked_img",
+        vec![FakeFrame::error("there is no image now")],
+    );
+    let client = connect_imaging(&fake).await;
+
+    let err = client.get_stacked_image().await.unwrap_err();
+    assert!(
+        matches!(&err, SeestarError::ImageRequest(m) if m == "there is no image now"),
+        "got {err:?}"
+    );
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn image_request_times_out_when_only_other_frames_arrive() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_image(
+        "get_current_img",
+        vec![FakeFrame::image(2, 1, 4, 6, vec![0xEE; 48]).with_request_id(21)],
+    );
+    let client = SeestarClient::connect_with_ports_and_config(
+        LOCALHOST,
+        fake.control_addr,
+        fake.imaging_addr,
+        SeestarConfig {
+            interop_key: None,
+            response_timeout: Some(Duration::from_millis(300)),
+        },
+    )
+    .await
+    .expect("client spawns");
+    for _ in 0..100 {
+        if client.is_imaging_connected() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let err = client
+        .request_image(
+            scopinator_seestar::command::ImagingCommand::GetCurrentImage {
+                compress: Some(false),
+                raw: true,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SeestarError::Timeout(_)), "got {err:?}");
     client.shutdown().await;
 }
