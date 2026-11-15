@@ -301,12 +301,13 @@ async fn events_are_broadcast_to_subscribers() {
 async fn pending_request_flushed_on_disconnect() {
     // Server receives the command but drops the connection without replying;
     // the in-flight send must resolve to Disconnected, not hang.
+    // (Not `get_device_state`: the client sends that by itself at connect.)
     let fake = FakeSeestar::start().await;
-    fake.drop_on("get_device_state");
+    fake.drop_on("get_view_state");
     let client = connect(&fake).await;
 
     let err = client
-        .send_command(Command::GetDeviceState)
+        .send_command(Command::GetViewState)
         .await
         .unwrap_err();
     assert!(matches!(err, SeestarError::Disconnected), "got {err:?}");
@@ -1573,5 +1574,103 @@ async fn image_request_times_out_when_only_other_frames_arrive() {
         .await
         .unwrap_err();
     assert!(matches!(err, SeestarError::Timeout(_)), "got {err:?}");
+    client.shutdown().await;
+}
+
+// ============================================================================
+// Per-connection wire profile (Forge task "Per-connection wire profile for
+// verify marker and firmware").
+// ============================================================================
+
+// The client asks for the device state by itself as soon as the connection is
+// negotiated, framed for the negotiated mode, so the firmware and model are
+// known without the caller sending anything.
+#[tokio::test]
+async fn firmware_and_model_are_learned_at_connect() {
+    let fake = FakeSeestar::start().await;
+    fake.require_verify_marker();
+    fake.respond("get_device_state", device_state_response(2670, "6.70"));
+    let client = connect(&fake).await;
+
+    let mut firmware = None;
+    for _ in 0..100 {
+        firmware = client.firmware_version();
+        if firmware.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(firmware.map(|f| f.0), Some(2670));
+    assert_eq!(client.product_model().as_deref(), Some("Seestar S50"));
+
+    let all = fake.received_all();
+    let probe = all
+        .iter()
+        .find(|m| m["id"] == common::CONNECT_PROBE_ID)
+        .expect("connect-time device state request");
+    assert_eq!(probe["method"], "get_device_state");
+    assert_eq!(probe["params"], json!(["verify"]), "marker mode marks it");
+    // It is the first thing sent after negotiation, and the caller sent nothing.
+    assert_eq!(
+        methods(&all),
+        ["get_verify_str", "test_connection", "get_device_state"]
+    );
+    client.shutdown().await;
+}
+
+// A legacy device on firmware old enough to predate the marker: once the
+// connect-time reply reveals the firmware, commands and the heartbeat's
+// serializer stop marking, without the caller asking for the device state.
+#[tokio::test]
+async fn legacy_old_firmware_stops_marking_once_known() {
+    let fake = FakeSeestar::start().await;
+    fake.respond("get_device_state", device_state_response(2400, "4.00"));
+    let client = connect(&fake).await;
+    for _ in 0..100 {
+        if client.firmware_version().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(client.verification(), Some(Verification::Legacy));
+
+    client
+        .send_command(Command::PiStationState)
+        .await
+        .expect("station state");
+    let received = fake.received();
+    let station = received.last().unwrap();
+    assert_eq!(station["method"], "pi_station_state");
+    assert!(station.get("params").is_none(), "{station}");
+
+    // The connect-time request itself went out before the firmware was
+    // known, so it was marked.
+    let all = fake.received_all();
+    let probe = all
+        .iter()
+        .find(|m| m["id"] == common::CONNECT_PROBE_ID)
+        .unwrap();
+    assert_eq!(probe["params"], json!(["verify"]));
+    client.shutdown().await;
+}
+
+// get_disk_volume reads a positional element as a path, so the array marker
+// breaks it (255 "file not exist" on an S50, firmware 6.70). It is marked
+// with the object form, which the firmware serves.
+#[tokio::test]
+async fn disk_volume_uses_the_object_marker() {
+    let fake = FakeSeestar::start().await;
+    fake.require_verify_marker();
+    let client = connect(&fake).await;
+    client
+        .send_command(Command::GetDiskVolume)
+        .await
+        .expect("disk volume");
+    let line = fake.raw_lines().pop().unwrap();
+    assert!(
+        line.trim_end()
+            .ends_with(r#""method":"get_disk_volume","params":{"verify":true}}"#),
+        "got {line}"
+    );
     client.shutdown().await;
 }

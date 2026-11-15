@@ -1,43 +1,91 @@
 use serde_json::{Value, json};
 
 use super::Command;
+use crate::auth::Verification;
 use scopinator_types::FirmwareVersion;
 
-/// Serialize a command to a JSON-RPC message, ready to send over the wire.
+/// How commands are put on the wire for one control connection.
 ///
-/// The returned `Value` has `id`, `method`, and optionally `params` fields.
-/// If `firmware_version` indicates the telescope requires verify injection,
-/// the "verify" param is automatically added.
-pub fn serialize_command(
-    cmd: &Command,
-    id: u64,
-    firmware_version: Option<FirmwareVersion>,
-) -> Value {
-    let needs_verify = firmware_version.is_none_or(|fw| fw.requires_verify());
-    serialize_command_marked(cmd, id, needs_verify)
+/// It is decided per connection, from what the device showed at connect
+/// rather than from a table of firmware versions: the verification mode comes
+/// from the handshake negotiation, and the firmware version is read from the
+/// device once the connection is up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireProfile {
+    /// How this connection passes the device's verification gate.
+    pub verification: Verification,
+    /// The device's `firmware_ver_int`, once known.
+    pub firmware: Option<FirmwareVersion>,
 }
 
-/// Serialize a command, adding the `verify` marker only if `marker` is set.
-///
-/// The control connection decides `marker` from the verification mode it
-/// negotiated: a socket verified by the handshake needs no marker, and
-/// `set_setting` rejects it (code 109) even there.
-pub fn serialize_command_marked(cmd: &Command, id: u64, marker: bool) -> Value {
-    let method = cmd.method();
-    let params = command_params(cmd);
-    let needs_verify = marker;
-
-    let mut msg = json!({
-        "id": id,
-        "method": method,
-    });
-
-    let final_params = inject_verify(params, needs_verify);
-    if let Some(p) = final_params {
-        msg["params"] = p;
+impl WireProfile {
+    /// The profile for a connection that negotiated `verification`, before
+    /// the firmware version is known.
+    pub fn new(verification: Verification) -> Self {
+        Self {
+            verification,
+            firmware: None,
+        }
     }
 
-    msg
+    /// The profile for a device without the verification handshake. This is
+    /// also what a pyscopinator-style client assumes of every device.
+    pub fn legacy(firmware: Option<FirmwareVersion>) -> Self {
+        Self {
+            verification: Verification::Legacy,
+            firmware,
+        }
+    }
+
+    /// The same profile with the firmware version filled in.
+    pub fn with_firmware(self, firmware: Option<FirmwareVersion>) -> Self {
+        Self { firmware, ..self }
+    }
+
+    /// Whether requests carry the `verify` marker.
+    ///
+    /// A socket verified by the handshake never needs it. Marker mode always
+    /// does. For a legacy device the firmware-version threshold inherited
+    /// from pyscopinator is the fallback: mark unless the firmware is known
+    /// to predate the marker.
+    pub fn marker(&self) -> bool {
+        match self.verification {
+            Verification::Handshake => false,
+            Verification::Marker => true,
+            Verification::Legacy => self.firmware.is_none_or(|fw| fw.requires_verify()),
+        }
+    }
+
+    /// The JSON-RPC message for `cmd`: `id`, `method` and, where there are
+    /// any, `params`.
+    pub fn message(&self, cmd: &Command, id: u64) -> Value {
+        let mut msg = json!({
+            "id": id,
+            "method": cmd.method(),
+        });
+        let params = command_params(cmd);
+        let params = if self.marker() {
+            Some(inject_verify(cmd, params))
+        } else {
+            params
+        };
+        if let Some(params) = params {
+            msg["params"] = params;
+        }
+        msg
+    }
+
+    /// The `\r\n`-terminated line for `cmd`, ready to write to the socket.
+    pub fn line(&self, cmd: &Command, id: u64) -> String {
+        wire_line(&self.message(cmd, id))
+    }
+}
+
+/// Serialize a command to a JSON-RPC message for a connection with the given
+/// profile. See [`WireProfile::message`]; use [`WireProfile::line`] for the
+/// bytes to send, which also fixes the marker's position on the wire.
+pub fn serialize_command(cmd: &Command, id: u64, profile: &WireProfile) -> Value {
+    profile.message(cmd, id)
 }
 
 /// Encode a message as one `\r\n`-terminated wire line.
@@ -144,29 +192,31 @@ fn command_params(cmd: &Command) -> Option<Value> {
     }
 }
 
-/// Inject `"verify"` into command params when required by firmware.
+/// Add the `verify` marker to a command's params.
 ///
-/// The injection strategy matches pyscopinator's `_transform_message_for_verify`:
-/// - Dict params: adds `"verify": true`
-/// - Array params: appends `"verify"` string
-/// - Scalar/bool params: wraps in array with `"verify"`
-/// - No params: becomes `["verify"]`
-fn inject_verify(params: Option<Value>, needs_verify: bool) -> Option<Value> {
-    if !needs_verify {
-        return params;
-    }
-
+/// The shapes match pyscopinator's `_transform_message_for_verify`, which is
+/// also what the firmware accepts on an unverified socket:
+/// - object params: `"verify": true` is added ([`wire_line`] writes it last)
+/// - array params: `"verify"` is appended, after the real elements
+/// - scalar params: wrapped as `[value, "verify"]`
+/// - no params: `["verify"]`
+///
+/// One method cannot take the array form. `get_disk_volume` reads its first
+/// positional element as a path, so `["verify"]` fails with 255 "file not
+/// exist" (S50, firmware 6.70); it gets `{"verify": true}`, which works.
+fn inject_verify(cmd: &Command, params: Option<Value>) -> Value {
     match params {
-        None => Some(json!(["verify"])),
+        None if matches!(cmd, Command::GetDiskVolume) => json!({"verify": true}),
+        None => json!(["verify"]),
         Some(Value::Object(mut map)) => {
             map.insert("verify".to_string(), Value::Bool(true));
-            Some(Value::Object(map))
+            Value::Object(map)
         }
         Some(Value::Array(mut arr)) => {
             arr.push(Value::String("verify".to_string()));
-            Some(Value::Array(arr))
+            Value::Array(arr)
         }
-        Some(other) => Some(json!([other, "verify"])),
+        Some(other) => json!([other, "verify"]),
     }
 }
 
@@ -177,7 +227,7 @@ mod tests {
 
     #[test]
     fn serialize_no_param_command_with_verify() {
-        let msg = serialize_command(&Command::TestConnection, 100, None);
+        let msg = serialize_command(&Command::TestConnection, 100, &WireProfile::legacy(None));
         assert_eq!(msg["method"], "test_connection");
         assert_eq!(msg["id"], 100);
         assert_eq!(msg["params"], json!(["verify"]));
@@ -186,7 +236,7 @@ mod tests {
     #[test]
     fn serialize_no_param_command_without_verify() {
         let fw = Some(FirmwareVersion(2500));
-        let msg = serialize_command(&Command::TestConnection, 100, fw);
+        let msg = serialize_command(&Command::TestConnection, 100, &WireProfile::legacy(fw));
         assert_eq!(msg["method"], "test_connection");
         assert!(msg.get("params").is_none());
     }
@@ -204,15 +254,131 @@ mod tests {
             r#"{"method":"iscope_start_view","params":{"mode":"star","target_ra_dec":[8.691286104794766,19.514886908101506],"target_name":"M44","lp_filter":false,"verify":true},"id":10020}"#,
         )
         .unwrap();
-        assert_eq!(serialize_command(&cmd, 10020, None), captured);
+        assert_eq!(
+            serialize_command(&cmd, 10020, &WireProfile::legacy(None)),
+            captured
+        );
 
         // On a verified socket the same goto carries no marker.
-        let unmarked = serialize_command_marked(&cmd, 10020, false);
+        let unmarked = serialize_command(&cmd, 10020, &WireProfile::new(Verification::Handshake));
         assert!(unmarked["params"].get("verify").is_none());
         assert_eq!(
             unmarked["params"]["target_ra_dec"],
             captured["params"]["target_ra_dec"]
         );
+    }
+
+    // Every command under each verification mode: the marker is present
+    // exactly when the profile says so, and removing it gives back the same
+    // message a verified socket would be sent.
+    #[test]
+    fn marker_follows_the_profile_for_every_command() {
+        let old = Some(FirmwareVersion(FirmwareVersion::VERIFY_THRESHOLD));
+        let new = Some(FirmwareVersion(2670));
+        let cases = [
+            (WireProfile::new(Verification::Handshake), false),
+            (
+                WireProfile::new(Verification::Handshake).with_firmware(new),
+                false,
+            ),
+            (WireProfile::new(Verification::Marker), true),
+            (
+                WireProfile::new(Verification::Marker).with_firmware(old),
+                true,
+            ),
+            (WireProfile::legacy(None), true),
+            (WireProfile::legacy(new), true),
+            (WireProfile::legacy(old), false),
+        ];
+        let has_marker = |params: Option<&Value>| match params {
+            Some(Value::Object(m)) => m.get("verify") == Some(&Value::Bool(true)),
+            Some(Value::Array(a)) => a.last() == Some(&json!("verify")),
+            _ => false,
+        };
+        for cmd in crate::command::tests::one_of_every_variant() {
+            let plain = WireProfile::new(Verification::Handshake).message(&cmd, 5);
+            assert!(
+                !has_marker(plain.get("params")),
+                "{}: unmarked form carries a marker",
+                cmd.method()
+            );
+            for (profile, marked) in cases {
+                assert_eq!(profile.marker(), marked, "{profile:?}");
+                let msg = profile.message(&cmd, 5);
+                assert_eq!(msg["method"], cmd.method());
+                assert_eq!(msg["id"], 5);
+                assert_eq!(
+                    has_marker(msg.get("params")),
+                    marked,
+                    "{} under {profile:?}: {msg}",
+                    cmd.method()
+                );
+                if !marked {
+                    assert_eq!(msg, plain, "{} under {profile:?}", cmd.method());
+                }
+                // The line is the same JSON, with the marker (if any) last.
+                let line = profile.line(&cmd, 5);
+                assert!(line.ends_with("\r\n"));
+                assert_eq!(serde_json::from_str::<Value>(line.trim()).unwrap(), msg);
+                if marked && msg["params"].is_object() {
+                    assert!(
+                        line.ends_with(",\"verify\":true}}\r\n")
+                            || line.ends_with("{\"verify\":true}}\r\n"),
+                        "{line}"
+                    );
+                }
+            }
+        }
+    }
+
+    // The expected bytes for one command of each params shape in each mode.
+    #[test]
+    fn wire_bytes_per_params_shape_and_mode() {
+        use crate::command::params::StartViewParams;
+        let marker = WireProfile::new(Verification::Marker);
+        let handshake = WireProfile::new(Verification::Handshake);
+        let goto = Command::IscopeStartView(StartViewParams {
+            mode: None,
+            target_name: Some("x".into()),
+            target_ra_dec: None,
+            target_type: None,
+            lp_filter: None,
+        });
+        for (cmd, marked, plain) in [
+            (
+                Command::GetDeviceState,
+                r#"{"id":9,"method":"get_device_state","params":["verify"]}"#,
+                r#"{"id":9,"method":"get_device_state"}"#,
+            ),
+            (
+                Command::GetDiskVolume,
+                r#"{"id":9,"method":"get_disk_volume","params":{"verify":true}}"#,
+                r#"{"id":9,"method":"get_disk_volume"}"#,
+            ),
+            (
+                goto,
+                r#"{"id":9,"method":"iscope_start_view","params":{"target_name":"x","verify":true}}"#,
+                r#"{"id":9,"method":"iscope_start_view","params":{"target_name":"x"}}"#,
+            ),
+            (
+                Command::ScopeSync(1.5, 2.0),
+                r#"{"id":9,"method":"scope_sync","params":[1.5,2.0,"verify"]}"#,
+                r#"{"id":9,"method":"scope_sync","params":[1.5,2.0]}"#,
+            ),
+            (
+                Command::ScopeSetTrackState(true),
+                r#"{"id":9,"method":"scope_set_track_state","params":[true,"verify"]}"#,
+                r#"{"id":9,"method":"scope_set_track_state","params":true}"#,
+            ),
+        ] {
+            assert_eq!(marker.line(&cmd, 9), format!("{marked}\r\n"));
+            assert_eq!(handshake.line(&cmd, 9), format!("{plain}\r\n"));
+            // A legacy device of unknown firmware is sent the marked form.
+            assert_eq!(
+                WireProfile::legacy(None).line(&cmd, 9),
+                format!("{marked}\r\n")
+            );
+        }
     }
 
     #[test]
@@ -248,7 +414,7 @@ mod tests {
     #[test]
     fn serialize_scope_sync() {
         let cmd = Command::ScopeSync(10.5, 45.0);
-        let msg = serialize_command(&cmd, 300, None);
+        let msg = serialize_command(&cmd, 300, &WireProfile::legacy(None));
         assert_eq!(msg["method"], "scope_sync");
         // Array params get "verify" appended
         let params = msg["params"].as_array().unwrap();
@@ -259,7 +425,7 @@ mod tests {
     #[test]
     fn serialize_track_state() {
         let cmd = Command::ScopeSetTrackState(true);
-        let msg = serialize_command(&cmd, 400, None);
+        let msg = serialize_command(&cmd, 400, &WireProfile::legacy(None));
         assert_eq!(msg["method"], "scope_set_track_state");
         // Bool scalar gets wrapped: [true, "verify"]
         let params = msg["params"].as_array().unwrap();
@@ -272,7 +438,7 @@ mod tests {
         // Captured (fw 7.06): {"method":"play_sound","params":{"num":80,"verify":true},"id":...}
         use crate::command::params::PlaySoundParams;
         let cmd = Command::PlaySound(PlaySoundParams { num: 80 });
-        let msg = serialize_command(&cmd, 10016, None);
+        let msg = serialize_command(&cmd, 10016, &WireProfile::legacy(None));
         assert_eq!(msg["method"], "play_sound");
         assert_eq!(msg["params"]["num"], 80);
         assert_eq!(msg["params"]["verify"], true);
@@ -281,7 +447,7 @@ mod tests {
     #[test]
     fn serialize_pi_station_state_matches_capture() {
         // Captured: {"method":"pi_station_state","params":["verify"],"id":...}
-        let msg = serialize_command(&Command::PiStationState, 10001, None);
+        let msg = serialize_command(&Command::PiStationState, 10001, &WireProfile::legacy(None));
         assert_eq!(msg["method"], "pi_station_state");
         assert_eq!(msg["params"], json!(["verify"]));
     }
@@ -294,7 +460,7 @@ mod tests {
         let cmd = Command::SetSequenceSetting(vec![SequenceSettingParams {
             group_name: Some("M44".into()),
         }]);
-        let msg = serialize_command(&cmd, 10027, None);
+        let msg = serialize_command(&cmd, 10027, &WireProfile::legacy(None));
         assert_eq!(msg["method"], "set_sequence_setting");
         assert_eq!(msg["params"], json!([[{ "group_name": "M44" }], "verify"]));
     }
@@ -302,7 +468,11 @@ mod tests {
     #[test]
     fn serialize_stop_view_without_stage_matches_fw670() {
         // Captured (fw 6.70): {"method":"iscope_stop_view","params":["verify"],"id":...}
-        let msg = serialize_command(&Command::IscopeStopView(None), 10094, None);
+        let msg = serialize_command(
+            &Command::IscopeStopView(None),
+            10094,
+            &WireProfile::legacy(None),
+        );
         assert_eq!(msg["method"], "iscope_stop_view");
         assert_eq!(msg["params"], json!(["verify"]));
     }
@@ -315,14 +485,14 @@ mod tests {
         }));
         // Without verify (old firmware) the stage is serialized via serde,
         // not Debug formatting.
-        let msg = serialize_command(&cmd, 1, Some(FirmwareVersion(2500)));
+        let msg = serialize_command(&cmd, 1, &WireProfile::legacy(Some(FirmwareVersion(2500))));
         assert_eq!(msg["params"], json!({ "stage": "DarkLibrary" }));
     }
 
     #[test]
     fn serialize_stop_view_plan() {
         let cmd = Command::StopViewPlan;
-        let msg = serialize_command(&cmd, 500, None);
+        let msg = serialize_command(&cmd, 500, &WireProfile::legacy(None));
         assert_eq!(msg["method"], "stop_func");
         assert_eq!(msg["params"]["name"], "ViewPlan");
         assert_eq!(msg["params"]["verify"], true);
@@ -343,6 +513,19 @@ mod tests {
 
         // Key for arbitrary objects — must NOT include "verify" so we can
         // observe injection deterministically.
+        /// Params for an ordinary command, with or without the marker: the
+        /// shape rules these properties pin.
+        fn inject_verify(params: Option<Value>, needs_verify: bool) -> Option<Value> {
+            if needs_verify {
+                Some(crate::command::serialize::inject_verify(
+                    &Command::TestConnection,
+                    params,
+                ))
+            } else {
+                params
+            }
+        }
+
         fn non_verify_key() -> impl Strategy<Value = String> {
             "[a-z]{1,8}".prop_filter("not verify", |s| s != "verify")
         }
@@ -413,7 +596,7 @@ mod tests {
                 fw in proptest::option::of(any::<u32>().prop_map(FirmwareVersion)),
             ) {
                 let cmd = Command::TestConnection;
-                let msg = serialize_command(&cmd, id, fw);
+                let msg = serialize_command(&cmd, id, &WireProfile::legacy(fw));
                 prop_assert_eq!(msg["id"].as_u64(), Some(id));
                 prop_assert_eq!(msg["method"].as_str(), Some(cmd.method()));
             }
@@ -425,7 +608,7 @@ mod tests {
                 fw_version in any::<u32>(),
             ) {
                 let cmd = Command::TestConnection;
-                let msg = serialize_command(&cmd, id, Some(FirmwareVersion(fw_version)));
+                let msg = serialize_command(&cmd, id, &WireProfile::legacy(Some(FirmwareVersion(fw_version))));
                 let has_params = msg.get("params").is_some();
                 prop_assert_eq!(has_params, fw_version > FirmwareVersion::VERIFY_THRESHOLD);
             }

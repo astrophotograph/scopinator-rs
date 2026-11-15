@@ -1,5 +1,12 @@
 # Heartbeat hardcodes `["verify"]` regardless of firmware
 
+> **Fixed 2026-11-14.** The heartbeat is now built by the connection's `WireProfile`
+> (`command::serialize`), like every other command: marked in Marker mode, unmarked on a socket
+> verified by the handshake, and following the firmware threshold on a legacy device. Pinned by
+> `heartbeat_follows_the_wire_profile` and `heartbeat_matches_the_serializer`
+> (`crates/scopinator-seestar/src/connection/control.rs`). The text below describes the behaviour
+> before the fix.
+
 Filed from Forge task "Pin heartbeat verify behavior and write bug report".
 Status: **open, not adjudicated.** This report describes both behaviours and gives no verdict.
 

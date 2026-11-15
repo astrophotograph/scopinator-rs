@@ -10,7 +10,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::auth::{InteropKey, Verification};
 use crate::command::Command;
-use crate::command::serialize::{serialize_command_marked, wire_line};
+use crate::command::serialize::WireProfile;
 use crate::connection::reconnect::ReconnectPolicy;
 use crate::connection::registry::Registry;
 use crate::error::SeestarError;
@@ -46,62 +46,81 @@ pub(crate) enum LinkState {
     KeyRequired,
 }
 
-/// Shared, cheaply readable [`LinkState`] (sync mutex — never held across await).
+/// What is known about the device behind the link.
+#[derive(Debug, Clone, Default)]
+struct LinkInfo {
+    state: LinkState,
+    /// `device.firmware_ver_int` from the last `get_device_state` reply.
+    firmware: Option<FirmwareVersion>,
+    /// `device.product_model` from the last `get_device_state` reply.
+    model: Option<String>,
+}
+
+/// Link state and device identity, shared between the control loop and the
+/// client (sync mutex — never held across await).
 #[derive(Debug, Default)]
-pub(crate) struct Link(std::sync::Mutex<LinkState>);
+pub(crate) struct Link(std::sync::Mutex<LinkInfo>);
 
 impl Link {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LinkInfo> {
+        self.0.lock().expect("link mutex poisoned")
+    }
+
     pub(crate) fn get(&self) -> LinkState {
-        *self.0.lock().expect("link mutex poisoned")
+        self.lock().state
     }
 
     fn set(&self, state: LinkState) {
-        *self.0.lock().expect("link mutex poisoned") = state;
+        self.lock().state = state;
+    }
+
+    /// The device's firmware version, once a `get_device_state` reply has
+    /// been seen. Kept across reconnects.
+    pub(crate) fn firmware(&self) -> Option<FirmwareVersion> {
+        self.lock().firmware
+    }
+
+    /// The device's product model (e.g. `Seestar S50`), once known.
+    pub(crate) fn model(&self) -> Option<String> {
+        self.lock().model.clone()
     }
 }
 
-/// Whether requests must carry the `verify` marker.
-///
-/// A verified socket never needs it. Marker mode always does. A legacy device
-/// keeps the pyscopinator rule: mark unless the firmware is known to predate
-/// the marker.
-fn needs_marker(mode: Verification, firmware: Option<FirmwareVersion>) -> bool {
-    match mode {
-        Verification::Handshake => false,
-        Verification::Marker => true,
-        Verification::Legacy => firmware.is_none_or(|fw| fw.requires_verify()),
-    }
-}
+/// JSON-RPC id of the `get_device_state` the control loop sends by itself
+/// right after negotiation, to learn the firmware and model. Its reply is not
+/// awaited: the reader picks the fields out of any `get_device_state` reply.
+const ID_CONNECT_DEVICE_STATE: u64 = 1004;
 
 /// Shared state for the control connection.
 pub(crate) struct ControlState {
     /// Pending requests keyed by allocated ID. Owns its own internal lock
     /// and ID allocator so callers don't need an outer Mutex.
     pub(crate) pending: Registry<ResponseSender>,
-    /// Detected firmware version (sync mutex — never held across await).
-    firmware_version: std::sync::Mutex<Option<FirmwareVersion>>,
+    /// Link state and device identity, shared with the client.
+    link: Arc<Link>,
 }
 
 impl ControlState {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::with_link(Arc::new(Link::default()))
+    }
+
+    fn with_link(link: Arc<Link>) -> Self {
         Self {
             pending: Registry::with_start(INITIAL_COMMAND_ID),
-            firmware_version: std::sync::Mutex::new(None),
+            link,
         }
     }
 
     fn firmware_version(&self) -> Option<FirmwareVersion> {
-        *self
-            .firmware_version
-            .lock()
-            .expect("firmware_version mutex poisoned")
+        self.link.firmware()
     }
 
-    fn set_firmware_version(&self, fw: FirmwareVersion) {
-        *self
-            .firmware_version
-            .lock()
-            .expect("firmware_version mutex poisoned") = Some(fw);
+    /// How commands are framed on a connection that negotiated `mode`, given
+    /// what is known about the device right now.
+    fn profile(&self, mode: Verification) -> WireProfile {
+        WireProfile::new(mode).with_firmware(self.firmware_version())
     }
 }
 
@@ -118,7 +137,7 @@ pub(crate) async fn run(
     interop_key: Option<Arc<InteropKey>>,
     link: Arc<Link>,
 ) {
-    let state = Arc::new(ControlState::new());
+    let state = Arc::new(ControlState::with_link(Arc::clone(&link)));
     let mut policy = ReconnectPolicy::new();
 
     // Wrap request_rx in Arc<Mutex> so we can reuse it across reconnections
@@ -156,6 +175,15 @@ pub(crate) async fn run(
                                 handle_event(msg, &event_tx);
                             }
                         }
+                        // Learn the firmware and model without waiting: the
+                        // reader records them when the reply arrives.
+                        let probe = state
+                            .profile(negotiated.mode)
+                            .line(&Command::GetDeviceState, ID_CONNECT_DEVICE_STATE);
+                        if let Err(e) = write_half.write_all(probe.as_bytes()).await {
+                            warn!("failed to request device state at connect: {e}");
+                        }
+
                         connected.store(true, Ordering::Release);
                         policy.reset();
 
@@ -253,13 +281,8 @@ async fn run_connected(
         })
     };
 
-    // Heartbeat: fixed for the connection. It is marked, as it always was,
-    // except on a socket verified by the handshake.
-    let hb_handle = tokio::spawn(heartbeat_task(
-        write_tx,
-        shutdown,
-        mode != Verification::Handshake,
-    ));
+    // Heartbeat: framed by the connection's wire profile like any command.
+    let hb_handle = tokio::spawn(heartbeat_task(write_tx, shutdown, Arc::clone(&state), mode));
 
     // Wait for either task to finish
     tokio::select! {
@@ -348,17 +371,18 @@ fn handle_response(msg: &serde_json::Value, state: &Arc<ControlState>) {
         }
     };
 
-    // Check for firmware version in device state responses
-    if let Some(method) = json_rpc::method_name(msg)
-        && method == "get_device_state"
-        && let Some(result) = msg.get("result")
-        && let Some(fw_int) = result
-            .get("device")
-            .and_then(|d| d.get("firmware_ver_int"))
-            .and_then(|v| v.as_u64())
+    // Record the firmware version and model from device state responses.
+    if json_rpc::method_name(msg) == Some("get_device_state")
+        && let Some(device) = msg.get("result").and_then(|r| r.get("device"))
     {
-        state.set_firmware_version(FirmwareVersion(fw_int as u32));
-        debug!(firmware = fw_int, "detected firmware version");
+        let mut info = state.link.lock();
+        if let Some(fw_int) = device.get("firmware_ver_int").and_then(|v| v.as_u64()) {
+            info.firmware = Some(FirmwareVersion(fw_int as u32));
+            debug!(firmware = fw_int, "detected firmware version");
+        }
+        if let Some(model) = device.get("product_model").and_then(|v| v.as_str()) {
+            info.model = Some(model.to_string());
+        }
     }
 
     let response: CommandResponse = match serde_json::from_value(msg.clone()) {
@@ -392,11 +416,9 @@ async fn writer_task(
             // Client request
             Some(req) = req_rx.recv() => {
                 drop(req_rx); // release lock before doing work
-                let fw = state.firmware_version();
                 let method = req.command.method();
                 let id = state.pending.register(req.response_tx);
-                let msg = serialize_command_marked(&req.command, id, needs_marker(mode, fw));
-                let line = wire_line(&msg);
+                let line = state.profile(mode).line(&req.command, id);
 
                 trace!(id, method, "sending command");
 
@@ -431,12 +453,13 @@ async fn writer_task(
     }
 }
 
-/// Heartbeat task: sends `pi_get_time` every 5 seconds, with the `verify`
-/// marker if `marker` is set.
+/// Heartbeat task: sends `pi_get_time` every 5 seconds, framed by the
+/// connection's current wire profile.
 async fn heartbeat_task(
     tx: mpsc::Sender<String>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
-    marker: bool,
+    state: Arc<ControlState>,
+    mode: Verification,
 ) {
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
     // Skip the first immediate tick
@@ -445,15 +468,8 @@ async fn heartbeat_task(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                // Use a fixed low ID for heartbeats that we don't track
-                let mut msg = serde_json::json!({
-                    "id": 1,
-                    "method": "pi_get_time",
-                });
-                if marker {
-                    msg["params"] = serde_json::json!(["verify"]);
-                }
-                let line = format!("{}\r\n", msg);
+                // A fixed low id: heartbeat replies are not tracked.
+                let line = state.profile(mode).line(&Command::PiGetTime, 1);
                 if tx.send(line).await.is_err() {
                     break;
                 }
@@ -478,18 +494,15 @@ fn flush_pending(state: &Arc<ControlState>) {
 #[cfg(test)]
 mod heartbeat_tests {
     use super::*;
-    use crate::command::serialize::serialize_command;
 
-    /// Run the real heartbeat task (marked, as on an unverified socket) under
-    /// paused time and return the first line it sends.
-    async fn first_heartbeat_line() -> String {
-        heartbeat_line(true).await
-    }
-
-    async fn heartbeat_line(marker: bool) -> String {
+    /// Run the real heartbeat task under paused time and return the first
+    /// line it sends on a connection with this mode and known firmware.
+    async fn heartbeat_line(mode: Verification, firmware: Option<u32>) -> String {
+        let state = Arc::new(ControlState::new());
+        state.link.lock().firmware = firmware.map(FirmwareVersion);
         let (tx, mut rx) = mpsc::channel::<String>(4);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let handle = tokio::spawn(heartbeat_task(tx, shutdown_rx, marker));
+        let handle = tokio::spawn(heartbeat_task(tx, shutdown_rx, state, mode));
 
         // Nothing is sent before the first interval elapses.
         tokio::task::yield_now().await;
@@ -503,63 +516,48 @@ mod heartbeat_tests {
         line
     }
 
-    // Characterizes docs/bugs/heartbeat-hardcoded-verify.md (Forge task
-    // "Pin heartbeat verify behavior and write bug report"). pyscopinator's
-    // `_should_inject_verify` only injects "verify" on firmware > 2582; the
-    // Rust heartbeat bypasses `serialize_command` and always injects it.
+    const MARKED: &str = "{\"id\":1,\"method\":\"pi_get_time\",\"params\":[\"verify\"]}\r\n";
+    const PLAIN: &str = "{\"id\":1,\"method\":\"pi_get_time\"}\r\n";
+
+    // The heartbeat is framed like any other command (this closes
+    // docs/bugs/heartbeat-hardcoded-verify.md): it used to bypass the
+    // serializer and always carry the marker, diverging from
+    // pyscopinator's `_should_inject_verify` on firmware <= 2582.
     #[tokio::test(start_paused = true)]
-    async fn heartbeat_always_sends_hardcoded_verify() {
-        let line = first_heartbeat_line().await;
+    async fn heartbeat_follows_the_wire_profile() {
+        let old = Some(FirmwareVersion::VERIFY_THRESHOLD);
+        let new = Some(2670);
+        // Before the firmware is known a legacy connection marks it, exactly
+        // the bytes the heartbeat always had.
+        assert_eq!(heartbeat_line(Verification::Legacy, None).await, MARKED);
+        assert_eq!(heartbeat_line(Verification::Legacy, new).await, MARKED);
+        // Old firmware predates the marker.
+        assert_eq!(heartbeat_line(Verification::Legacy, old).await, PLAIN);
         assert_eq!(
-            line,
-            "{\"id\":1,\"method\":\"pi_get_time\",\"params\":[\"verify\"]}\r\n"
+            heartbeat_line(Verification::Legacy, Some(2000)).await,
+            PLAIN
         );
+        // Marker mode always marks; a verified socket never does (hardware,
+        // S50 fw 6.70: unmarked pi_get_time is served once verified).
+        assert_eq!(heartbeat_line(Verification::Marker, old).await, MARKED);
+        assert_eq!(heartbeat_line(Verification::Handshake, None).await, PLAIN);
+        assert_eq!(heartbeat_line(Verification::Handshake, new).await, PLAIN);
     }
 
-    // On a socket verified by the handshake the heartbeat carries no marker
-    // (hardware, S50 fw 6.70: unmarked pi_get_time is served once verified).
+    // The heartbeat bytes are exactly what the serializer produces.
     #[tokio::test(start_paused = true)]
-    async fn heartbeat_is_unmarked_on_a_verified_socket() {
-        let line = heartbeat_line(false).await;
-        assert_eq!(line, "{\"id\":1,\"method\":\"pi_get_time\"}\r\n");
-    }
-
-    #[test]
-    fn marker_follows_the_negotiated_mode() {
-        let old = Some(FirmwareVersion(FirmwareVersion::VERIFY_THRESHOLD));
-        let new = Some(FirmwareVersion(2670));
-        for fw in [None, old, new] {
-            assert!(!needs_marker(Verification::Handshake, fw));
-            assert!(needs_marker(Verification::Marker, fw));
-        }
-        assert!(needs_marker(Verification::Legacy, None));
-        assert!(needs_marker(Verification::Legacy, new));
-        assert!(!needs_marker(Verification::Legacy, old));
-    }
-
-    // The heartbeat task takes no firmware input, so its bytes are identical
-    // for every firmware. Compare with `serialize_command`: equal on
-    // post-2582 firmware, DIVERGENT on firmware <= 2582 (no params expected).
-    #[tokio::test(start_paused = true)]
-    async fn heartbeat_ignores_firmware_unlike_serialize_command() {
-        let line = first_heartbeat_line().await;
-        let sent: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-
-        let post = serialize_command(&Command::PiGetTime, 1, Some(FirmwareVersion(2700)));
-        assert_eq!(sent, post, "post-2582 firmware: heartbeat matches");
-
-        for fw in [2000, FirmwareVersion::VERIFY_THRESHOLD] {
-            let pre = serialize_command(&Command::PiGetTime, 1, Some(FirmwareVersion(fw)));
-            assert!(
-                pre.get("params").is_none(),
-                "fw {fw}: serialize omits verify"
+    async fn heartbeat_matches_the_serializer() {
+        for (mode, fw) in [
+            (Verification::Legacy, None),
+            (Verification::Legacy, Some(2000)),
+            (Verification::Marker, Some(2706)),
+            (Verification::Handshake, Some(2670)),
+        ] {
+            let profile = WireProfile::new(mode).with_firmware(fw.map(FirmwareVersion));
+            assert_eq!(
+                heartbeat_line(mode, fw).await,
+                profile.line(&Command::PiGetTime, 1)
             );
-            // Pinned current behaviour: heartbeat still carries params.
-            assert_ne!(
-                sent, pre,
-                "fw {fw}: heartbeat diverges from serialize_command"
-            );
-            assert_eq!(sent["params"], serde_json::json!(["verify"]));
         }
     }
 }
@@ -722,6 +720,9 @@ mod timeout_interplay_tests {
             run_for(crate::auth::PROBE_TIMEOUT + Duration::from_millis(50)).await;
             let probe = c.lines.try_recv().expect("negotiation request");
             assert!(probe.contains("get_verify_str"), "got {probe:?}");
+            // Then the device-state request the loop sends by itself.
+            let probe = c.lines.try_recv().expect("device state request");
+            assert!(probe.contains("get_device_state"), "got {probe:?}");
             assert!(h.connected.load(Ordering::Acquire));
             assert_eq!(h.link.get(), LinkState::Negotiated(Verification::Legacy));
         }

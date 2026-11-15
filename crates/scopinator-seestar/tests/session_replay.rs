@@ -19,7 +19,7 @@ use scopinator_seestar::command::params::{
     PlaySoundParams, SequenceSettingParams, SettingParams, StartStackParams, StartViewParams,
     StopViewParams,
 };
-use scopinator_seestar::command::serialize::serialize_command;
+use scopinator_seestar::command::serialize::{WireProfile, serialize_command};
 use scopinator_seestar::event::SeestarEvent;
 use scopinator_seestar::protocol::json_rpc;
 use scopinator_seestar::response::CommandResponse;
@@ -237,7 +237,7 @@ fn client_commands_round_trip_to_captured_bytes() {
             } else {
                 Some(FirmwareVersion(2500))
             };
-            let produced = serialize_command(&cmd, id, fw);
+            let produced = serialize_command(&cmd, id, &WireProfile::legacy(fw));
 
             if produced != msg {
                 mismatches.push(format!(

@@ -639,6 +639,19 @@ impl SeestarClient {
         }
     }
 
+    /// The device's firmware version (`firmware_ver_int`, e.g. 2670 for
+    /// 6.70), once known. It is requested as soon as the control connection
+    /// is up, so it is available shortly after
+    /// [`wait_for_connection`](Self::wait_for_connection) returns.
+    pub fn firmware_version(&self) -> Option<scopinator_types::FirmwareVersion> {
+        self.link.firmware()
+    }
+
+    /// The device's product model (e.g. `Seestar S50`), once known.
+    pub fn product_model(&self) -> Option<String> {
+        self.link.model()
+    }
+
     /// Returns true if the control connection is currently alive.
     pub fn is_control_connected(&self) -> bool {
         self.control_connected.load(Ordering::Acquire)

@@ -285,14 +285,14 @@ impl ImagingCommand {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
     /// One `Command` per variant — used to prove [`command_method_names`] stays
     /// exhaustive and in sync with [`Command::method`]. Adding a variant without
     /// updating either list fails this test.
-    fn one_of_every_variant() -> Vec<Command> {
+    pub(crate) fn one_of_every_variant() -> Vec<Command> {
         vec![
             Command::TestConnection,
             Command::PiIsVerified,
