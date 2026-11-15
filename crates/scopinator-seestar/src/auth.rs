@@ -38,7 +38,7 @@ use signature::{SignatureEncoding, Signer};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, info, warn};
 
-use crate::error::SeestarError;
+use crate::error::{ErrorCode, SeestarError};
 use crate::protocol::json_rpc::MAX_LINE_BYTES;
 
 /// How long to wait for each handshake reply when a key is configured.
@@ -52,12 +52,6 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const ID_GET_VERIFY: u64 = 1001;
 const ID_VERIFY_CLIENT: u64 = 1002;
 const ID_MARKER_PROBE: u64 = 1003;
-
-/// `code` of the Alert sent to a connection refused for exceeding the client limit.
-const CODE_CONNECTION_LIMIT: i64 = 429;
-
-/// Device error code for an unknown method.
-const CODE_METHOD_NOT_FOUND: i64 = 103;
 
 /// How a control connection gets its requests past the device's verification gate.
 ///
@@ -202,7 +196,9 @@ where
         return Ok(Verification::Legacy);
     };
 
-    if resp.get("code").and_then(|c| c.as_i64()) == Some(CODE_METHOD_NOT_FOUND) {
+    if resp.get("code").and_then(|c| c.as_i64())
+        == Some(i64::from(ErrorCode::MethodNotFound.code()))
+    {
         debug!("get_verify_str is unknown to this device (legacy, no verification)");
         return Ok(Verification::Legacy);
     }
@@ -339,7 +335,8 @@ where
 /// `{"Event":"Alert","code":429,"Msg":"Exceed the maximum number of connections",...}`.
 fn is_connection_limit_alert(msg: &serde_json::Value) -> bool {
     msg.get("Event").and_then(|e| e.as_str()) == Some("Alert")
-        && msg.get("code").and_then(|c| c.as_i64()) == Some(CODE_CONNECTION_LIMIT)
+        && msg.get("code").and_then(|c| c.as_i64())
+            == Some(i64::from(ErrorCode::ConnectionLimit.code()))
 }
 
 /// Extract the challenge string from a `get_verify_str` response.

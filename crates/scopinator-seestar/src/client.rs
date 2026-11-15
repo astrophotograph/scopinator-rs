@@ -14,7 +14,7 @@ use crate::command::params::{
 use crate::command::{Command, ImagingCommand, RawMarker};
 use crate::connection::control::{self, ClientRequest, Link, LinkState};
 use crate::connection::imaging::{self, ImageFrame};
-use crate::error::SeestarError;
+use crate::error::{ErrorCode, SeestarError};
 use crate::event::SeestarEvent;
 use crate::protocol::json_rpc::{CONTROL_PORT, IMAGING_PORT, WIDE_CONTROL_PORT, WIDE_IMAGING_PORT};
 use crate::response::CommandResponse;
@@ -77,9 +77,6 @@ impl ClockSync {
     }
 }
 
-/// Device error code for an unexpected (unknown) parameter.
-const CODE_UNEXPECTED_PARAM: i32 = 109;
-
 /// What happened to one setting sent with [`SeestarClient::set_setting`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingOutcome {
@@ -108,6 +105,16 @@ pub struct SettingResult {
 impl SettingResult {
     pub fn is_applied(&self) -> bool {
         self.outcome == SettingOutcome::Applied
+    }
+}
+
+impl SettingOutcome {
+    /// The device's error code, if the setting was rejected.
+    pub fn error_code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::Rejected { code, .. } => Some(ErrorCode::from(*code)),
+            Self::Applied | Self::Unconfirmed => None,
+        }
     }
 }
 
@@ -596,7 +603,7 @@ impl SeestarClient {
             let resp = self.send_command(Command::SetSetting(single)).await?;
             let outcome = match resp.code {
                 0 => SettingOutcome::Applied,
-                CODE_UNEXPECTED_PARAM => {
+                code if ErrorCode::from(code) == ErrorCode::UnexpectedParam => {
                     unconfirmed = true;
                     SettingOutcome::Unconfirmed
                 }

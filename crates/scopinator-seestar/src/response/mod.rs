@@ -21,6 +21,11 @@ impl CommandResponse {
         self.code == 0
     }
 
+    /// The device's error code by name, or `None` on success.
+    pub fn error_code(&self) -> Option<crate::error::ErrorCode> {
+        crate::error::ErrorCode::from_response_code(self.code)
+    }
+
     /// Returns an error if the command failed.
     pub fn into_result(self) -> Result<serde_json::Value, CommandError> {
         if self.is_success() {

@@ -9,5 +9,5 @@ pub mod response;
 
 pub use auth::{InteropKey, Verification};
 pub use client::{ClockSync, SeestarClient, SeestarConfig, SettingOutcome, SettingResult};
-pub use error::SeestarError;
+pub use error::{ErrorCode, SeestarError};
 pub use response::{DeviceSummary, SensorSummary};
