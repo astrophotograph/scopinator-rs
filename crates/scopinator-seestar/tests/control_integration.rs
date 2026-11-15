@@ -143,7 +143,9 @@ use scopinator_seestar::command::params::SettingParams;
 use scopinator_seestar::error::SeestarError;
 use scopinator_seestar::event::SeestarEvent;
 use scopinator_seestar::protocol::json_rpc;
-use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig, SettingOutcome, Verification};
+use scopinator_seestar::{
+    ClockSync, InteropKey, SeestarClient, SeestarConfig, SettingOutcome, Verification,
+};
 use serde_json::{Value, json};
 
 const LOCALHOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -709,6 +711,7 @@ async fn auth_failure_leaves_tcp_up_but_never_advertised() {
     let config = SeestarConfig {
         interop_key: Some(InteropKey::from_pem(pem.as_str()).unwrap()),
         response_timeout: Some(Duration::from_millis(250)),
+        ..Default::default()
     };
     let client = SeestarClient::connect_with_ports_and_config(
         LOCALHOST,
@@ -1047,6 +1050,7 @@ async fn legacy_device_connects_with_or_without_a_key() {
             SeestarConfig {
                 interop_key: key,
                 response_timeout: None,
+                ..Default::default()
             },
         )
         .await;
@@ -1082,6 +1086,7 @@ async fn handshake_mode_sends_no_marker() {
             SeestarConfig {
                 interop_key: Some(test_key()),
                 response_timeout: None,
+                ..Default::default()
             },
         )
         .await;
@@ -1134,6 +1139,7 @@ async fn rejected_handshake_is_not_connected() {
         SeestarConfig {
             interop_key: Some(test_key()),
             response_timeout: Some(Duration::from_millis(250)),
+            ..Default::default()
         },
     )
     .await;
@@ -1408,6 +1414,7 @@ async fn set_setting_on_a_verified_socket_is_one_plain_request() {
         SeestarConfig {
             interop_key: Some(test_key()),
             response_timeout: None,
+            ..Default::default()
         },
     )
     .await;
@@ -1553,6 +1560,7 @@ async fn image_request_times_out_when_only_other_frames_arrive() {
         SeestarConfig {
             interop_key: None,
             response_timeout: Some(Duration::from_millis(300)),
+            ..Default::default()
         },
     )
     .await
@@ -1729,5 +1737,138 @@ async fn connection_limit_is_reported_and_backed_off() {
         .send_command(Command::TestConnection)
         .await
         .expect("command after recovery");
+    client.shutdown().await;
+}
+
+// ============================================================================
+// Clock sync at connect (opt-in). A telescope whose clock was never set
+// accepts a goto and does not slew (Seestar S30, firmware 9.75), so a client
+// can ask for the clock to be set on every connect, as the official app does.
+// ============================================================================
+
+fn set_time_requests(fake: &FakeSeestar) -> Vec<Value> {
+    fake.received_all()
+        .into_iter()
+        .filter(|m| m["method"] == "pi_set_time")
+        .collect()
+}
+
+// Off by default: connecting writes nothing to the device's clock.
+#[tokio::test]
+async fn clock_is_left_alone_by_default() {
+    let fake = FakeSeestar::start().await;
+    let client = connect(&fake).await;
+    client
+        .send_command(Command::TestConnection)
+        .await
+        .expect("command");
+    assert!(set_time_requests(&fake).is_empty());
+    client.shutdown().await;
+}
+
+// With ClockSync::Utc the clock is set right after negotiation, before the
+// device-state request and before anything the caller sends, and again on
+// every reconnect.
+#[tokio::test]
+async fn clock_sync_utc_sets_the_clock_at_every_connect() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+    fake.respond_ok("verify_client", json!(0));
+    let client = connect_with(
+        &fake,
+        SeestarConfig {
+            interop_key: Some(test_key()),
+            clock_sync: ClockSync::Utc,
+            ..Default::default()
+        },
+    )
+    .await;
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .expect("connected");
+    client
+        .send_command(Command::TestConnection)
+        .await
+        .expect("command");
+
+    let all = fake.received_all();
+    assert_eq!(
+        methods(&all),
+        [
+            "get_verify_str",
+            "verify_client",
+            "pi_set_time",
+            "get_device_state",
+            "test_connection"
+        ]
+    );
+    let set = &all[2];
+    assert_eq!(set["id"], common::CONNECT_SET_TIME_ID);
+    // One settings object in an array, unmarked on a verified socket.
+    let time = &set["params"][0];
+    assert_eq!(set["params"].as_array().map(Vec::len), Some(1));
+    assert_eq!(time["time_zone"], "UTC");
+    let year = time["year"].as_i64().unwrap();
+    assert!(year >= 2026, "year {year} should be this computer's");
+    for member in ["mon", "day", "hour", "min", "sec"] {
+        assert!(time[member].is_i64(), "{member} missing: {time}");
+    }
+
+    // A reconnect sets it again.
+    fake.drop_connection();
+    for _ in 0..100 {
+        if set_time_requests(&fake).len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(set_time_requests(&fake).len(), 2);
+    client.shutdown().await;
+}
+
+// ClockSync::With sends exactly what the caller's function returns, e.g.
+// local time under the telescope's own zone name. In marker mode the request
+// carries the marker after the settings object.
+#[tokio::test]
+async fn clock_sync_with_sends_the_callers_time() {
+    use scopinator_seestar::command::params::SetTimeParams;
+    fn local_time() -> SetTimeParams {
+        SetTimeParams {
+            year: 2026,
+            mon: 11,
+            day: 14,
+            hour: 21,
+            min: 0,
+            sec: 39,
+            time_zone: "America/Chicago".into(),
+        }
+    }
+
+    let fake = FakeSeestar::start().await;
+    fake.require_verify_marker();
+    let client = connect_with(
+        &fake,
+        SeestarConfig {
+            clock_sync: ClockSync::With(local_time),
+            ..Default::default()
+        },
+    )
+    .await;
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .expect("connected");
+
+    let sets = set_time_requests(&fake);
+    assert_eq!(sets.len(), 1);
+    assert_eq!(
+        sets[0]["params"],
+        json!([
+            {"year": 2026, "mon": 11, "day": 14, "hour": 21, "min": 0, "sec": 39,
+             "time_zone": "America/Chicago"},
+            "verify"
+        ])
+    );
     client.shutdown().await;
 }

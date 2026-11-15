@@ -107,6 +107,13 @@ Writing the current `group_name` back:
 - `scope_park` → `ScopeHome` working; the mount returned to `close: true`.
 - `iscope_start_view {"mode": "star"}` with no target did not open the arm.
 
+## `pi_set_time`
+
+`pi_set_time [{"year", "mon", "day", "hour", "min", "sec", "time_zone": "UTC"}, "verify"]` in
+marker mode: code 0; `pi_get_time` then returned the new UTC time and `time_zone` "UTC" (the zone
+had been "America/Chicago"). Sending local time with the original zone name put it back. So a
+non-empty `time_zone` replaces the device's zone, as the spec says.
+
 ## Image socket (port 4800)
 
 | Observation | Result |

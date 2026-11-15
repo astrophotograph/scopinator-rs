@@ -51,6 +51,11 @@ enum Commands {
         /// Target name
         #[arg(short, long, default_value = "Target")]
         name: String,
+        /// Set the telescope's clock from this computer before the goto.
+        /// The telescope needs a correct clock to find the target. This sets
+        /// its clock to UTC and its time zone to "UTC".
+        #[arg(long)]
+        sync_clock: bool,
     },
     /// Park the telescope
     Park {
@@ -99,8 +104,9 @@ async fn main() -> Result<()> {
             ra,
             dec,
             name,
+            sync_clock,
         } => {
-            commands::goto(host, ra, dec, &name, interop_key).await?;
+            commands::goto(host, ra, dec, &name, interop_key, sync_clock).await?;
         }
         Commands::Park { host } => {
             commands::park(host, interop_key).await?;

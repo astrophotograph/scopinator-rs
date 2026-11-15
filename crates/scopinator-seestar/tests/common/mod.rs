@@ -196,6 +196,10 @@ pub fn strip_verify(params: Option<&Value>) -> Stripped {
 /// after negotiating verification (to learn the firmware and model).
 pub const CONNECT_PROBE_ID: u64 = 1004;
 
+/// JSON-RPC id of the `pi_set_time` the client sends at connect when clock
+/// sync is switched on.
+pub const CONNECT_SET_TIME_ID: u64 = 1005;
+
 /// Action pushed to the currently-connected control socket.
 #[derive(Clone, Debug)]
 enum ServerAction {
@@ -557,7 +561,12 @@ impl FakeSeestar {
     /// (id [`CONNECT_PROBE_ID`]). See [`Self::received_all`].
     pub fn received(&self) -> Vec<Value> {
         let mut all = self.received_all();
-        all.retain(|m| m.get("id").and_then(Value::as_u64) != Some(CONNECT_PROBE_ID));
+        all.retain(|m| {
+            !matches!(
+                m.get("id").and_then(Value::as_u64),
+                Some(CONNECT_PROBE_ID | CONNECT_SET_TIME_ID)
+            )
+        });
         all
     }
 
@@ -579,9 +588,9 @@ impl FakeSeestar {
     /// Like [`Self::received`], this leaves out the client's own connect-time
     /// `get_device_state`.
     pub fn raw_lines(&self) -> Vec<String> {
-        let probe = format!("\"id\":{CONNECT_PROBE_ID},");
+        let internal = [CONNECT_PROBE_ID, CONNECT_SET_TIME_ID].map(|id| format!("\"id\":{id},"));
         let mut lines = self.shared.raw_lines.lock().unwrap().clone();
-        lines.retain(|l| !l.contains(&probe));
+        lines.retain(|l| !internal.iter().any(|id| l.contains(id)));
         lines
     }
 

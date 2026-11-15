@@ -58,6 +58,7 @@ async fn main() -> Result<(), Err> {
         SeestarConfig {
             interop_key,
             response_timeout: Some(Duration::from_secs(15)),
+            ..Default::default()
         },
     )
     .await?;

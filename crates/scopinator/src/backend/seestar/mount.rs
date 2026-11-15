@@ -88,12 +88,17 @@ impl Mount for SeestarMount {
     }
 
     async fn abort_slew(&self) -> Result<(), ScopinatorError> {
-        // Seestar uses iscope_stop_view to abort
         use scopinator_seestar::command::params::{StopStage, StopViewParams};
-        let cmd = Command::IscopeStopView(Some(StopViewParams {
+        // Cancel the goto. On its own this stops the slew but leaves the
+        // scope in star view taking exposures (firmware 6.70 and 9.75).
+        let cancel_goto = Command::IscopeStopView(Some(StopViewParams {
             stage: StopStage::AutoGoto,
         }));
-        self.client.send_and_validate(cmd).await?;
+        self.client.send_and_validate(cancel_goto).await?;
+        // Then leave the view, so that abort returns the scope to idle.
+        self.client
+            .send_and_validate(Command::IscopeStopView(None))
+            .await?;
         Ok(())
     }
 

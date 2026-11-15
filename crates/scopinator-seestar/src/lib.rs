@@ -8,6 +8,6 @@ pub mod protocol;
 pub mod response;
 
 pub use auth::{InteropKey, Verification};
-pub use client::{SeestarClient, SeestarConfig, SettingOutcome, SettingResult};
+pub use client::{ClockSync, SeestarClient, SeestarConfig, SettingOutcome, SettingResult};
 pub use error::SeestarError;
 pub use response::DeviceSummary;

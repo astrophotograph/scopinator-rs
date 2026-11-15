@@ -34,6 +34,47 @@ pub struct SeestarConfig {
     /// How long [`SeestarClient::send_command`] waits for a response before
     /// returning [`SeestarError::Timeout`]. Defaults to [`DEFAULT_RESPONSE_TIMEOUT`].
     pub response_timeout: Option<Duration>,
+    /// Whether to set the telescope's clock each time the control connection
+    /// is established. Off by default. See [`ClockSync`].
+    pub clock_sync: ClockSync,
+}
+
+/// Setting the telescope's clock at connect.
+///
+/// The telescope works out where targets are from its own clock. One that
+/// has never been set (a Seestar S30 on firmware 9.75 read 2020) accepts a
+/// goto and then does not slew, without reporting an error. The official app
+/// sets the clock on every connect; this client does so only when asked,
+/// because it is a write to the device.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ClockSync {
+    /// Leave the telescope's clock alone.
+    #[default]
+    Off,
+    /// Set it to this computer's time as UTC. This also sets the telescope's
+    /// time zone to `UTC`, replacing whatever zone it had, which changes the
+    /// local times it shows and records.
+    Utc,
+    /// Set it to whatever this function returns, called at each connect.
+    /// Use it to send local time with the telescope's own zone name.
+    With(fn() -> SetTimeParams),
+}
+
+impl ClockSync {
+    /// The time to send now, if any.
+    pub(crate) fn time(self) -> Option<SetTimeParams> {
+        match self {
+            Self::Off => None,
+            Self::Utc => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                Some(SetTimeParams::from_unix_utc(now))
+            }
+            Self::With(provider) => Some(provider()),
+        }
+    }
 }
 
 /// Device error code for an unexpected (unknown) parameter.
@@ -208,6 +249,7 @@ impl SeestarClient {
 
         let interop_key = config.interop_key.map(Arc::new);
         let response_timeout = config.response_timeout.unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
+        let clock_sync = config.clock_sync;
 
         // Spawn control connection task
         {
@@ -224,7 +266,10 @@ impl SeestarClient {
                     event_tx,
                     connected,
                     shutdown_rx,
-                    interop_key,
+                    control::Options {
+                        interop_key,
+                        clock_sync,
+                    },
                     link,
                 )
                 .await;

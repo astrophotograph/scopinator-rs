@@ -5,13 +5,16 @@
 //! cargo run -p scopinator --example seestar_info -- 192.168.x.x
 //! SEESTAR_INTEROP_PEM=client.pem cargo run -p scopinator --example seestar_info -- 192.168.x.x
 //! ```
+//!
+//! With `SEESTAR_SYNC_CLOCK=1` it is no longer read-only: the telescope's
+//! clock is set from this computer at connect.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use scopinator::backend::seestar::SeestarBackend;
 use scopinator::{Camera, Mount, UnifiedEventBus};
-use scopinator_seestar::{InteropKey, SeestarConfig};
+use scopinator_seestar::{ClockSync, InteropKey, SeestarConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,8 +25,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(path) => Some(InteropKey::from_pem(&std::fs::read_to_string(path)?)?),
         Err(_) => None,
     };
+    // SEESTAR_SYNC_CLOCK=1 sets the telescope's clock (UTC, zone "UTC") at connect.
+    let clock_sync = if std::env::var_os("SEESTAR_SYNC_CLOCK").is_some() {
+        ClockSync::Utc
+    } else {
+        ClockSync::Off
+    };
     let config = SeestarConfig {
         interop_key,
+        clock_sync,
         ..Default::default()
     };
     let bus = Arc::new(UnifiedEventBus::new(64));

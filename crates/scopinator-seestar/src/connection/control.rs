@@ -9,6 +9,7 @@ use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::auth::{InteropKey, Verification};
+use crate::client::ClockSync;
 use crate::command::Command;
 use crate::command::serialize::WireProfile;
 use crate::connection::reconnect::{self, ReconnectPolicy};
@@ -142,6 +143,19 @@ impl ControlState {
     }
 }
 
+/// How the control loop sets up each connection.
+#[derive(Default)]
+pub(crate) struct Options {
+    /// Key for the verification handshake, if any.
+    pub interop_key: Option<Arc<InteropKey>>,
+    /// Whether to set the telescope's clock at each connect.
+    pub clock_sync: ClockSync,
+}
+
+/// JSON-RPC id of the `pi_set_time` the control loop sends at connect when
+/// clock sync is on. Its reply is not awaited.
+const ID_CONNECT_SET_TIME: u64 = 1005;
+
 /// Run the control connection loop (reconnecting on failure).
 ///
 /// This is the top-level task for the control port. It connects to the
@@ -152,9 +166,13 @@ pub(crate) async fn run(
     event_tx: broadcast::Sender<SeestarEvent>,
     connected: Arc<AtomicBool>,
     shutdown: tokio::sync::watch::Receiver<bool>,
-    interop_key: Option<Arc<InteropKey>>,
+    options: Options,
     link: Arc<Link>,
 ) {
+    let Options {
+        interop_key,
+        clock_sync,
+    } = options;
     let state = Arc::new(ControlState::with_link(Arc::clone(&link)));
     // Unit tests pin exact reconnect timing, so they run without jitter.
     let jitter = if cfg!(test) {
@@ -199,6 +217,17 @@ pub(crate) async fn run(
                                 handle_event(msg, &event_tx);
                             }
                         }
+                        // Set the clock first if asked to, so that anything
+                        // the caller sends next finds it right.
+                        if let Some(time) = clock_sync.time() {
+                            let line = state
+                                .profile(negotiated.mode)
+                                .line(&Command::PiSetTime(time), ID_CONNECT_SET_TIME);
+                            if let Err(e) = write_half.write_all(line.as_bytes()).await {
+                                warn!("failed to set the telescope clock at connect: {e}");
+                            }
+                        }
+
                         // Learn the firmware and model without waiting: the
                         // reader records them when the reply arrives.
                         let probe = state
@@ -693,7 +722,10 @@ mod timeout_interplay_tests {
             event_tx,
             Arc::clone(&connected),
             shutdown_rx,
-            key,
+            Options {
+                interop_key: key,
+                ..Default::default()
+            },
             Arc::clone(&link),
         ));
         Harness {

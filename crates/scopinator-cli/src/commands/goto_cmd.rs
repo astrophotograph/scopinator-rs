@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::SetTimeParams;
-use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig};
+use scopinator_seestar::{ClockSync, InteropKey, SeestarClient, SeestarConfig};
 use scopinator_types::Coordinates;
 
 pub async fn goto(
@@ -13,6 +13,7 @@ pub async fn goto(
     dec_deg: f64,
     name: &str,
     interop_key: Option<InteropKey>,
+    sync_clock: bool,
 ) -> Result<()> {
     let coords = Coordinates::from_hours(ra_hours, dec_deg).context("invalid coordinates")?;
 
@@ -21,6 +22,11 @@ pub async fn goto(
         host,
         SeestarConfig {
             interop_key,
+            clock_sync: if sync_clock {
+                ClockSync::Utc
+            } else {
+                ClockSync::Off
+            },
             ..Default::default()
         },
     )
@@ -30,7 +36,11 @@ pub async fn goto(
         .await
         .context("could not connect to the telescope")?;
 
-    warn_if_clock_is_off(&client).await;
+    if sync_clock {
+        println!("Telescope clock set from this computer (UTC).");
+    } else {
+        warn_if_clock_is_off(&client).await;
+    }
 
     println!("Slewing to {name} ({coords})...");
 
@@ -78,7 +88,7 @@ async fn warn_if_clock_is_off(client: &SeestarClient) {
         eprintln!(
             "warning: the telescope's clock reads {year}-{mon:02}-{day:02}, this computer's \
              {}-{:02}-{:02}. With a wrong clock the telescope may accept the goto and not move. \
-             Set its clock first (the Seestar app does this when it connects).",
+             Re-run with --sync-clock to set it, or open the Seestar app, which sets it on connect.",
             ours.year, ours.mon, ours.day
         );
     }
