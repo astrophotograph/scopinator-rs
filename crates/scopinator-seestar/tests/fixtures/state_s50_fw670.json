@@ -1,0 +1,216 @@
+{
+ "get_device_state": {
+  "code": 0,
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "get_device_state",
+  "result": {
+   "ap": {
+    "is_5g": true,
+    "passwd": "REDACTED",
+    "ssid": "REDACTED"
+   },
+   "balance_sensor": {
+    "code": 0,
+    "data": {
+     "angle": 0.952855,
+     "x": -0.015271,
+     "y": -0.006732,
+     "z": 1.00346
+    }
+   },
+   "camera": {
+    "chip_size": [
+     1080,
+     1920
+    ],
+    "debayer_pattern": "GR",
+    "hpc_num": 5146,
+    "pixel_size_um": 2.9
+   },
+   "compass_sensor": {
+    "code": 0,
+    "data": {
+     "cali": 0,
+     "direction": 25.812866,
+     "x": -6.15,
+     "y": 31.800001,
+     "z": -1.8
+    }
+   },
+   "device": {
+    "can_star_mode_sel_cam": false,
+    "can_wide_cam_af": false,
+    "can_wide_cam_roi": false,
+    "cpuId": "REDACTED",
+    "firmware_ver_int": 2670,
+    "firmware_ver_string": "6.70",
+    "fnumber": 5.0,
+    "focal_len": 250.0,
+    "is_verified": true,
+    "name": "ASI AIR imager",
+    "product_model": "Seestar S50",
+    "sn": "REDACTED",
+    "user_product_model": "Seestar S50"
+   },
+   "focuser": {
+    "max_step": 2600,
+    "state": "idle",
+    "step": 1734
+   },
+   "location_lon_lat": [
+    0.0,
+    0.0
+   ],
+   "mount": {
+    "close": true,
+    "equ_mode": true,
+    "move_type": "none",
+    "tracking": false
+   },
+   "pi_status": {
+    "battery_capacity": 54,
+    "battery_overtemp": false,
+    "battery_temp": 22,
+    "battery_temp_type": "normal",
+    "charge_online": false,
+    "charger_status": "Discharging",
+    "is_overtemp": false,
+    "is_typec_connected": false,
+    "temp": 48.799999
+   },
+   "setting": {
+    "ae_bri_percent": 50.0,
+    "auto_3ppa_calib": true,
+    "auto_af": false,
+    "auto_power_off": false,
+    "beep_volume": "close",
+    "calib_location": 2,
+    "center_xy": [
+     540,
+     960
+    ],
+    "dark_mode": false,
+    "exp_ms": {
+     "continuous": 500,
+     "stack_l": 10000
+    },
+    "expert_mode": true,
+    "expt_heater_enable": false,
+    "factory_focal_pos": 1734,
+    "focal_pos": 1734,
+    "frame_calib": true,
+    "guest_mode": false,
+    "heater_enable": false,
+    "isp_exp_ms": -999000.0,
+    "isp_gain": -9990.0,
+    "isp_range_exp_us": [
+     30,
+     1000000
+    ],
+    "isp_range_exp_us_scenery": [
+     30,
+     1000000
+    ],
+    "isp_range_gain": [
+     0,
+     400
+    ],
+    "lang": "en",
+    "manual_exp": false,
+    "mosaic": {
+     "angle": 0.0,
+     "estimated_hours": 0.258333,
+     "scale": 1.0,
+     "star_map_angle": 361.0,
+     "star_map_ratio": 1.0
+    },
+    "plan_target_af": false,
+    "remote_joined": false,
+    "stack": {
+     "airplane_line_removal": false,
+     "brightness": 0.0,
+     "capt_num": 50,
+     "capt_type": "stack",
+     "cont_capt": false,
+     "contrast": 0.0,
+     "dbe": false,
+     "dbe_enable": false,
+     "drizzle2x": false,
+     "light_duration_min": -1,
+     "saturation": 0.0,
+     "save_discrete_frame": false,
+     "save_discrete_ok_frame": true,
+     "star_correction": true,
+     "wide_denoise": false
+    },
+    "stack_after_goto": false,
+    "stack_dither": {
+     "enable": true,
+     "interval": 5,
+     "pix": 100
+    },
+    "stack_lenhance": false,
+    "temp_unit": "C",
+    "usb_en_eth": false,
+    "user_stack_sim": false,
+    "viewplan_gohome": true,
+    "wide_4k": true,
+    "wide_cam": false,
+    "wifi_country": ""
+   },
+   "station": {
+    "freq": 5765,
+    "gateway": "REDACTED",
+    "ip": "REDACTED",
+    "key_mgmt": "WPA2-PSK",
+    "netmask": "REDACTED",
+    "server": true,
+    "sig_lev": -51,
+    "ssid": "REDACTED"
+   },
+   "storage": {
+    "connected_storage": [
+     "emmc"
+    ],
+    "cur_storage": "emmc",
+    "is_typec_connected": false,
+    "storage_volume": [
+     {
+      "diskSizeMB": 59699,
+      "disk_mb": 59699,
+      "freeMB": 18877,
+      "free_mb": 18877,
+      "name": "REDACTED",
+      "state": "mounted",
+      "totalMB": 51854,
+      "total_mb": 51854,
+      "used_percent": 68
+     }
+    ]
+   }
+  }
+ },
+ "get_view_state": {
+  "code": 0,
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "get_view_state",
+  "result": {
+   "View": {
+    "ContinuousExposure": {
+     "fps": 0.030812,
+     "lapse_ms": 13903,
+     "state": "cancel"
+    },
+    "cam_id": 0,
+    "gain": 80,
+    "lapse_ms": 14298,
+    "lp_filter": false,
+    "mode": "none",
+    "stage": "ContinuousExposure",
+    "state": "cancel"
+   }
+  }
+ }
+}

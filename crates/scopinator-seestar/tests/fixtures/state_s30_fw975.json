@@ -1,0 +1,351 @@
+{
+ "get_device_state": {
+  "code": 0,
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "get_device_state",
+  "result": {
+   "ap": {
+    "is_5g": true,
+    "passwd": "REDACTED",
+    "ssid": "REDACTED"
+   },
+   "balance_sensor": {
+    "code": 0,
+    "data": {
+     "angle": 60.220814,
+     "x": 0.842712,
+     "y": 0.227124,
+     "z": 0.499427
+    }
+   },
+   "camera": {
+    "chip_size": [
+     1080,
+     1920
+    ],
+    "debayer_pattern": "GR",
+    "fnumber": 5.0,
+    "focal_len": 150.0,
+    "gain": 200,
+    "hpc_num": 48943,
+    "pixel_size_um": 2.9
+   },
+   "compass_sensor": {
+    "code": 0,
+    "data": {
+     "cali": 0,
+     "declination": 1.565753,
+     "direction": 118.563945,
+     "direction_true": 118.563945,
+     "interference": 0,
+     "stable": 0,
+     "x": -27.150002,
+     "y": 52.800003,
+     "z": 93.150002
+    }
+   },
+   "device": {
+    "can_4k_quality": true,
+    "can_comet_post_stack": true,
+    "can_dark_correction": true,
+    "can_dual_capture": false,
+    "can_motion_monitor": false,
+    "can_roi_smart_follow": false,
+    "can_star_mode_sel_cam": false,
+    "can_wide_cam_af": false,
+    "can_wide_cam_roi": false,
+    "can_wide_mosaic_8k": false,
+    "cpuId": "REDACTED",
+    "firmware_ver_int": 2975,
+    "firmware_ver_string": "9.75",
+    "fnumber": 5.0,
+    "focal_len": 150.0,
+    "ios_ver": "Seestar_S30_v0.1 20241209_1120",
+    "is_verified": true,
+    "name": "ASI AIR imager",
+    "product_model": "Seestar S30",
+    "sn": "REDACTED",
+    "user_product_model": "Seestar S30"
+   },
+   "focuser": {
+    "max_step": 2600,
+    "state": "idle",
+    "step": 1253
+   },
+   "location_lon_lat": [
+    0.0,
+    0.0
+   ],
+   "mount": {
+    "close": true,
+    "equ_mode": true,
+    "move_type": "none",
+    "tracking": false
+   },
+   "pi_status": {
+    "battery_capacity": 24,
+    "battery_overtemp": false,
+    "battery_temp": 23,
+    "battery_temp_type": "normal",
+    "charge_online": false,
+    "charger_status": "Discharging",
+    "is_overtemp": false,
+    "is_typec_connected": false,
+    "temp": 43.099998
+   },
+   "second_camera": {
+    "chip_size": [
+     1920,
+     1080
+    ],
+    "debayer_pattern": "RG",
+    "fnumber": 5.0,
+    "focal_len": 14.0,
+    "gain": 200,
+    "hpc_num": 0,
+    "pixel_size_um": 2.7
+   },
+   "setting": {
+    "ae_bri_percent": 50.0,
+    "alpaca_enable": false,
+    "auto_3ppa_calib": true,
+    "auto_af": true,
+    "auto_master_dark": true,
+    "auto_power_off": false,
+    "beep_volume": "close",
+    "calib_location": 2,
+    "can_encrypt": true,
+    "center_xy": [
+     540,
+     960
+    ],
+    "connect_lock": false,
+    "dark_mode": false,
+    "enable_dark_library": false,
+    "exp_ms": {
+     "continuous": 500,
+     "stack_l": 20000
+    },
+    "expert_mode": true,
+    "expt_heater_enable": false,
+    "factory_focal_pos": 1253,
+    "focal_pos": 1253,
+    "frame_calib": true,
+    "guest_mode": false,
+    "heater_enable": false,
+    "isp_exp_ms": -999000.0,
+    "isp_gain": -9990.0,
+    "isp_range_exp_us": [
+     30,
+     1000000
+    ],
+    "isp_range_exp_us_scenery": [
+     30,
+     1000000
+    ],
+    "isp_range_gain": [
+     0,
+     400
+    ],
+    "lang": "en",
+    "manual_exp": false,
+    "mosaic": {
+     "angle": 0.0,
+     "estimated_hours": 0.833333,
+     "scale": 1.0,
+     "star_map_angle": 361.0,
+     "star_map_ratio": 1.0
+    },
+    "password": "REDACTED",
+    "plan_target_af": false,
+    "preview": {
+     "image_transfer_mode": "Raw",
+     "raw_bin2": false
+    },
+    "remote_joined": false,
+    "second_camera": {
+     "ae_bri_percent": 50.0,
+     "exp_ms": {
+      "continuous": 1000,
+      "stack_l": 20000
+     },
+     "factory_focal_pos": -1,
+     "focal_pos": -1,
+     "isp_exp_ms": -999000.0,
+     "isp_gain": -9990.0,
+     "isp_range_exp_us": [
+      30,
+      1000000
+     ],
+     "isp_range_exp_us_scenery": [
+      30,
+      1000000
+     ],
+     "isp_range_gain": [
+      0,
+      400
+     ],
+     "manual_exp": false,
+     "mosaic": {
+      "angle": 0.0,
+      "estimated_hours": 0.833333,
+      "scale": 1.0,
+      "star_map_angle": 361.0,
+      "star_map_ratio": 1.0
+     },
+     "preview": {
+      "image_transfer_mode": "Raw",
+      "raw_bin2": false
+     },
+     "stack": {
+      "airplane_line_removal": false,
+      "auto_lenhance": true,
+      "brightness": 0.0,
+      "capt_num": 50,
+      "capt_type": "stack",
+      "cont_capt": false,
+      "contrast": 0.0,
+      "dbe": false,
+      "dbe_enable": false,
+      "drizzle2x": false,
+      "goto": true,
+      "light_duration_min": -1,
+      "move_sleep_sec": 1,
+      "saturation": 0.0,
+      "save_discrete_frame": false,
+      "save_discrete_ok_frame": true,
+      "star_correction": true,
+      "wide_denoise": true
+     },
+     "stack_dither": {
+      "enable": true,
+      "interval": 5,
+      "pix": 200
+     },
+     "timelapse": {
+      "scenery": {
+       "delay_sec": 1.0,
+       "src_dura_min": -1
+      },
+      "solar_sys": {
+       "delay_sec": 1.0,
+       "src_dura_min": -1
+      }
+     },
+     "wide_cross_offset": [
+      0,
+      0
+     ],
+     "wide_cross_offset_show": [
+      0,
+      0
+     ]
+    },
+    "sky_replay": false,
+    "stack": {
+     "airplane_line_removal": false,
+     "auto_lenhance": true,
+     "brightness": 0.0,
+     "capt_num": 50,
+     "capt_type": "stack",
+     "cont_capt": false,
+     "contrast": 0.0,
+     "dbe": false,
+     "dbe_enable": false,
+     "drizzle2x": false,
+     "goto": true,
+     "light_duration_min": -1,
+     "move_sleep_sec": 1,
+     "saturation": 0.0,
+     "save_discrete_frame": false,
+     "save_discrete_ok_frame": true,
+     "star_correction": true,
+     "wide_denoise": true
+    },
+    "stack_after_goto": false,
+    "stack_dither": {
+     "enable": true,
+     "interval": 5,
+     "pix": 100
+    },
+    "stack_lenhance": false,
+    "temp_unit": "C",
+    "timelapse": {
+     "scenery": {
+      "delay_sec": 1.0,
+      "src_dura_min": -1
+     },
+     "solar_sys": {
+      "delay_sec": 1.0,
+      "src_dura_min": -1
+     }
+    },
+    "typec_mode": "file",
+    "usb_en_eth": false,
+    "user_stack_sim": false,
+    "viewplan_gohome": true,
+    "wide_4k": true,
+    "wide_cam": false,
+    "wifi_country": ""
+   },
+   "station": {
+    "freq": 5765,
+    "gateway": "REDACTED",
+    "ip": "REDACTED",
+    "key_mgmt": "WPA2-PSK",
+    "netmask": "REDACTED",
+    "server": true,
+    "sig_lev": -31,
+    "ssid": "REDACTED"
+   },
+   "storage": {
+    "connected_storage": [
+     "emmc"
+    ],
+    "cur_storage": "emmc",
+    "is_typec_connected": false,
+    "storage_volume": [
+     {
+      "diskSizeMB": 59699,
+      "disk_mb": 59699,
+      "freeMB": 33495,
+      "free_mb": 33495,
+      "name": "REDACTED",
+      "state": "mounted",
+      "totalMB": 51854,
+      "total_mb": 51854,
+      "used_percent": 43
+     }
+    ]
+   }
+  }
+ },
+ "get_view_state": {
+  "code": 0,
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "get_view_state",
+  "result": {
+   "View": {
+    "ContinuousExposure": {
+     "fps": 0.531055,
+     "lapse_ms": 4073,
+     "state": "cancel"
+    },
+    "cam_id": 0,
+    "gain": 200,
+    "lapse_ms": 28273,
+    "lp_filter": false,
+    "mode": "none",
+    "stage": "ContinuousExposure",
+    "state": "cancel",
+    "target_name": "Deneb",
+    "target_ra_dec": [
+     20.690001,
+     45.280003
+    ]
+   }
+  }
+ }
+}

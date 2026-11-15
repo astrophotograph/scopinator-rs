@@ -1,0 +1,33 @@
+{
+ "_note": "get_view_state during a goto, Seestar S30 firmware 9.75, 2026-11-14. Taken from a session log that was cut off after the outer \"stage\" key; its value is completed as \"AutoGoto\" by analogy with the idle replies, where stage names the member that describes it.",
+ "jsonrpc": "2.0",
+ "method": "get_view_state",
+ "code": 0,
+ "id": 1,
+ "result": {
+  "View": {
+   "state": "working",
+   "lapse_ms": 16906,
+   "mode": "star",
+   "cam_id": 0,
+   "target_ra_dec": [20.690001, 45.280003],
+   "target_name": "Deneb",
+   "lp_filter": false,
+   "gain": 200,
+   "AutoGoto": {
+    "state": "working",
+    "lapse_ms": 16649,
+    "count": 1,
+    "hint": false,
+    "ScopeGoto": {
+     "state": "working",
+     "lapse_ms": 13785,
+     "cur_ra_dec": [11.215, -15.507222],
+     "dist_deg": 136.483518
+    },
+    "stage": "ScopeGoto"
+   },
+   "stage": "AutoGoto"
+  }
+ }
+}

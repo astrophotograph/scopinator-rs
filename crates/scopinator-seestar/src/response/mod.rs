@@ -46,23 +46,35 @@ pub struct CommandError {
     pub method: Option<String>,
 }
 
-/// Device state returned by `get_device_state`.
+/// The `result` of `get_device_state`.
+///
+/// Checked against real replies from an S50 on firmware 6.70 and an S30 on
+/// firmware 9.75 (`tests/fixtures/state_*.json`), and the 7.06 corpus. A
+/// keyed request (`{"keys": [...]}`) returns only the sections asked for, so
+/// every section is optional. Sections and members this struct does not name
+/// are still in the raw `result`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceStateResult {
     pub device: Option<DeviceInfo>,
     pub setting: Option<serde_json::Value>,
     pub camera: Option<CameraInfo>,
+    /// The wide camera, on two-camera models only.
+    pub second_camera: Option<CameraInfo>,
     pub focuser: Option<FocuserInfo>,
     pub ap: Option<serde_json::Value>,
     pub station: Option<serde_json::Value>,
     pub storage: Option<serde_json::Value>,
+    /// `{code, data: {x, y, z, angle}}`.
     pub balance_sensor: Option<serde_json::Value>,
+    /// `{code, data: {x, y, z, direction, cali, ...}}`.
     pub compass_sensor: Option<serde_json::Value>,
     pub mount: Option<MountInfo>,
     pub pi_status: Option<PiStatusInfo>,
+    /// Observing site as `[longitude, latitude]` in degrees.
+    pub location_lon_lat: Option<(f64, f64)>,
 }
 
-/// Device identification info.
+/// Device identification info (`device` section).
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceInfo {
     pub name: Option<String>,
@@ -73,20 +85,51 @@ pub struct DeviceInfo {
     pub cpu_id: Option<String>,
     pub product_model: Option<String>,
     pub user_product_model: Option<String>,
+    /// Focal length in millimetres.
     pub focal_len: Option<f64>,
     pub fnumber: Option<f64>,
     pub can_star_mode_sel_cam: Option<bool>,
     pub can_wide_cam_af: Option<bool>,
     pub can_wide_cam_roi: Option<bool>,
+    /// Device activation, not verification of a connection.
     pub is_verified: Option<bool>,
+    /// Hardware / OS image identifier (seen on firmware 9.75).
+    pub ios_ver: Option<String>,
+    /// Every other member, by wire name. Newer firmware adds capability
+    /// flags here (`can_4k_quality`, `can_dual_capture`, ... on 9.75); read
+    /// them with [`DeviceInfo::capability`].
+    #[serde(flatten)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-/// Camera sensor info.
+impl DeviceInfo {
+    /// A `can_*` capability flag by its wire name, whether it is one of the
+    /// named fields or one a newer firmware added.
+    pub fn capability(&self, name: &str) -> Option<bool> {
+        match name {
+            "can_star_mode_sel_cam" => self.can_star_mode_sel_cam,
+            "can_wide_cam_af" => self.can_wide_cam_af,
+            "can_wide_cam_roi" => self.can_wide_cam_roi,
+            _ => self.other.get(name).and_then(|v| v.as_bool()),
+        }
+    }
+}
+
+/// Camera sensor info (`camera` and `second_camera` sections).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CameraInfo {
-    pub chip_size: Option<(f64, f64)>,
+    /// Sensor size as (width, height) in pixels. The main sensor is
+    /// portrait (1080 x 1920); an S30's wide sensor is 1920 x 1080.
+    pub chip_size: Option<(u32, u32)>,
     pub pixel_size_um: Option<f64>,
+    /// e.g. `GR`, `RG`.
     pub debayer_pattern: Option<String>,
+    /// Hot-pixel count.
+    pub hpc_num: Option<i64>,
+    /// Focal length in millimetres (firmware 9.75).
+    pub focal_len: Option<f64>,
+    pub fnumber: Option<f64>,
+    pub gain: Option<i32>,
 }
 
 /// Focuser info.
@@ -100,40 +143,76 @@ pub struct FocuserInfo {
 /// Mount info.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MountInfo {
+    /// What is moving the mount: `none`, `ScopeGoto`, ...
     pub move_type: Option<String>,
     pub tracking: Option<bool>,
     pub equ_mode: Option<bool>,
+    /// True when the arm is closed (parked).
     pub close: Option<bool>,
 }
 
 /// Pi status info (temperatures, battery, charge).
 #[derive(Debug, Clone, Deserialize)]
 pub struct PiStatusInfo {
+    /// CPU temperature in degrees Celsius.
     pub temp: Option<f64>,
     pub battery_capacity: Option<i32>,
-    pub charger_status: Option<String>,
+    pub charger_status: Option<crate::event::ChargerStatus>,
     pub charge_online: Option<bool>,
+    /// Battery temperature in degrees Celsius.
+    pub battery_temp: Option<f64>,
+    /// e.g. `normal`.
+    pub battery_temp_type: Option<String>,
+    pub battery_overtemp: Option<bool>,
+    pub is_overtemp: Option<bool>,
+    pub is_typec_connected: Option<bool>,
 }
 
-/// View state returned by `get_view_state`.
+/// View state returned by `get_view_state`. It is `{}` until a view has run.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ViewStateResult {
+    /// The main camera's view.
     #[serde(rename = "View")]
     pub view: Option<ViewInfo>,
+    /// The wide camera's view, as reported by its own process (port 4702).
+    #[serde(rename = "SecondView")]
+    pub second_view: Option<ViewInfo>,
 }
 
 /// View info within the view state.
+///
+/// The stage that is running (or ran last) is named by `stage` and described
+/// by a member of that name: `ContinuousExposure`, or `AutoGoto` with a
+/// nested `ScopeGoto` during a goto. Other stages are in the raw `result`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ViewInfo {
-    pub state: Option<String>,
+    pub state: Option<crate::event::EventState>,
+    #[serde(default)]
+    pub lapse_ms: i64,
+    /// `star`, `scenery`, `sun`, ... or `none` after the view ended.
     pub mode: Option<String>,
+    /// 0 for the main camera, 1 for the wide camera.
+    pub cam_id: Option<i32>,
+    /// Target as (RA hours, Dec degrees), when the view has one.
+    pub target_ra_dec: Option<(f64, f64)>,
+    pub target_name: Option<String>,
+    pub lp_filter: Option<bool>,
     pub gain: Option<i32>,
+    /// Name of the current stage.
+    pub stage: Option<String>,
     #[serde(rename = "ContinuousExposure")]
     pub continuous_exposure: Option<serde_json::Value>,
+    #[serde(rename = "AutoGoto")]
+    pub auto_goto: Option<serde_json::Value>,
 }
 
 /// What the device says about itself in `get_device_state`: identity, optics
-/// and sensor. The client fills this in at connect and keeps it up to date
+/// and sensor.
+///
+/// This is a flattened, forgiving view of the same reply that
+/// [`DeviceStateResult`] types strictly: it is built from the raw JSON member
+/// by member, so one member of an unexpected type cannot hide the rest, and
+/// it accumulates across keyed (partial) replies. The client fills this in at connect and keeps it up to date
 /// from every later `get_device_state` reply; see
 /// [`SeestarClient::device_info`](crate::client::SeestarClient::device_info).
 ///
