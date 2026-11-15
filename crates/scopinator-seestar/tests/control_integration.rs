@@ -453,9 +453,10 @@ async fn send_command_times_out_when_unanswered() {
 // Forge task "Add timeout interplay tests with paused time", case 2.
 // While the control connection is down (reconnect backoff is 1 s), a caller
 // whose response timeout (500 ms) is shorter than the backoff gets
-// `Timeout`, not a hang and not `Disconnected`. Pinned side effect: the
-// request stays queued and is still written to the telescope after the
-// reconnect, even though the caller already gave up.
+// `Timeout`, not a hang and not `Disconnected`. The abandoned request is then
+// dropped: it must not be written to the telescope after the reconnect, when
+// nobody is waiting for it any more. (It used to be; a goto that "timed out"
+// could fire later.)
 #[tokio::test(start_paused = true)]
 async fn response_timeout_fires_during_reconnect_window() {
     let fake = FakeSeestar::start().await;
@@ -503,22 +504,31 @@ async fn response_timeout_fires_during_reconnect_window() {
     );
     assert!(start.elapsed() < Duration::from_secs(1));
 
-    // After the reconnect, the abandoned request is still delivered.
-    let mut delivered = false;
-    for _ in 0..100 {
-        if fake.connection_count() >= 2
-            && fake
-                .received()
-                .iter()
-                .any(|m| m.get("method").and_then(Value::as_str) == Some("get_device_state"))
-        {
-            delivered = true;
+    // After the reconnect, the abandoned request is not delivered.
+    let mut reconnected = false;
+    for _ in 0..200 {
+        if fake.connection_count() >= 2 && client.is_control_connected() {
+            reconnected = true;
             break;
         }
         tokio::time::advance(Duration::from_millis(50)).await;
         tokio::task::yield_now().await;
     }
-    assert!(delivered, "stale request was not delivered after reconnect");
+    assert!(reconnected, "client did not reconnect");
+    // Give the new connection's writer ample opportunity to drain the queue
+    // (virtual time is paused, so step it and let real loopback IO happen).
+    for _ in 0..40 {
+        tokio::time::advance(Duration::from_millis(5)).await;
+        std::thread::sleep(Duration::from_millis(2));
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !fake
+            .received()
+            .iter()
+            .any(|m| m.get("method").and_then(Value::as_str) == Some("get_device_state")),
+        "abandoned request was sent to the telescope after the reconnect"
+    );
     client.shutdown().await;
 }
 
@@ -1869,6 +1879,247 @@ async fn clock_sync_with_sends_the_callers_time() {
              "time_zone": "America/Chicago"},
             "verify"
         ])
+    );
+    client.shutdown().await;
+}
+
+// ============================================================================
+// Reconnect races (Forge task "Add reconnect race integration tests"). The
+// invariant: a command sent at any point around a disconnect resolves, with a
+// response, `Disconnected` or `Timeout`. It is never left pending forever,
+// and no response is delivered to the wrong caller.
+// ============================================================================
+
+/// Every fake reply echoes the request id in `result.echo_id`; a response
+/// routed to the wrong caller would carry a different id than its envelope.
+fn assert_own_response(resp: &scopinator_seestar::response::CommandResponse) {
+    let echoed = resp.result.as_ref().and_then(|r| r["echo_id"].as_u64());
+    assert_eq!(echoed, Some(resp.id), "response crossed over: {resp:?}");
+}
+
+async fn wait_for_reconnect(fake: &FakeSeestar, client: &SeestarClient, connections: usize) {
+    for _ in 0..100 {
+        if fake.connection_count() >= connections && client.is_control_connected() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "no reconnect: {} connections, connected={}",
+        fake.connection_count(),
+        client.is_control_connected()
+    );
+}
+
+// Scenario 1: a command sent while the link is down waits in the queue and is
+// answered on the next connection.
+#[tokio::test]
+async fn command_sent_during_the_disconnect_window_is_answered_after_reconnect() {
+    let fake = FakeSeestar::start().await;
+    let client = connect(&fake).await;
+
+    fake.drop_connection();
+    // Wait until the client has noticed, so the command is sent with no
+    // connection at all.
+    for _ in 0..100 {
+        if !client.is_control_connected() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!client.is_control_connected());
+
+    let started = std::time::Instant::now();
+    let resp = client
+        .send_command(Command::GetViewState)
+        .await
+        .expect("answered on the next connection");
+    assert_own_response(&resp);
+    assert!(fake.connection_count() >= 2);
+    // It waited for the reconnect (about 1 to 2 s), not for a timeout.
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    client.shutdown().await;
+}
+
+// Scenario 2: several commands are on the wire, unanswered, when the socket
+// dies. Every one of them is failed with Disconnected at once.
+#[tokio::test]
+async fn commands_in_flight_when_the_socket_dies_all_fail_promptly() {
+    let fake = FakeSeestar::start().await;
+    fake.silent_on("get_view_state");
+    let client = std::sync::Arc::new(connect(&fake).await);
+
+    let mut callers = Vec::new();
+    for _ in 0..8 {
+        let client = std::sync::Arc::clone(&client);
+        callers.push(tokio::spawn(async move {
+            client.send_command(Command::GetViewState).await
+        }));
+    }
+    // Let all eight reach the fake before the connection is cut.
+    for _ in 0..100 {
+        let seen = fake
+            .received()
+            .iter()
+            .filter(|m| m["method"] == "get_view_state")
+            .count();
+        if seen == 8 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    fake.drop_connection();
+
+    for caller in callers {
+        let result = tokio::time::timeout(Duration::from_secs(5), caller)
+            .await
+            .expect("caller left pending after the disconnect")
+            .unwrap();
+        assert!(
+            matches!(result, Err(SeestarError::Disconnected)),
+            "got {result:?}"
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    client.shutdown().await;
+}
+
+// Scenario 3: many senders keep sending while the connection is dropped
+// twice. Every call resolves, successes carry their own response, and the
+// client works afterwards.
+#[tokio::test]
+async fn concurrent_senders_across_reconnects_all_resolve_without_crosstalk() {
+    let fake = FakeSeestar::start().await;
+    let client = std::sync::Arc::new(
+        SeestarClient::connect_with_ports_and_config(
+            LOCALHOST,
+            fake.control_addr,
+            fake.imaging_addr,
+            SeestarConfig {
+                response_timeout: Some(Duration::from_secs(8)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("client spawns"),
+    );
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .expect("connected");
+
+    let mut senders = Vec::new();
+    for worker in 0..12u64 {
+        let client = std::sync::Arc::clone(&client);
+        senders.push(tokio::spawn(async move {
+            let (mut ok, mut failed) = (0usize, 0usize);
+            for round in 0..25u64 {
+                match client.send_command(Command::GetViewState).await {
+                    Ok(resp) => {
+                        assert_own_response(&resp);
+                        ok += 1;
+                    }
+                    Err(SeestarError::Disconnected | SeestarError::Timeout(_)) => failed += 1,
+                    Err(other) => panic!("worker {worker} round {round}: {other:?}"),
+                }
+                tokio::time::sleep(Duration::from_millis(20 + worker)).await;
+            }
+            (ok, failed)
+        }));
+    }
+
+    // Two drops while the senders are busy.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    fake.drop_connection();
+    wait_for_reconnect(&fake, &client, 2).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    fake.drop_connection();
+    wait_for_reconnect(&fake, &client, 3).await;
+
+    let (mut ok, mut failed) = (0usize, 0usize);
+    for sender in senders {
+        let (o, f) = tokio::time::timeout(Duration::from_secs(30), sender)
+            .await
+            .expect("a sender never finished: some call was left pending")
+            .unwrap();
+        ok += o;
+        failed += f;
+    }
+    assert_eq!(ok + failed, 12 * 25, "every call resolved");
+    assert!(ok > 0, "nothing succeeded");
+
+    let resp = client
+        .send_command(Command::GetViewState)
+        .await
+        .expect("client still works");
+    assert_own_response(&resp);
+    client.shutdown().await;
+}
+
+// Scenario 4: the failed-handshake branch. A command queued while the
+// handshake keeps failing ends in a bounded Timeout, and once the device
+// accepts the handshake the client recovers by itself.
+#[tokio::test]
+async fn failed_handshake_bounds_queued_commands_and_recovers() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+    fake.respond_error("verify_client", 207, "fail to operate");
+    let client = connect_with(
+        &fake,
+        SeestarConfig {
+            interop_key: Some(test_key()),
+            response_timeout: Some(Duration::from_millis(400)),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let err = client
+        .send_command(Command::GetViewState)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SeestarError::Timeout(_)), "got {err:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(!client.is_control_connected());
+
+    // The device starts accepting the signature.
+    fake.respond_ok("verify_client", json!(0));
+    for _ in 0..200 {
+        if client.is_control_connected() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(client.verification(), Some(Verification::Handshake));
+    // The command that timed out was dropped from the queue with its caller,
+    // not replayed: the first command on the new connection is this one.
+    let resp = client
+        .send_command(Command::TestConnection)
+        .await
+        .expect("command after recovery");
+    assert_own_response(&resp);
+    let replayed = fake
+        .received()
+        .iter()
+        .filter(|m| m["method"] == "get_view_state")
+        .count();
+    assert_eq!(
+        replayed, 0,
+        "a command whose caller gave up was sent to the device after the reconnect"
     );
     client.shutdown().await;
 }

@@ -473,6 +473,14 @@ async fn writer_task(
             // Client request
             Some(req) = req_rx.recv() => {
                 drop(req_rx); // release lock before doing work
+                // The caller may have given up (timed out or been dropped)
+                // while this waited in the queue for a connection. Sending it
+                // now would act on the telescope long after anyone asked:
+                // a goto that "timed out" must not fire after a reconnect.
+                if req.response_tx.is_closed() {
+                    debug!(method = req.command.method(), "dropping command whose caller gave up");
+                    continue;
+                }
                 let method = req.command.method();
                 let id = state.pending.register(req.response_tx);
                 let line = state.profile(mode).line(&req.command, id);
