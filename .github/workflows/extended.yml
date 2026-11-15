@@ -74,7 +74,10 @@ jobs:
           mkdir -p "corpus/${{ matrix.target }}"
           SEEDS=""
           if [ -d "seeds/${{ matrix.target }}" ]; then SEEDS="seeds/${{ matrix.target }}"; fi
-          cargo +nightly fuzz run ${{ matrix.target }} "corpus/${{ matrix.target }}" $SEEDS -- -max_total_time=60
+          # The prebuilt cargo-fuzz is a musl binary and defaults to a musl
+          # target, which the sanitizer cannot build for; name the target.
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
+            "corpus/${{ matrix.target }}" $SEEDS -- -max_total_time=60
       - name: upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
