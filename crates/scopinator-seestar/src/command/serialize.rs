@@ -160,7 +160,6 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::StartScanPlanet
         | Command::RestartViewPlan
         | Command::ClearViewPlan
-        | Command::GetViewPlanStackResult
         | Command::PiStationState => None,
 
         // Mount mode switch: scope_park with equ_mode param

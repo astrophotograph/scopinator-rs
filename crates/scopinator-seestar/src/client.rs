@@ -409,11 +409,11 @@ impl SeestarClient {
 
     /// Stop the running plan with `clear_view_plan`.
     ///
-    /// This also **removes the plan the device holds**: on firmware 6.70 the
-    /// device reports no plan afterwards (observed), and firmware 9.75
-    /// deletes its stored plan file (per the protocol specification, which
-    /// says 9.31 keeps the plan). Use
-    /// [`stop_view_plan`](Self::stop_view_plan) to stop and keep the plan.
+    /// This also **removes the plan the device holds**. On firmware 6.70 and
+    /// 9.75 the device reports no plan afterwards, and on 9.75 a restart
+    /// then fails with 207 (both observed). The protocol specification says
+    /// 9.31 keeps the plan. Use [`stop_view_plan`](Self::stop_view_plan) to
+    /// stop and keep the plan.
     pub async fn clear_view_plan(&self) -> Result<serde_json::Value, SeestarError> {
         self.send_and_validate(Command::ClearViewPlan).await
     }

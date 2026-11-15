@@ -243,13 +243,20 @@ So the wide camera can be driven by a second verified control connection to 4702
 4804, with its events also visible on 4700. Selecting it through 4700 (`selected_cam`, `wide_cam`)
 was not tried.
 
-### Held plan
+### View plan
 
-`iscope_get_app_state` on this device returned a `ViewPlan` member holding a plan saved from the
-official app: `state` cancel, and each target with `alias_name`, `target_name`, `target_ra_dec`,
-`start_min`, `duration_min`, `lp_filter`, `skip`, `target_id`, and its own `state`, `code`,
-`error` and `lapse_ms`. There was no `camera_mode` member on the targets. No plan was set or
-cleared on this device, because that would have replaced or deleted the saved one.
+The device held a plan saved from the official app. `iscope_get_app_state` returned it under
+`ViewPlan`: `state` cancel, and each target with `alias_name`, `target_name`, `target_ra_dec`,
+`start_min`, `duration_min`, `lp_filter`, `skip`, `target_id`, and its own `state`, `code`, `error`
+and `lapse_ms`; no `camera_mode`. With the owner's agreement it was replaced:
+
+| Step | Result |
+|---|---|
+| `set_view_plan` with a new `plan_name` and one `tele` target at the current local minute | Code 0; the held plan was replaced. Events as on 6.70: `Setting`, `ViewPlan` working, `Target` working, `View` working, `AutoGoto`, `ScopeGoto`; the mount moved |
+| `stop_func {"name": "ViewPlan"}` | Code 0; goto cancelled, view ended, `Target` cancel, `ViewPlan` cancel; **plan kept**, target state `fail` |
+| `clear_view_plan` | Code 0; `iscope_get_app_state` then had no `ViewPlan` member |
+| `set_view_plan` with no params (restart the held plan) afterwards | 207 "fail to operate": nothing is held, so the clear did delete the plan |
+| `get_view_plan_stack_result` on 4700 and on 4702 | 103 "method not found" on both (also 103 on the S50, firmware 6.70) |
 
 ## Not yet observed
 
@@ -262,5 +269,4 @@ cleared on this device, because that would have replaced or deleted the saved on
 - A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
 - `Alert` 429 on exceeding the connection limit.
 - Plate solving, stacking and annotation results (the device was indoors).
-- `set_view_plan` and `clear_view_plan` on firmware 9.75, where clearing is said to delete the
-  stored plan; a plan running to completion; `get_view_plan_stack_result` with output.
+- A plan running to completion, and a restart of a held plan that exists.
