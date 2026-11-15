@@ -40,6 +40,42 @@ pub fn serialize_command_marked(cmd: &Command, id: u64, marker: bool) -> Value {
     msg
 }
 
+/// Encode a message as one `\r\n`-terminated wire line.
+///
+/// Identical to `serde_json`'s compact form except that, when `params` is an
+/// object carrying the `verify` marker, the marker is written as its **last**
+/// member. The firmware handles `set_setting` members in wire order and stops
+/// at the marker (it is an unknown member there), so a marker written before a
+/// setting would silently prevent that setting from being applied.
+pub fn wire_line(msg: &Value) -> String {
+    let marked_params = msg
+        .get("params")
+        .and_then(Value::as_object)
+        .filter(|p| p.contains_key("verify"));
+    let (Some(top), Some(params)) = (msg.as_object(), marked_params) else {
+        return format!("{msg}\r\n");
+    };
+
+    let member = |key: &str, value: &Value| format!("{}:{value}", Value::from(key));
+    let params_members: Vec<String> = params
+        .iter()
+        .filter(|(key, _)| key.as_str() != "verify")
+        .chain(params.get_key_value("verify"))
+        .map(|(key, value)| member(key, value))
+        .collect();
+    let members: Vec<String> = top
+        .iter()
+        .map(|(key, value)| {
+            if key == "params" {
+                format!("\"params\":{{{}}}", params_members.join(","))
+            } else {
+                member(key, value)
+            }
+        })
+        .collect();
+    format!("{{{}}}\r\n", members.join(","))
+}
+
 /// Extract the params value for a command.
 fn command_params(cmd: &Command) -> Option<Value> {
     match cmd {
@@ -178,6 +214,36 @@ mod tests {
             unmarked["params"]["target_ra_dec"],
             captured["params"]["target_ra_dec"]
         );
+    }
+
+    #[test]
+    fn wire_line_writes_the_marker_last() {
+        // `viewplan_gohome` and `wide_cam` sort after `verify`; the marker
+        // must still come last or the firmware never reaches them.
+        let msg = json!({
+            "id": 7,
+            "method": "set_setting",
+            "params": {"auto_af": true, "verify": true, "viewplan_gohome": false, "wide_cam": true},
+        });
+        let line = wire_line(&msg);
+        assert_eq!(
+            line,
+            "{\"id\":7,\"method\":\"set_setting\",\"params\":\
+             {\"auto_af\":true,\"viewplan_gohome\":false,\"wide_cam\":true,\"verify\":true}}\r\n"
+        );
+        // Still the same JSON value.
+        assert_eq!(serde_json::from_str::<Value>(line.trim()).unwrap(), msg);
+    }
+
+    #[test]
+    fn wire_line_is_plain_compact_json_otherwise() {
+        for msg in [
+            json!({"id": 1, "method": "pi_get_time"}),
+            json!({"id": 1, "method": "pi_get_time", "params": ["verify"]}),
+            json!({"id": 2, "method": "set_setting", "params": {"a \"q\"": [1, {"verify": 1}]}}),
+        ] {
+            assert_eq!(wire_line(&msg), format!("{msg}\r\n"));
+        }
     }
 
     #[test]

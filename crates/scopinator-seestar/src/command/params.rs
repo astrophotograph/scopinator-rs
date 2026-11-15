@@ -214,7 +214,20 @@ pub struct PolarAlignParams {
     pub dec_pos_index: i32,
 }
 
-/// Parameters for `set_setting`.
+/// Parameters for `set_setting`. Every member is optional; an omitted member
+/// is left unchanged.
+///
+/// Prefer [`SeestarClient::set_setting`](crate::client::SeestarClient::set_setting)
+/// to sending [`Command::SetSetting`](crate::command::Command::SetSetting)
+/// directly. The firmware applies members in the order they appear on the
+/// wire, stops at the first one it rejects and does not roll back, and it
+/// treats the `verify` marker as an unknown member (code 109). On a connection
+/// that needs the marker, a raw `set_setting` therefore always reports 109,
+/// even when every setting was applied, and a genuine unknown-member 109
+/// cannot be told from the marker's without reading the settings back.
+///
+/// Firmware notes: `expert_mode` is rejected as unknown (109) from firmware
+/// 9.75. `stack_lenhance` moves the filter wheel (true selects the LP filter).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SettingParams {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -252,6 +265,11 @@ pub struct SettingParams {
     pub plan_target_af: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub viewplan_gohome: Option<bool>,
+    /// Any other `set_setting` member, by its wire name. The firmware knows
+    /// far more settings than are typed here (see the seestar-spec schema
+    /// `SetSettingParams`); this carries them without a crate release.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Parameters for `set_stack_setting`.

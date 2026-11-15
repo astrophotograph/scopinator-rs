@@ -139,10 +139,11 @@ use std::time::Duration;
 
 use common::{FakeSeestar, device_state_response, load_corpus};
 use scopinator_seestar::command::Command;
+use scopinator_seestar::command::params::SettingParams;
 use scopinator_seestar::error::SeestarError;
 use scopinator_seestar::event::SeestarEvent;
 use scopinator_seestar::protocol::json_rpc;
-use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig, Verification};
+use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig, SettingOutcome, Verification};
 use serde_json::{Value, json};
 
 const LOCALHOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -1290,6 +1291,156 @@ async fn goto_sends_iscope_start_view_with_target() {
             "lp_filter": false,
             "verify": true,
         })
+    );
+    client.shutdown().await;
+}
+
+// ============================================================================
+// set_setting (Forge task "Make set_setting correct under the verify marker").
+// The fake reproduces what an S50 on firmware 6.70 did on 2026-11-14: members
+// applied in wire order, no rollback, and the verify marker itself rejected
+// with 109 — on a verified socket too.
+// ============================================================================
+
+fn setting_store() -> Value {
+    json!({
+        "auto_af": false,
+        "stack_after_goto": false,
+        "viewplan_gohome": true,
+        "exp_ms": {"stack_l": 10000, "continuous": 500},
+    })
+}
+
+// The firmware behaviour the client has to cope with, pinned on the fake.
+#[tokio::test]
+async fn raw_set_setting_under_the_marker_reports_109_even_when_applied() {
+    let fake = FakeSeestar::start().await;
+    fake.require_verify_marker();
+    fake.emulate_settings(setting_store());
+    let client = connect(&fake).await;
+
+    // `viewplan_gohome` sorts after `verify`. Written in sorted order the
+    // firmware would stop at the marker and never apply it; the client must
+    // write the marker last.
+    let resp = client
+        .send_command(Command::SetSetting(SettingParams {
+            viewplan_gohome: Some(false),
+            ..Default::default()
+        }))
+        .await
+        .expect("reply");
+    assert_eq!(resp.code, 109, "the marker always draws 109");
+    assert_eq!(fake.setting("viewplan_gohome"), Some(json!(false)));
+
+    let line = fake.raw_lines().pop().unwrap();
+    assert!(
+        line.contains(r#""params":{"viewplan_gohome":false,"verify":true}"#),
+        "marker must be the last member: {line}"
+    );
+    client.shutdown().await;
+}
+
+// Marker mode through the public API: one request per setting, each 109
+// resolved by a readback.
+#[tokio::test]
+async fn set_setting_in_marker_mode_confirms_by_readback() {
+    let fake = FakeSeestar::start().await;
+    fake.require_verify_marker();
+    fake.emulate_settings(setting_store());
+    let client = connect(&fake).await;
+    assert_eq!(client.verification(), Some(Verification::Marker));
+
+    let mut params = SettingParams {
+        stack_after_goto: Some(true),
+        viewplan_gohome: Some(false),
+        exp_ms: Some(json!({"stack_l": 20000})),
+        ..Default::default()
+    };
+    // A name this firmware does not know: indistinguishable from the marker's
+    // 109 except that the readback cannot confirm it.
+    params.extra.insert("no_such_setting".into(), json!(1));
+
+    let results = client.set_setting(params).await.expect("set_setting");
+    let outcomes: Vec<(&str, &SettingOutcome)> = results
+        .iter()
+        .map(|r| (r.key.as_str(), &r.outcome))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("exp_ms", &SettingOutcome::Applied),
+            ("no_such_setting", &SettingOutcome::Unconfirmed),
+            ("stack_after_goto", &SettingOutcome::Applied),
+            ("viewplan_gohome", &SettingOutcome::Applied),
+        ]
+    );
+    assert_eq!(fake.setting("stack_after_goto"), Some(json!(true)));
+    assert_eq!(fake.setting("viewplan_gohome"), Some(json!(false)));
+    assert_eq!(fake.setting("auto_af"), Some(json!(false)), "untouched");
+
+    // Four single-member requests, then one readback.
+    let received = fake.received();
+    let sets: Vec<&Value> = received
+        .iter()
+        .filter(|m| m["method"] == "set_setting")
+        .collect();
+    assert_eq!(sets.len(), 4);
+    for set in sets {
+        assert_eq!(set["params"].as_object().unwrap().len(), 2, "{set}");
+    }
+    assert_eq!(received.last().unwrap()["method"], "get_setting");
+    client.shutdown().await;
+}
+
+// With the handshake there is no marker, so set_setting is one request with a
+// truthful code 0.
+#[tokio::test]
+async fn set_setting_on_a_verified_socket_is_one_plain_request() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+    fake.respond_ok("verify_client", json!(0));
+    fake.emulate_settings(setting_store());
+    let client = connect_with(
+        &fake,
+        SeestarConfig {
+            interop_key: Some(test_key()),
+            response_timeout: None,
+        },
+    )
+    .await;
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .expect("connected");
+
+    let results = client
+        .set_setting(SettingParams {
+            stack_after_goto: Some(true),
+            viewplan_gohome: Some(false),
+            ..Default::default()
+        })
+        .await
+        .expect("set_setting");
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.is_applied()));
+    assert_eq!(fake.setting("stack_after_goto"), Some(json!(true)));
+    assert_eq!(fake.setting("viewplan_gohome"), Some(json!(false)));
+
+    let received = fake.received();
+    let last = received.last().unwrap();
+    assert_eq!(last["method"], "set_setting", "no readback needed");
+    assert_eq!(
+        last["params"],
+        json!({"stack_after_goto": true, "viewplan_gohome": false})
+    );
+
+    // A genuine rejection is an error, not a silent success.
+    let mut bad = SettingParams::default();
+    bad.extra.insert("no_such_setting".into(), json!(1));
+    let err = client.set_setting(bad).await.unwrap_err();
+    assert!(
+        matches!(err, SeestarError::CommandFailed { code: 109, .. }),
+        "got {err:?}"
     );
     client.shutdown().await;
 }

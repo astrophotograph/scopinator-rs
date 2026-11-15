@@ -220,6 +220,9 @@ struct Shared {
     /// When set, requests without a `verify` marker are consumed silently
     /// (all but `get_verify_str`), like an unverified socket on firmware 6.70.
     marker_gate: AtomicBool,
+    /// When `Some`, `set_setting` / `get_setting` are emulated against this
+    /// store the way firmware 6.70 handles them (see `emulate_settings`).
+    settings: Mutex<Option<serde_json::Map<String, Value>>>,
     /// Count of accepted control connections (for reconnect assertions).
     connections: AtomicUsize,
     /// Currently-established control connections: accepted minus ended.
@@ -258,6 +261,7 @@ impl FakeSeestar {
             received: Mutex::new(Vec::new()),
             raw_lines: Mutex::new(Vec::new()),
             marker_gate: AtomicBool::new(false),
+            settings: Mutex::new(None),
             connections: AtomicUsize::new(0),
             active_control: AtomicIsize::new(0),
             actions,
@@ -360,6 +364,30 @@ impl FakeSeestar {
         self
     }
 
+    /// Emulate `set_setting` / `get_setting` as observed on an S50, firmware
+    /// 6.70 (2026-11-14): params must be an object (else 107); members are
+    /// applied in **wire order** with no rollback; the `verify` marker and
+    /// any name not in `known` are unknown members and stop processing with
+    /// 109; otherwise the reply is code 0, result 0. `get_setting` returns
+    /// the stored values. `initial` seeds the store.
+    pub fn emulate_settings(&self, initial: Value) -> &Self {
+        let Value::Object(map) = initial else {
+            panic!("emulate_settings needs an object");
+        };
+        *self.shared.settings.lock().unwrap() = Some(map);
+        self
+    }
+
+    /// Current value of an emulated setting.
+    pub fn setting(&self, key: &str) -> Option<Value> {
+        self.shared
+            .settings
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|m| m.get(key).cloned())
+    }
+
     /// Make `method` be received but never answered (so the caller times out).
     pub fn silent_on(&self, method: &str) -> &Self {
         self.shared
@@ -447,6 +475,41 @@ fn has_verify_marker(params: Option<&Value>) -> bool {
     }
 }
 
+/// Handle `set_setting` / `get_setting` against the emulated store, if enabled.
+/// `raw` is the request line as received, needed for the members' wire order
+/// (a parsed `Value` object is sorted by key).
+fn emulate_setting_call(
+    shared: &Shared,
+    method: &str,
+    params: Option<&Value>,
+    raw: &str,
+) -> Option<Value> {
+    let mut guard = shared.settings.lock().unwrap();
+    let store = guard.as_mut()?;
+    let error = |code: i32, error: &str| json!({"jsonrpc": "2.0", "method": method, "code": code, "error": error, "id": 0});
+    match method {
+        "get_setting" => Some(json!({
+            "jsonrpc": "2.0", "method": method, "code": 0,
+            "result": Value::Object(store.clone()), "id": 0,
+        })),
+        "set_setting" => {
+            let Some(Value::Object(members)) = params else {
+                return Some(error(107, "expected object param"));
+            };
+            let mut ordered: Vec<(&String, &Value)> = members.iter().collect();
+            ordered.sort_by_key(|(key, _)| raw.find(&format!("\"{key}\":")));
+            for (key, value) in ordered {
+                if key == "verify" || !store.contains_key(key) {
+                    return Some(error(109, "unexpected param"));
+                }
+                store.insert(key.clone(), value.clone());
+            }
+            Some(json!({"jsonrpc": "2.0", "method": method, "code": 0, "result": 0, "id": 0}))
+        }
+        _ => None,
+    }
+}
+
 async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
     let _ = stream.set_nodelay(true);
     let (read_half, mut write_half) = tokio::io::split(stream);
@@ -482,6 +545,17 @@ async fn serve_control(stream: TcpStream, shared: Arc<Shared>) {
                             && method != "get_verify_str"
                             && !has_verify_marker(msg_params.as_ref())
                         {
+                            continue;
+                        }
+                        if let Some(reply) =
+                            emulate_setting_call(&shared, &method, msg_params.as_ref(), trimmed)
+                        {
+                            let mut reply = reply;
+                            reply["id"] = id;
+                            let out = format!("{reply}\r\n");
+                            if write_half.write_all(out.as_bytes()).await.is_err() {
+                                return;
+                            }
                             continue;
                         }
                         // Heartbeats (pi_get_time id:1) are answered generically.

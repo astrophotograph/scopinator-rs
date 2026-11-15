@@ -8,8 +8,8 @@ use tracing::{debug, info};
 
 use crate::auth::{InteropKey, Verification};
 use crate::command::params::{
-    Direction, PolarAlignParams, SetTimeParams, SetUserLocationParams, SpeedMoveParams,
-    StartViewParams,
+    Direction, PolarAlignParams, SetTimeParams, SetUserLocationParams, SettingParams,
+    SpeedMoveParams, StartViewParams,
 };
 use crate::command::{Command, ImagingCommand};
 use crate::connection::control::{self, ClientRequest, Link, LinkState};
@@ -34,6 +34,63 @@ pub struct SeestarConfig {
     /// How long [`SeestarClient::send_command`] waits for a response before
     /// returning [`SeestarError::Timeout`]. Defaults to [`DEFAULT_RESPONSE_TIMEOUT`].
     pub response_timeout: Option<Duration>,
+}
+
+/// Device error code for an unexpected (unknown) parameter.
+const CODE_UNEXPECTED_PARAM: i32 = 109;
+
+/// What happened to one setting sent with [`SeestarClient::set_setting`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingOutcome {
+    /// The device accepted it, or the value read back afterwards matches.
+    Applied,
+    /// The device answered 109 "unexpected param" and the value could not be
+    /// confirmed by reading the settings back: either `get_setting` does not
+    /// report this setting, or it reports a different value.
+    ///
+    /// This only arises on a connection that needs the `verify` marker, where
+    /// the marker itself draws a 109 on every `set_setting`. The setting may
+    /// have been applied, or its name may be unknown to this firmware.
+    Unconfirmed,
+    /// The device rejected it with this error.
+    Rejected { code: i32, message: String },
+}
+
+/// The outcome for one member of a [`SeestarClient::set_setting`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingResult {
+    /// The setting's wire name, e.g. `stack_after_goto`.
+    pub key: String,
+    pub outcome: SettingOutcome,
+}
+
+impl SettingResult {
+    pub fn is_applied(&self) -> bool {
+        self.outcome == SettingOutcome::Applied
+    }
+}
+
+/// True if `actual` (a value read back from the device) agrees with
+/// `expected` (the value that was set). Objects need only contain the expected
+/// members; numbers compare by value; a boolean matches a number by
+/// truthiness, since the firmware takes and reports either for a flag.
+fn setting_matches(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    let flag = |v: &Value| match v {
+        Value::Bool(b) => Some(*b),
+        Value::Number(n) => n.as_f64().map(|f| f != 0.0),
+        _ => None,
+    };
+    match (actual, expected) {
+        (Value::Object(a), Value::Object(e)) => e
+            .iter()
+            .all(|(k, ev)| a.get(k).is_some_and(|av| setting_matches(av, ev))),
+        (Value::Number(a), Value::Number(e)) => a.as_f64() == e.as_f64(),
+        (Value::Bool(_), Value::Number(_)) | (Value::Number(_), Value::Bool(_)) => {
+            flag(actual) == flag(expected)
+        }
+        _ => actual == expected,
+    }
 }
 
 /// Default command response timeout.
@@ -290,6 +347,88 @@ impl SeestarClient {
     /// the control port — `begin_streaming` starts the frame pipe, not the view.
     pub async fn begin_streaming(&self) -> Result<(), SeestarError> {
         self.send_imaging(ImagingCommand::BeginStreaming).await
+    }
+
+    /// Change device settings and report what happened to each one.
+    ///
+    /// On a connection verified by the handshake (an interop key is
+    /// configured) this is one `set_setting` request: code 0 applies every
+    /// member, and any other code is returned as
+    /// [`SeestarError::CommandFailed`]. The firmware does not roll back, so
+    /// members ahead of the rejected one may already have been applied.
+    ///
+    /// On a connection that relies on the `verify` marker, the firmware
+    /// answers every `set_setting` with 109 because of the marker, whether or
+    /// not it applied the setting. There each member is sent in its own
+    /// request, and a 109 is resolved by reading the settings back with
+    /// `get_setting`: a matching value is [`SettingOutcome::Applied`],
+    /// anything else [`SettingOutcome::Unconfirmed`]. Other error codes are
+    /// [`SettingOutcome::Rejected`].
+    ///
+    /// Results are in the order the settings were sent (alphabetical by wire
+    /// name). `Err` is returned only for transport failures, or for a
+    /// rejected request on a verified connection.
+    pub async fn set_setting(
+        &self,
+        params: SettingParams,
+    ) -> Result<Vec<SettingResult>, SeestarError> {
+        let serde_json::Value::Object(members) = serde_json::to_value(&params)? else {
+            return Err(SeestarError::Protocol(
+                "set_setting params did not serialize to an object".to_string(),
+            ));
+        };
+        if members.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if self.verification() == Some(Verification::Handshake) {
+            self.send_and_validate(Command::SetSetting(params)).await?;
+            return Ok(members
+                .into_iter()
+                .map(|(key, _)| SettingResult {
+                    key,
+                    outcome: SettingOutcome::Applied,
+                })
+                .collect());
+        }
+
+        // One member per request, so that an error belongs to one setting.
+        let mut results = Vec::with_capacity(members.len());
+        let mut unconfirmed = false;
+        for (key, value) in &members {
+            let single: SettingParams =
+                serde_json::from_value(serde_json::json!({ key.as_str(): value }))?;
+            let resp = self.send_command(Command::SetSetting(single)).await?;
+            let outcome = match resp.code {
+                0 => SettingOutcome::Applied,
+                CODE_UNEXPECTED_PARAM => {
+                    unconfirmed = true;
+                    SettingOutcome::Unconfirmed
+                }
+                code => SettingOutcome::Rejected {
+                    code,
+                    message: resp.error.unwrap_or_default(),
+                },
+            };
+            results.push(SettingResult {
+                key: key.clone(),
+                outcome,
+            });
+        }
+
+        if unconfirmed {
+            let current = self.send_and_validate(Command::GetSetting).await?;
+            for result in &mut results {
+                if result.outcome == SettingOutcome::Unconfirmed
+                    && current
+                        .get(&result.key)
+                        .is_some_and(|actual| setting_matches(actual, &members[&result.key]))
+                {
+                    result.outcome = SettingOutcome::Applied;
+                }
+            }
+        }
+        Ok(results)
     }
 
     /// Slew to a target and start viewing it (a "goto").

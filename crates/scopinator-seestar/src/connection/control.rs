@@ -10,7 +10,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::auth::{InteropKey, Verification};
 use crate::command::Command;
-use crate::command::serialize::serialize_command_marked;
+use crate::command::serialize::{serialize_command_marked, wire_line};
 use crate::connection::reconnect::ReconnectPolicy;
 use crate::connection::registry::Registry;
 use crate::error::SeestarError;
@@ -399,7 +399,7 @@ async fn writer_task(
                 let method = req.command.method();
                 let id = state.pending.register(req.response_tx);
                 let msg = serialize_command_marked(&req.command, id, needs_marker(mode, fw));
-                let line = format!("{}\r\n", msg);
+                let line = wire_line(&msg);
 
                 trace!(id, method, "sending command");
 
