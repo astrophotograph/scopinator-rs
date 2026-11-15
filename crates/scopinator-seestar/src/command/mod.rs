@@ -7,8 +7,41 @@ use params::*;
 ///
 /// Each variant maps to a specific JSON-RPC method string. The `id` field
 /// is assigned by the client at send time.
+/// How the `verify` marker is attached to a [`Command::Raw`] request on a
+/// connection that needs it. It has no effect on a verified connection,
+/// where no marker is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RawMarker {
+    /// By the shape of the params, as for modeled commands: none becomes
+    /// `["verify"]`, an object gains `"verify": true` (written last), an
+    /// array has `"verify"` appended, a scalar becomes `[value, "verify"]`.
+    #[default]
+    Auto,
+    /// For a method called with no params that reads its first positional
+    /// element: send `{"verify": true}` instead of `["verify"]`.
+    /// `get_disk_volume` and `get_annotate_result` need this on firmware
+    /// 6.70. With params present it behaves like `Auto`.
+    Object,
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Any control method by name, for the many the firmware has that this
+    /// enum does not model. Prefer
+    /// [`SeestarClient::send_raw`](crate::SeestarClient::send_raw).
+    ///
+    /// The request is framed by the connection's wire profile like a modeled
+    /// command: `params` are sent as given, and the `verify` marker is added
+    /// only on a connection that needs it (see [`RawMarker`]).
+    Raw {
+        /// The method name as the firmware spells it.
+        method: String,
+        /// The params exactly as they should appear; `None` sends none.
+        params: Option<serde_json::Value>,
+        /// How the marker is attached where one is needed.
+        marker: RawMarker,
+    },
+
     // -- Connection / system --
     TestConnection,
     PiIsVerified,
@@ -158,8 +191,9 @@ pub fn command_method_names() -> &'static [&'static str] {
 
 impl Command {
     /// Returns the JSON-RPC method string for this command.
-    pub fn method(&self) -> &'static str {
+    pub fn method(&self) -> &str {
         match self {
+            Self::Raw { method, .. } => method,
             Self::TestConnection => "test_connection",
             Self::PiIsVerified => "pi_is_verified",
             Self::PiReboot => "pi_reboot",
@@ -377,8 +411,8 @@ pub(crate) mod tests {
     #[test]
     fn method_names_list_is_exhaustive_and_in_sync() {
         use std::collections::BTreeSet;
-        let from_variants: BTreeSet<&str> =
-            one_of_every_variant().iter().map(|c| c.method()).collect();
+        let variants = one_of_every_variant();
+        let from_variants: BTreeSet<&str> = variants.iter().map(|c| c.method()).collect();
         let from_list: BTreeSet<&str> = command_method_names().iter().copied().collect();
 
         // Every modeled command's method is in the published list, and vice versa.

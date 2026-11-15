@@ -63,6 +63,24 @@ enum Commands {
         #[arg(short = 'H', long)]
         host: Ipv4Addr,
     },
+    /// Send any control method by name and print the reply as JSON.
+    ///
+    /// For methods this tool has no command for. Nothing is checked: what
+    /// the method does to the telescope is up to you.
+    Raw {
+        /// Telescope IP address
+        #[arg(short = 'H', long)]
+        host: Ipv4Addr,
+        /// Method name as the firmware spells it, e.g. iscope_get_app_state
+        method: String,
+        /// Params as JSON, e.g. '{"keys":["mount"]}'. Omit to send none.
+        params: Option<String>,
+        /// For a method with no params that reads a positional element
+        /// (get_disk_volume, get_annotate_result): when the connection needs
+        /// the verify marker, send it as an object.
+        #[arg(long)]
+        object_marker: bool,
+    },
 }
 
 #[tokio::main]
@@ -110,6 +128,14 @@ async fn main() -> Result<()> {
         }
         Commands::Park { host } => {
             commands::park(host, interop_key).await?;
+        }
+        Commands::Raw {
+            host,
+            method,
+            params,
+            object_marker,
+        } => {
+            commands::raw(host, &method, params.as_deref(), object_marker, interop_key).await?;
         }
     }
 

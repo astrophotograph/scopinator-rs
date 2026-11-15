@@ -11,7 +11,7 @@ use crate::command::params::{
     Direction, PolarAlignParams, SetTimeParams, SetUserLocationParams, SettingParams,
     SpeedMoveParams, StartViewParams,
 };
-use crate::command::{Command, ImagingCommand};
+use crate::command::{Command, ImagingCommand, RawMarker};
 use crate::connection::control::{self, ClientRequest, Link, LinkState};
 use crate::connection::imaging::{self, ImageFrame};
 use crate::error::SeestarError;
@@ -351,6 +351,61 @@ impl SeestarClient {
                 code: e.code,
                 message: e.message,
             })
+    }
+
+    /// Send any control method by name and wait for the response.
+    ///
+    /// This is the escape hatch for the methods the firmware has that
+    /// [`Command`] does not model (the protocol specification lists several
+    /// hundred). `params` are sent exactly as given; `None` sends none. The
+    /// request is framed like any modeled command: on a connection that
+    /// relies on the `verify` marker the marker is added by the shape of the
+    /// params, and on a verified connection nothing is added. For a method
+    /// that takes no params but reads a positional element, use
+    /// [`send_raw_with`](Self::send_raw_with) and [`RawMarker::Object`].
+    ///
+    /// Nothing is checked: the method name, the params and what they do to
+    /// the telescope are the caller's responsibility. Some firmware methods
+    /// are destructive (formatting storage, factory reset); this crate gives
+    /// them no typed wrapper on purpose, and this call will send them if
+    /// asked.
+    pub async fn send_raw(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<CommandResponse, SeestarError> {
+        self.send_raw_with(method, params, RawMarker::Auto).await
+    }
+
+    /// [`send_raw`](Self::send_raw) with a choice of how the `verify` marker
+    /// is attached on a connection that needs one.
+    pub async fn send_raw_with(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        marker: RawMarker,
+    ) -> Result<CommandResponse, SeestarError> {
+        self.send_command(Command::Raw {
+            method: method.to_string(),
+            params,
+            marker,
+        })
+        .await
+    }
+
+    /// [`send_raw`](Self::send_raw), returning the result and failing on a
+    /// non-zero response code.
+    pub async fn send_raw_and_validate(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, SeestarError> {
+        self.send_and_validate(Command::Raw {
+            method: method.to_string(),
+            params,
+            marker: RawMarker::Auto,
+        })
+        .await
     }
 
     /// Subscribe to telescope events.

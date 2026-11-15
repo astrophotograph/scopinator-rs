@@ -2123,3 +2123,106 @@ async fn failed_handshake_bounds_queued_commands_and_recovers() {
     );
     client.shutdown().await;
 }
+
+// ============================================================================
+// Raw commands (Forge task "Raw command escape hatch through the wire
+// profile"): any method by name, framed by the connection's wire profile.
+// ============================================================================
+
+#[tokio::test]
+async fn send_raw_in_marker_mode_marks_by_params_shape() {
+    use scopinator_seestar::command::RawMarker;
+
+    let fake = FakeSeestar::start().await;
+    fake.require_verify_marker();
+    fake.respond_ok("iscope_get_app_state", json!({"View": {"state": "idle"}}));
+    fake.respond_error("no_such_method", 103, "method not found");
+    let client = connect(&fake).await;
+
+    let state = client
+        .send_raw_and_validate("iscope_get_app_state", None)
+        .await
+        .expect("app state");
+    assert_eq!(state["View"]["state"], "idle");
+    client
+        .send_raw("set_something", Some(json!({"zeta": 1, "alpha": true})))
+        .await
+        .expect("object params");
+    client
+        .send_raw("move_something", Some(json!([1, 2])))
+        .await
+        .expect("array params");
+    client
+        .send_raw_with("get_disk_volume", None, RawMarker::Object)
+        .await
+        .expect("object marker");
+
+    // A device error comes back as a response, or as CommandFailed when validated.
+    let resp = client
+        .send_raw("no_such_method", None)
+        .await
+        .expect("reply");
+    assert_eq!(resp.code, 103);
+    let err = client
+        .send_raw_and_validate("no_such_method", None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SeestarError::CommandFailed { code: 103, .. }),
+        "got {err:?}"
+    );
+
+    let lines = command_lines(&fake);
+    let tail = |i: usize| {
+        lines[i]
+            .trim_end()
+            .split_once(r#""method":"#)
+            .unwrap()
+            .1
+            .to_string()
+    };
+    // lines[0] is the marker probe (test_connection).
+    assert_eq!(tail(1), r#""iscope_get_app_state","params":["verify"]}"#);
+    assert_eq!(
+        tail(2),
+        r#""set_something","params":{"alpha":true,"zeta":1,"verify":true}}"#
+    );
+    assert_eq!(tail(3), r#""move_something","params":[1,2,"verify"]}"#);
+    assert_eq!(tail(4), r#""get_disk_volume","params":{"verify":true}}"#);
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_raw_on_a_verified_socket_adds_nothing() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_verify_str", json!({"str": "fake-challenge"}));
+    fake.respond_ok("verify_client", json!(0));
+    let client = connect_with(
+        &fake,
+        SeestarConfig {
+            interop_key: Some(test_key()),
+            ..Default::default()
+        },
+    )
+    .await;
+    client
+        .wait_for_connection(Duration::from_secs(2))
+        .await
+        .expect("connected");
+
+    client
+        .send_raw("iscope_get_app_state", None)
+        .await
+        .expect("no params");
+    client
+        .send_raw("set_something", Some(json!({"zeta": 1})))
+        .await
+        .expect("object params");
+
+    let received = fake.received();
+    let n = received.len();
+    assert_eq!(received[n - 2]["method"], "iscope_get_app_state");
+    assert!(received[n - 2].get("params").is_none());
+    assert_eq!(received[n - 1]["params"], json!({"zeta": 1}));
+    client.shutdown().await;
+}

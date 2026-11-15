@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use super::Command;
+use super::{Command, RawMarker};
 use crate::auth::Verification;
 use scopinator_types::FirmwareVersion;
 
@@ -127,6 +127,7 @@ pub fn wire_line(msg: &Value) -> String {
 /// Extract the params value for a command.
 fn command_params(cmd: &Command) -> Option<Value> {
     match cmd {
+        Command::Raw { params, .. } => params.clone(),
         // No-param commands
         Command::TestConnection
         | Command::PiIsVerified
@@ -211,7 +212,16 @@ fn command_params(cmd: &Command) -> Option<Value> {
 /// on a socket verified by the handshake.
 fn inject_verify(cmd: &Command, params: Option<Value>) -> Value {
     match params {
-        None if matches!(cmd, Command::GetDiskVolume | Command::GetAnnotateResult) => {
+        None if matches!(
+            cmd,
+            Command::GetDiskVolume
+                | Command::GetAnnotateResult
+                | Command::Raw {
+                    marker: RawMarker::Object,
+                    ..
+                }
+        ) =>
+        {
             json!({"verify": true})
         }
         None => json!(["verify"]),
@@ -390,6 +400,58 @@ mod tests {
                 WireProfile::legacy(None).line(&cmd, 9),
                 format!("{marked}\r\n")
             );
+        }
+    }
+
+    // A raw command is framed like a modeled one: params as given, and the
+    // marker only where the connection needs it.
+    #[test]
+    fn raw_command_bytes_per_params_shape_and_mode() {
+        let raw = |params: Option<Value>, marker| Command::Raw {
+            method: "iscope_get_app_state".into(),
+            params,
+            marker,
+        };
+        let marked = WireProfile::new(Verification::Marker);
+        let plain = WireProfile::new(Verification::Handshake);
+        let head = r#"{"id":4,"method":"iscope_get_app_state""#;
+        for (params, marker, with_marker, without) in [
+            (None, RawMarker::Auto, r#","params":["verify"]}"#, "}"),
+            (
+                None,
+                RawMarker::Object,
+                r#","params":{"verify":true}}"#,
+                "}",
+            ),
+            (
+                Some(json!({"zeta": 1, "alpha": [2]})),
+                RawMarker::Auto,
+                r#","params":{"alpha":[2],"zeta":1,"verify":true}}"#,
+                r#","params":{"alpha":[2],"zeta":1}}"#,
+            ),
+            (
+                Some(json!({"zeta": 1})),
+                RawMarker::Object,
+                r#","params":{"zeta":1,"verify":true}}"#,
+                r#","params":{"zeta":1}}"#,
+            ),
+            (
+                Some(json!([1, "two"])),
+                RawMarker::Auto,
+                r#","params":[1,"two","verify"]}"#,
+                r#","params":[1,"two"]}"#,
+            ),
+            (
+                Some(json!(7)),
+                RawMarker::Auto,
+                r#","params":[7,"verify"]}"#,
+                r#","params":7}"#,
+            ),
+        ] {
+            let cmd = raw(params, marker);
+            assert_eq!(cmd.method(), "iscope_get_app_state");
+            assert_eq!(marked.line(&cmd, 4), format!("{head}{with_marker}\r\n"));
+            assert_eq!(plain.line(&cmd, 4), format!("{head}{without}\r\n"));
         }
     }
 
