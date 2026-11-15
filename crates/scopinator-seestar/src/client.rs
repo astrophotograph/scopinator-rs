@@ -512,6 +512,13 @@ impl SeestarClient {
     /// declination in degrees. This sends `iscope_start_view` in star mode
     /// with the target, which is how the firmware slews to coordinates.
     ///
+    /// The telescope needs a correct clock and location to find the target.
+    /// With a wrong clock it can accept the request, enter star view and not
+    /// slew at all, without reporting an error (seen on firmware 9.75 with
+    /// an unset clock); [`startup`](Self::startup) sets both. The
+    /// coordinates are taken as epoch of date (JNow) according to the
+    /// protocol specification, not J2000.
+    ///
     /// A successful reply means the request was accepted, not that the scope
     /// has arrived. The slew, plate solve and re-centring are reported by
     /// `AutoGoto` / `ScopeGoto` events (see

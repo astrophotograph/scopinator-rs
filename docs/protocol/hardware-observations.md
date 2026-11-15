@@ -122,8 +122,9 @@ Writing the current `group_name` back:
 ## Seestar S30, firmware 9.75
 
 Seestar S30 (two cameras), firmware 9.75 (`firmware_ver_int` 2975), on the LAN, parked, 2026-11-14.
-This is one of the two firmware versions the specification describes. Nothing was moved; the only
-write was `set_setting` with `stack_after_goto`, toggled and restored.
+This is one of the two firmware versions the specification describes. Writes made: `set_setting`
+with `stack_after_goto` (toggled and restored), `pi_set_time` (the clock was unset, see Goto), and
+one goto that was cancelled and followed by a park.
 
 ### Verification gate
 
@@ -172,12 +173,41 @@ needs no marker anywhere.
 | `get_stacked_img` on 4800 and on 4804, nothing stacked | Text error (dataType 1) `there is no image now` on both |
 | `get_current_img` while parked with no view | `there is no image now` (the S50 on 6.70 returned its last frame) |
 
+### Goto and the device clock
+
+The device clock read 2020-10-10 when first seen (never set).
+
+| Step | Result |
+|---|---|
+| `iscope_start_view {"mode": "star", "target_ra_dec": [20.69, 45.28], "target_name": "Deneb", "lp_filter": false}` with the clock unset | Code 0, `View` working, `ContinuousExposure` working. **No `AutoGoto` event, no slew, no error**: the mount stayed parked |
+| `pi_set_time [{year, mon, day, hour, min, sec, time_zone}]` with the current local time and the zone the device already had | Code 0; `pi_get_time` then read the new time |
+| The same `iscope_start_view` again | `ScopeTrack` state `off` with error "below horizon" (270) for the parked position, then `AutoGoto` start/working and `ScopeGoto` working with `cur_ra_dec` and `dist_deg`; the mount moved (declination −90° to −18° in 16 s) |
+| `iscope_stop_view {"stage": "AutoGoto"}` | `ScopeGoto` fail 207, `AutoGotoStep` fail 501, `AutoGoto` fail 253 "aborted" and cancel; the view continued in `ContinuousExposure`, as on 6.70 |
+| `iscope_stop_view` (no stage), then `scope_park` | View cancelled; `ScopeHome` working then complete after 23 s, `close: true` |
+
+A client must set the clock before a goto. A wrong clock makes the device treat the target as
+unreachable and it says nothing.
+
+During the goto, on port 4800:
+
+| Request | Reply |
+|---|---|
+| `get_current_img {"compress": false, "img_type": "Raw"}` | dataType 2, imgType 1, 1080×1920, canDebayer 1, 4 147 200 bytes |
+| `get_current_img {"compress": true, "img_type": "Raw"}` | dataType **3**: a zip of 1 959 646 bytes with one entry `raw_data` of 4 147 200 bytes |
+| `get_current_img` with no params | The same zip reply: compression is the default here |
+| The same three requests on port 4804 (wide camera) | `there is no image now` while the main camera has the view |
+
+`ScopeTrack` uses the state strings `on` / `off`, which are outside the usual
+start/working/complete set.
+
 ## Not yet observed
 
 - Firmware between 7.06 and 9.75. The marker passes the gate on 6.70 (hardware) and 7.06 (corpus)
   and does not on 9.75 (hardware); where it stopped is unknown, so the client probes for it per
   connection.
-- A goto, a view or any mount movement on firmware 9.75; and the wide camera's image stream.
-- A zip-compressed (dataType 3) or JPEG reply on the image socket.
+- A frame or a stream from the wide camera (port 4804); it had no image while the main camera held
+  the view.
+- A completed goto with plate solving, on any firmware (both devices were indoors).
+- A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
 - `Alert` 429 on exceeding the connection limit.
 - Plate solving, stacking and annotation results (the device was indoors).
