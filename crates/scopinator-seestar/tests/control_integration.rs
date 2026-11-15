@@ -365,13 +365,11 @@ async fn malformed_json_line_is_skipped() {
     client.shutdown().await;
 }
 
-// Characterizes the Unknown-event half of docs/bugs/response-drop-timeout.md
-// (Forge task "Characterize silent drop paths and write bug report"). An event
-// whose `Event` tag no `SeestarEvent` variant models still reaches broadcast
-// subscribers — but only as `SeestarEvent::Unknown`: serde's `#[serde(other)]`
-// requires a unit variant, so the wire tag and payload are discarded. Pinned:
-// subscribers get `Unknown` (nothing else to see), and the broadcast stream
-// keeps flowing — a modeled event sent afterwards still arrives.
+// The Unknown-event half of docs/bugs/response-drop-timeout.md, now closed.
+// An event whose `Event` tag no `SeestarEvent` variant models reaches
+// broadcast subscribers as `SeestarEvent::Unknown` with its wire name and
+// payload, and the stream keeps flowing — a modeled event sent afterwards
+// still arrives.
 #[tokio::test]
 async fn unknown_event_broadcast_as_unknown_and_stream_continues() {
     let fake = FakeSeestar::start().await;
@@ -389,10 +387,14 @@ async fn unknown_event_broadcast_as_unknown_and_stream_continues() {
         .await
         .expect("event within timeout")
         .expect("event recv");
-    // GAP (characterized, not fixed): the payload — and even the wire tag —
-    // are inaccessible on the delivered value.
-    assert!(matches!(&ev, SeestarEvent::Unknown));
-    assert_eq!(ev.name(), "Unknown");
+    assert_eq!(ev.name(), "SomeFutureEvent");
+    match &ev {
+        SeestarEvent::Unknown { payload, .. } => {
+            assert_eq!(payload["state"], "complete");
+            assert_eq!(payload["count"], 3);
+        }
+        other => panic!("expected Unknown, got {}", other.name()),
+    }
 
     // The subscriber stream continues after the unknown event.
     fake.send_event(corpus_event("PiStatus"));

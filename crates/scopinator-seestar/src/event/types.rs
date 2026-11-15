@@ -1,24 +1,83 @@
 use serde::{Deserialize, Serialize};
 
-/// Common event state values used across many event types.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventState {
-    Start,
-    Cancel,
-    Working,
-    Complete,
-    Fail,
+/// Defines a string-valued enum that is open to values this crate does not
+/// know: they deserialize into `Other(String)` instead of failing, and
+/// serialize back to the same string.
+macro_rules! open_string_enum {
+    ($(#[$meta:meta])* $name:ident { $( $(#[$vmeta:meta])* $variant:ident = $wire:literal, )* }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub enum $name {
+            $( $(#[$vmeta])* $variant, )*
+            /// A value this crate does not know, exactly as the device sent it.
+            Other(String),
+        }
+
+        impl $name {
+            /// The value as it appears on the wire.
+            pub fn as_str(&self) -> &str {
+                match self {
+                    $( Self::$variant => $wire, )*
+                    Self::Other(other) => other,
+                }
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(value: &str) -> Self {
+                match value {
+                    $( $wire => Self::$variant, )*
+                    other => Self::Other(other.to_string()),
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = std::borrow::Cow::<str>::deserialize(deserializer)?;
+                Ok(Self::from(value.as_ref()))
+            }
+        }
+    };
 }
 
-/// Charger status reported in PiStatus events.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChargerStatus {
-    Discharging,
-    Charging,
-    Full,
-    #[serde(rename = "Not charging")]
-    NotCharging,
+open_string_enum! {
+    /// Common event state values used across many event types.
+    ///
+    /// The firmware uses more states than the original five (`idle` is
+    /// common), and may add others; an unrecognized one is kept in `Other`.
+    EventState {
+        Start = "start",
+        Cancel = "cancel",
+        Working = "working",
+        Complete = "complete",
+        Fail = "fail",
+        /// Nothing is running. Common in `get_view_state`-style snapshots.
+        Idle = "idle",
+    }
+}
+
+open_string_enum! {
+    /// Charger status reported in PiStatus events. The mapping may differ by
+    /// firmware build; an unrecognized status is kept in `Other`.
+    ChargerStatus {
+        Discharging = "Discharging",
+        Charging = "Charging",
+        Full = "Full",
+        NotCharging = "Not charging",
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,26 +247,37 @@ mod tests {
             ("\"working\"", EventState::Working),
             ("\"complete\"", EventState::Complete),
             ("\"fail\"", EventState::Fail),
+            ("\"idle\"", EventState::Idle),
         ];
         for (wire, expected) in cases {
-            assert_eq!(serde_json::from_str::<EventState>(wire).unwrap(), expected);
+            let state = serde_json::from_str::<EventState>(wire).unwrap();
+            assert_eq!(state, expected);
+            // And back to the same wire string.
+            assert_eq!(serde_json::to_string(&state).unwrap(), wire);
         }
     }
 
-    // Mirrors TestEventStates::test_invalid_state_raises: EventState is a
-    // closed enum, so an unknown string is a deserialization error.
+    // Mirrors TestEventStates::test_invalid_state_raises, with the opposite
+    // outcome: EventState is open, so an unknown string is kept, not an
+    // error (pydantic raises). A non-string is still an error.
     #[test]
-    fn event_state_rejects_unknown_strings() {
-        let err = serde_json::from_str::<EventState>("\"invalid_state_xyz\"").unwrap_err();
-        assert!(err.to_string().contains("invalid_state_xyz"));
+    fn event_state_keeps_unknown_strings() {
+        let state = serde_json::from_str::<EventState>("\"invalid_state_xyz\"").unwrap();
+        assert_eq!(state, EventState::Other("invalid_state_xyz".into()));
+        assert_eq!(state.as_str(), "invalid_state_xyz");
+        assert_eq!(
+            serde_json::to_string(&state).unwrap(),
+            "\"invalid_state_xyz\""
+        );
+        assert!(serde_json::from_str::<EventState>("7").is_err());
     }
 
     // Mirrors TestPiStatusEvent::test_invalid_charger_status (the event-level
-    // counterpart is in event/mod.rs): ChargerStatus is a closed enum whose
-    // four wire strings all deserialize, including the spaced "Not charging"
-    // rename; anything else errors.
+    // counterpart is in event/mod.rs): the four known wire strings all
+    // deserialize, including the spaced "Not charging"; anything else is
+    // kept as `Other` (pydantic raises).
     #[test]
-    fn charger_status_deserializes_known_values_only() {
+    fn charger_status_deserializes_known_values_and_keeps_others() {
         let cases = [
             ("\"Discharging\"", ChargerStatus::Discharging),
             ("\"Charging\"", ChargerStatus::Charging),
@@ -220,7 +290,9 @@ mod tests {
                 expected
             );
         }
-        let err = serde_json::from_str::<ChargerStatus>("\"InvalidStatus\"").unwrap_err();
-        assert!(err.to_string().contains("InvalidStatus"));
+        assert_eq!(
+            serde_json::from_str::<ChargerStatus>("\"InvalidStatus\"").unwrap(),
+            ChargerStatus::Other("InvalidStatus".into())
+        );
     }
 }

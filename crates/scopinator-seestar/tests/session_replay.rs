@@ -43,7 +43,7 @@ fn every_telescope_message_parses_cleanly() {
         for msg in session.telescope_messages() {
             if json_rpc::is_event(&msg) {
                 match serde_json::from_value::<SeestarEvent>(msg.clone()) {
-                    Ok(SeestarEvent::Unknown) => {
+                    Ok(SeestarEvent::Unknown { .. }) => {
                         unknown_events.push(json_rpc::event_name(&msg).unwrap_or("?").to_string())
                     }
                     Ok(_) => events += 1,

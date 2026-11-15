@@ -323,13 +323,10 @@ async fn reader_task(
 fn handle_event(msg: &serde_json::Value, event_tx: &broadcast::Sender<SeestarEvent>) {
     match serde_json::from_value::<SeestarEvent>(msg.clone()) {
         Ok(event) => {
-            // Surface unmodeled event types — a signal of firmware drift, since
-            // the Unknown variant does not retain the payload.
-            if matches!(event, SeestarEvent::Unknown) {
-                warn!(
-                    event = json_rpc::event_name(msg).unwrap_or("?"),
-                    "received unmodeled event type (possible firmware drift)"
-                );
+            // Unmodeled events are ordinary on newer firmware; they reach
+            // subscribers with their name and payload.
+            if event.is_unknown() {
+                debug!(event = event.name(), "received unmodeled event");
             } else {
                 trace!(event = event.name(), "received event");
             }

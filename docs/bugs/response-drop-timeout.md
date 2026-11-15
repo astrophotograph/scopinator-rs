@@ -49,17 +49,13 @@ A dedicated `SeestarError` variant naming the deserialization failure would let 
 the timeout could still do so by treating the error as retryable; the point is that today they
 cannot make that choice.
 
-## The Unknown-event observability gap (noted alongside)
+## The Unknown-event observability gap (fixed 2026-11-14)
 
-`SeestarEvent` (`crates/scopinator-seestar/src/event/mod.rs`) uses `#[serde(other)] Unknown` as its
-forward-compatible catch-all. Serde's `other` requires a unit variant, so an event whose `Event`
-tag is not modeled loses both the tag and the payload at deserialization: subscribers receive
-`SeestarEvent::Unknown` and cannot tell which event fired, let alone what it carried — two
-different unmodeled events are indistinguishable. The only signal is a `warn!` in the connection
-reader (`handle_event`, control.rs) that logs the raw event name at runtime; consumers of the
-broadcast stream have no programmatic access to it, so firmware drift (new event types) is
-invisible without log scraping. A caller would want at minimum the raw tag, and ideally the raw
-JSON payload, preserved on the `Unknown` variant.
+`SeestarEvent::Unknown` used to be a unit variant (`#[serde(other)]`), so an unmodeled event lost
+both its tag and its payload and two different unmodeled events were indistinguishable. It is now
+`Unknown { name, payload }`: the wire name and the rest of the message reach broadcast
+subscribers. A modeled event whose payload does not fit its type also falls back to `Unknown`
+instead of being dropped, and unrecognized `state` / `charger_status` strings parse as `Other`.
 
 ## Pinned by
 
@@ -70,9 +66,10 @@ JSON payload, preserved on the `Unknown` variant.
   than a prompt correlation error, while the event stream keeps flowing.
 - `unknown_event_broadcast_as_unknown_and_stream_continues`
   (`crates/scopinator-seestar/tests/control_integration.rs`): an unmodeled event tag reaches
-  subscribers as `SeestarEvent::Unknown`, and the broadcast stream continues with the next event.
-- `unknown_event_drops_tag_and_payload` (`crates/scopinator-seestar/src/event/mod.rs`): the wire
-  tag and payload are unrecoverable from the deserialized value; distinct unknown tags are
-  indistinguishable.
+  subscribers as `SeestarEvent::Unknown` with its name and payload, and the broadcast stream
+  continues with the next event.
+- `unknown_event_keeps_tag_and_payload` (`crates/scopinator-seestar/src/event/mod.rs`): the wire
+  tag and payload are available on the deserialized value.
 
-These tests characterize current behaviour and will fail, on purpose, if the drop paths are fixed.
+The response-drop test characterizes current behaviour and will fail, on purpose, if that drop
+path is fixed.

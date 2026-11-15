@@ -3,140 +3,147 @@ pub mod types;
 pub use types::*;
 
 use serde::Deserialize;
+use serde::de::Error as _;
 
-/// A Seestar event received from the control port.
-///
-/// Events are distinguished by the "Event" key in the JSON message.
-/// This enum uses serde's internally-tagged representation.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "Event")]
-pub enum SeestarEvent {
-    Alert(AlertEventData),
-    AutoFocus(AutoFocusEventData),
-    AutoGoto(AutoGotoEventData),
-    ContinuousExposure(serde_json::Value),
-    DarkLibrary(serde_json::Value),
-    DiskSpace(DiskSpaceEventData),
-    Exposure(ExposureEventData),
-    FocuserMove(FocuserMoveEventData),
-    Initialise(InitialiseEventData),
-    PiStatus(PiStatusEventData),
-    RTSP(serde_json::Value),
-    SaveImage(SaveImageEventData),
-    ScopeGoto(ScopeGotoEventData),
-    ScopeHome(ScopeHomeEventData),
-    ScopeMoveToHorizon(serde_json::Value),
-    ScopeTrack(ScopeTrackEventData),
-    Stack(StackEventData),
-    View(ViewEventData),
-    WheelMove(WheelMoveEventData),
-    // Less common events — capture as raw JSON for now
-    Annotate(serde_json::Value),
-    AutoGotoStep(serde_json::Value),
-    BatchStack(serde_json::Value),
-    Client(serde_json::Value),
-    EqModePA(serde_json::Value),
-    GoPixel(serde_json::Value),
-    Internal(serde_json::Value),
-    PlateSolve(serde_json::Value),
-    ScanSun(serde_json::Value),
-    SecondView(serde_json::Value),
-    SelectCamera(serde_json::Value),
-    Setting(serde_json::Value),
-    #[serde(rename = "3PPA")]
-    ThreePPA(serde_json::Value),
-    ViewPlan(serde_json::Value),
-    /// Forward-compatible catch-all: any event whose `Event` tag is not one of
-    /// the variants above deserializes here. The payload is not retained on the
-    /// variant (serde's `other` requires a unit variant), but the connection
-    /// reader logs the raw event name so firmware drift (new event types) is
-    /// observable at runtime. See [`known_event_names`] for the modeled set.
-    #[serde(other)]
-    Unknown,
+/// Defines [`SeestarEvent`] and everything derived from its list of modeled
+/// events: the parser, [`SeestarEvent::name`] and [`known_event_names`].
+macro_rules! seestar_events {
+    ($( $variant:ident($payload:ty) = $tag:literal, )*) => {
+        /// A Seestar event received from the control port.
+        ///
+        /// Events are distinguished by the `Event` member of the JSON
+        /// message. Each modeled event is a variant holding the rest of the
+        /// message; any other event is [`SeestarEvent::Unknown`], which keeps
+        /// its name and payload. The firmware has many more events than are
+        /// modeled here, and adds more between versions, so `Unknown` is an
+        /// ordinary outcome, not an error.
+        #[derive(Debug, Clone)]
+        #[allow(clippy::upper_case_acronyms)]
+        pub enum SeestarEvent {
+            $( $variant($payload), )*
+            /// An event this crate has no variant for, or a modeled event
+            /// whose payload did not have the expected shape.
+            Unknown {
+                /// The `Event` member as sent by the device.
+                name: String,
+                /// The rest of the message (every member except `Event`).
+                payload: serde_json::Value,
+            },
+        }
+
+        /// The set of `Event` tag strings this crate models (everything that
+        /// does not become [`SeestarEvent::Unknown`]).
+        ///
+        /// Used by tests to assert the captured corpus contains no unmodeled
+        /// events, and available to callers that want to detect firmware drift.
+        pub fn known_event_names() -> &'static [&'static str] {
+            &[ $( $tag, )* ]
+        }
+
+        impl SeestarEvent {
+            /// Returns the event name string: the `Event` member on the wire.
+            /// For [`SeestarEvent::Unknown`] this is the device's own name
+            /// for the event.
+            pub fn name(&self) -> &str {
+                match self {
+                    $( Self::$variant(_) => $tag, )*
+                    Self::Unknown { name, .. } => name,
+                }
+            }
+
+            /// Parse the payload of a modeled event. `None` if `name` is not
+            /// a modeled event.
+            fn parse_modeled(
+                name: &str,
+                payload: serde_json::Value,
+            ) -> Option<Result<Self, serde_json::Error>> {
+                Some(match name {
+                    $( $tag => serde_json::from_value(payload).map(Self::$variant), )*
+                    _ => return None,
+                })
+            }
+        }
+    };
 }
 
-/// The set of `Event` tag strings this crate models (everything except the
-/// forward-compatible [`SeestarEvent::Unknown`] catch-all).
-///
-/// Used by tests to assert the captured corpus contains no unmodeled events,
-/// and available to callers that want to detect firmware drift.
-pub fn known_event_names() -> &'static [&'static str] {
-    &[
-        "Alert",
-        "AutoFocus",
-        "AutoGoto",
-        "ContinuousExposure",
-        "DarkLibrary",
-        "DiskSpace",
-        "Exposure",
-        "FocuserMove",
-        "Initialise",
-        "PiStatus",
-        "RTSP",
-        "SaveImage",
-        "ScopeGoto",
-        "ScopeHome",
-        "ScopeMoveToHorizon",
-        "ScopeTrack",
-        "Stack",
-        "View",
-        "WheelMove",
-        "Annotate",
-        "AutoGotoStep",
-        "BatchStack",
-        "Client",
-        "EqModePA",
-        "GoPixel",
-        "Internal",
-        "PlateSolve",
-        "ScanSun",
-        "SecondView",
-        "SelectCamera",
-        "Setting",
-        "3PPA",
-        "ViewPlan",
-    ]
+seestar_events! {
+    Alert(AlertEventData) = "Alert",
+    AutoFocus(AutoFocusEventData) = "AutoFocus",
+    AutoGoto(AutoGotoEventData) = "AutoGoto",
+    ContinuousExposure(serde_json::Value) = "ContinuousExposure",
+    DarkLibrary(serde_json::Value) = "DarkLibrary",
+    DiskSpace(DiskSpaceEventData) = "DiskSpace",
+    Exposure(ExposureEventData) = "Exposure",
+    FocuserMove(FocuserMoveEventData) = "FocuserMove",
+    Initialise(InitialiseEventData) = "Initialise",
+    PiStatus(PiStatusEventData) = "PiStatus",
+    RTSP(serde_json::Value) = "RTSP",
+    SaveImage(SaveImageEventData) = "SaveImage",
+    ScopeGoto(ScopeGotoEventData) = "ScopeGoto",
+    ScopeHome(ScopeHomeEventData) = "ScopeHome",
+    ScopeMoveToHorizon(serde_json::Value) = "ScopeMoveToHorizon",
+    ScopeTrack(ScopeTrackEventData) = "ScopeTrack",
+    Stack(StackEventData) = "Stack",
+    View(ViewEventData) = "View",
+    WheelMove(WheelMoveEventData) = "WheelMove",
+    Annotate(serde_json::Value) = "Annotate",
+    AutoGotoStep(serde_json::Value) = "AutoGotoStep",
+    BatchStack(serde_json::Value) = "BatchStack",
+    Client(serde_json::Value) = "Client",
+    EqModePA(serde_json::Value) = "EqModePA",
+    GoPixel(serde_json::Value) = "GoPixel",
+    Internal(serde_json::Value) = "Internal",
+    PlateSolve(serde_json::Value) = "PlateSolve",
+    ScanSun(serde_json::Value) = "ScanSun",
+    SecondView(serde_json::Value) = "SecondView",
+    SelectCamera(serde_json::Value) = "SelectCamera",
+    Setting(serde_json::Value) = "Setting",
+    ThreePPA(serde_json::Value) = "3PPA",
+    ViewPlan(serde_json::Value) = "ViewPlan",
 }
 
 impl SeestarEvent {
-    /// Returns the event name string.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Alert(_) => "Alert",
-            Self::AutoFocus(_) => "AutoFocus",
-            Self::AutoGoto(_) => "AutoGoto",
-            Self::ContinuousExposure(_) => "ContinuousExposure",
-            Self::DarkLibrary(_) => "DarkLibrary",
-            Self::DiskSpace(_) => "DiskSpace",
-            Self::Exposure(_) => "Exposure",
-            Self::FocuserMove(_) => "FocuserMove",
-            Self::Initialise(_) => "Initialise",
-            Self::PiStatus(_) => "PiStatus",
-            Self::RTSP(_) => "RTSP",
-            Self::SaveImage(_) => "SaveImage",
-            Self::ScopeGoto(_) => "ScopeGoto",
-            Self::ScopeHome(_) => "ScopeHome",
-            Self::ScopeMoveToHorizon(_) => "ScopeMoveToHorizon",
-            Self::ScopeTrack(_) => "ScopeTrack",
-            Self::Stack(_) => "Stack",
-            Self::View(_) => "View",
-            Self::WheelMove(_) => "WheelMove",
-            Self::Annotate(_) => "Annotate",
-            Self::AutoGotoStep(_) => "AutoGotoStep",
-            Self::BatchStack(_) => "BatchStack",
-            Self::Client(_) => "Client",
-            Self::EqModePA(_) => "EqModePA",
-            Self::GoPixel(_) => "GoPixel",
-            Self::Internal(_) => "Internal",
-            Self::PlateSolve(_) => "PlateSolve",
-            Self::ScanSun(_) => "ScanSun",
-            Self::SecondView(_) => "SecondView",
-            Self::SelectCamera(_) => "SelectCamera",
-            Self::Setting(_) => "Setting",
-            Self::ThreePPA(_) => "3PPA",
-            Self::ViewPlan(_) => "ViewPlan",
-            Self::Unknown => "Unknown",
+    /// Build an event from a decoded JSON message.
+    ///
+    /// The only error is a message with no string `Event` member. An event
+    /// name that is not modeled, and a modeled event whose payload does not
+    /// fit its type, both become [`SeestarEvent::Unknown`] with the payload
+    /// intact, so nothing the device sends is dropped.
+    pub fn from_value(mut value: serde_json::Value) -> Result<Self, String> {
+        let name = match value.as_object_mut().and_then(|m| m.remove("Event")) {
+            Some(serde_json::Value::String(name)) => name,
+            Some(other) => return Err(format!("`Event` is not a string: {other}")),
+            None => return Err("missing field `Event`".to_string()),
+        };
+        match Self::parse_modeled(&name, value.clone()) {
+            Some(Ok(event)) => Ok(event),
+            Some(Err(error)) => {
+                tracing::debug!(event = %name, %error, "event payload did not match its type");
+                Ok(Self::Unknown {
+                    name,
+                    payload: value,
+                })
+            }
+            None => Ok(Self::Unknown {
+                name,
+                payload: value,
+            }),
         }
+    }
+
+    /// True for an event this crate has no typed variant for.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown { .. })
+    }
+}
+
+impl<'de> Deserialize<'de> for SeestarEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Self::from_value(value).map_err(D::Error::custom)
     }
 }
 
@@ -260,42 +267,75 @@ mod tests {
             "data": 42
         }"#;
         let event: SeestarEvent = serde_json::from_str(json).unwrap();
-        assert!(matches!(event, SeestarEvent::Unknown));
+        assert!(event.is_unknown());
     }
 
-    // Characterizes the observability gap filed in
-    // docs/bugs/response-drop-timeout.md (Forge task "Characterize silent
-    // drop paths and write bug report"). Serde's `#[serde(other)]` requires a
-    // unit variant, so an unmodeled event loses both its wire tag and its
-    // payload at deserialization: consumers see only `Unknown` and cannot
-    // tell which event fired, let alone what it carried. The only signal is
-    // the connection reader's `warn!` in `handle_event` (control.rs), which
-    // logs the raw event name at runtime. Pinned as-is, not fixed here.
+    // An unmodeled event keeps its wire name and its payload (the gap filed
+    // in docs/bugs/response-drop-timeout.md, now closed). The firmware has
+    // dozens of events this crate does not model, so this is the common case
+    // on newer firmware, not an oddity.
     #[test]
-    fn unknown_event_drops_tag_and_payload() {
+    fn unknown_event_keeps_tag_and_payload() {
         let json = r#"{
-            "Event": "SomeFutureEvent",
+            "Event": "MeridianFlip",
             "Timestamp": "1234567890.0",
             "state": "complete",
             "count": 3
         }"#;
         let event: SeestarEvent = serde_json::from_str(json).unwrap();
-        // The match binds nothing: `Unknown` is a unit variant, so there is
-        // no payload field to read.
+        assert_eq!(event.name(), "MeridianFlip");
         match &event {
-            SeestarEvent::Unknown => {}
+            SeestarEvent::Unknown { name, payload } => {
+                assert_eq!(name, "MeridianFlip");
+                assert_eq!(
+                    payload,
+                    &json!({"Timestamp": "1234567890.0", "state": "complete", "count": 3})
+                );
+            }
             other => panic!("expected Unknown, got {}", other.name()),
         }
-        // The wire tag ("SomeFutureEvent") is not recoverable either:
-        // name() reports the catch-all.
-        assert_eq!(event.name(), "Unknown");
 
-        // A different unmodeled tag is indistinguishable from the first —
-        // firmware drift is invisible to broadcast subscribers.
+        // Different unmodeled events are distinguishable.
         let other_event: SeestarEvent =
             serde_json::from_str(r#"{"Event": "AnotherFutureEvent", "data": 99}"#).unwrap();
-        assert!(matches!(&other_event, SeestarEvent::Unknown));
-        assert_eq!(other_event.name(), event.name());
+        assert_eq!(other_event.name(), "AnotherFutureEvent");
+        assert_ne!(other_event.name(), event.name());
+    }
+
+    // A modeled event whose payload does not fit its type is not dropped: it
+    // falls back to Unknown with the raw payload.
+    #[test]
+    fn modeled_event_with_unexpected_payload_falls_back_to_unknown() {
+        let event: SeestarEvent = serde_json::from_value(json!({
+            "Event": "PiStatus",
+            "temp": "warm",
+            "battery_capacity": 80,
+        }))
+        .unwrap();
+        match event {
+            SeestarEvent::Unknown { name, payload } => {
+                assert_eq!(name, "PiStatus");
+                assert_eq!(payload, json!({"temp": "warm", "battery_capacity": 80}));
+            }
+            other => panic!("expected Unknown, got {}", other.name()),
+        }
+    }
+
+    // The spec lists `idle` as a state on many events and requires clients to
+    // treat unknown state strings as "other" rather than failing.
+    #[test]
+    fn idle_and_unknown_states_parse() {
+        for (wire, expected) in [
+            ("idle", EventState::Idle),
+            ("brand_new", EventState::Other("brand_new".into())),
+        ] {
+            let event: SeestarEvent =
+                serde_json::from_value(json!({"Event": "View", "state": wire})).unwrap();
+            match event {
+                SeestarEvent::View(data) => assert_eq!(data.state, Some(expected)),
+                other => panic!("expected View, got {}", other.name()),
+            }
+        }
     }
 
     #[test]
@@ -364,14 +404,14 @@ mod tests {
 
     // Mirrors TestParsedEventDiscriminator::test_unknown_event_raises_validation_error.
     // Difference from Python: pydantic raises ValidationError for an unknown
-    // tag; Rust's forward-compatible #[serde(other)] catch-all maps it to
-    // SeestarEvent::Unknown instead (tag and payload are dropped — see
-    // `unknown_event_drops_tag_and_payload` above).
+    // tag; Rust maps it to SeestarEvent::Unknown, keeping the tag and payload
+    // (see `unknown_event_keeps_tag_and_payload` above).
     #[test]
     fn unknown_event_tag_parses_to_unknown() {
         let event: SeestarEvent =
             serde_json::from_value(json!({"Event": "UnknownXYZ", "Timestamp": TIMESTAMP})).unwrap();
-        assert!(matches!(event, SeestarEvent::Unknown));
+        assert!(event.is_unknown());
+        assert_eq!(event.name(), "UnknownXYZ");
     }
 
     // Mirrors TestParsedEventDiscriminator::test_missing_timestamp_raises_validation_error.
@@ -463,14 +503,27 @@ mod tests {
     // ValidationError from the model constructor. The ChargerStatus wire
     // strings themselves are pinned in types.rs.
     #[test]
-    fn pistatus_event_invalid_charger_status_errors() {
-        let err = serde_json::from_value::<SeestarEvent>(json!({
+    fn pistatus_event_unknown_charger_status_is_kept() {
+        // Difference from Python (pydantic raises): the spec notes the
+        // charger mapping may differ by build, so an unrecognized status is
+        // kept as `Other` and the rest of the event still arrives.
+        let event: SeestarEvent = serde_json::from_value(json!({
             "Event": "PiStatus",
             "Timestamp": TIMESTAMP,
             "charger_status": "InvalidStatus",
+            "battery_capacity": 55,
         }))
-        .unwrap_err();
-        assert!(err.to_string().contains("InvalidStatus"));
+        .unwrap();
+        match event {
+            SeestarEvent::PiStatus(data) => {
+                assert_eq!(
+                    data.charger_status,
+                    Some(ChargerStatus::Other("InvalidStatus".into()))
+                );
+                assert_eq!(data.battery_capacity, Some(55));
+            }
+            other => panic!("expected PiStatus, got {}", other.name()),
+        }
     }
 
     // Mirrors TestStackEvent::test_defaults.
@@ -616,18 +669,28 @@ mod tests {
         }
     }
 
-    // Mirrors TestEventStates::test_invalid_state_raises: an unknown state
-    // string is rejected in both languages (EventState is a closed enum in
-    // Rust, same idea as pydantic's literal union).
+    // Mirrors TestEventStates::test_invalid_state_raises, with the opposite
+    // outcome. Difference from Python (pydantic raises): the firmware uses
+    // states beyond the original five (`idle` at least), and the spec
+    // requires unknown state strings to be tolerated, so they parse as
+    // `EventState::Other` instead of dropping the whole event.
     #[test]
-    fn autogoto_event_invalid_state_errors() {
-        let err = serde_json::from_value::<SeestarEvent>(json!({
+    fn autogoto_event_unknown_state_is_kept() {
+        let event: SeestarEvent = serde_json::from_value(json!({
             "Event": "AutoGoto",
             "Timestamp": TIMESTAMP,
             "state": "invalid_state_xyz",
         }))
-        .unwrap_err();
-        assert!(err.to_string().contains("invalid_state_xyz"));
+        .unwrap();
+        match event {
+            SeestarEvent::AutoGoto(data) => {
+                assert_eq!(
+                    data.state,
+                    Some(EventState::Other("invalid_state_xyz".into()))
+                );
+            }
+            other => panic!("expected AutoGoto, got {}", other.name()),
+        }
     }
 
     // Mirrors TestFocuserMoveEvent::test_defaults.
@@ -753,19 +816,26 @@ mod tests {
     // Mirrors TestScopeGotoEvent::test_with_coordinates. Difference from
     // Python: Python models cur_ra_dec as an object ({"ra": .., "dec": ..});
     // Rust models it as Option<(f64, f64)>, which serde accepts only as a
-    // two-element array, so the Python wire shape is a parse error here.
-    // Pinned as-is; not fixed.
+    // two-element array. The Python wire shape does not fit the typed
+    // payload, so the event arrives as Unknown with the raw payload rather
+    // than as a typed ScopeGoto. Pinned as-is; the field type is not fixed.
     #[test]
     fn scopegoto_event_with_coordinates() {
-        // The object form Python accepts is rejected by the tuple field.
-        let err = serde_json::from_value::<SeestarEvent>(json!({
+        // The object form Python accepts does not fit the tuple field.
+        let event: SeestarEvent = serde_json::from_value(json!({
             "Event": "ScopeGoto",
             "Timestamp": TIMESTAMP,
             "cur_ra_dec": {"ra": 10.5, "dec": 45.0},
             "dist_deg": 2.5,
         }))
-        .unwrap_err();
-        assert!(err.to_string().contains("expected a tuple of size 2"));
+        .unwrap();
+        match &event {
+            SeestarEvent::Unknown { name, payload } => {
+                assert_eq!(name, "ScopeGoto");
+                assert_eq!(payload["cur_ra_dec"]["ra"], 10.5);
+            }
+            other => panic!("expected Unknown, got {}", other.name()),
+        }
 
         // The array form the tuple field actually wants.
         let event: SeestarEvent = serde_json::from_value(json!({
@@ -979,7 +1049,7 @@ mod tests {
             let event: SeestarEvent =
                 serde_json::from_value(json!({"Event": tag, "Timestamp": TIMESTAMP})).unwrap();
             assert_eq!(event.name(), tag, "tag {tag} did not parse to its variant");
-            assert!(!matches!(event, SeestarEvent::Unknown));
+            assert!(!event.is_unknown());
         }
     }
 

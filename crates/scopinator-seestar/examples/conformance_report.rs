@@ -51,7 +51,7 @@ fn observe_client(i: usize, msg: &Value) -> Value {
 fn observe_telescope(i: usize, msg: &Value) -> Value {
     if json_rpc::is_event(msg) {
         let parsed = serde_json::from_value::<SeestarEvent>(msg.clone());
-        let parse_ok = matches!(&parsed, Ok(e) if !matches!(e, SeestarEvent::Unknown));
+        let parse_ok = matches!(&parsed, Ok(e) if !e.is_unknown());
         json!({
             "i": i,
             "dir": "telescope",
