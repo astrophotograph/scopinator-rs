@@ -22,7 +22,6 @@ pub enum Command {
     GetCameraInfo,
     GetCameraState,
     GetSetting,
-    GetStackSetting,
     GetStackInfo,
     GetDiskVolume,
     GetUserLocation,
@@ -31,7 +30,9 @@ pub enum Command {
     GetWheelState,
     GetLastSolveResult,
     GetSolveResult,
-    GetAnnotatedResult,
+    /// `get_annotate_result`: the cached annotation of the latest image.
+    /// The firmware answers 207 when there is none.
+    GetAnnotateResult,
 
     // -- Mount --
     ScopeGetEquCoord,
@@ -64,12 +65,13 @@ pub enum Command {
     // -- Settings --
     SetUserLocation(SetUserLocationParams),
     SetSetting(SettingParams),
-    SetStackSetting(SetStackSettingParams),
     SetControlValue(String, i32),
     PiOutputSet2(serde_json::Value),
-    /// Configure an imaging sequence (firmware 7.06+). Wire form is a list of
-    /// group entries, sent nested as `[[{group_name: ...}]]`.
-    SetSequenceSetting(Vec<SequenceSettingParams>),
+    /// `set_sequence_setting`: patch the autosave and sequence settings. The
+    /// params are the settings object (present on firmware 6.70 too).
+    /// `get_sequence_setting`: the autosave and sequence settings.
+    GetSequenceSetting,
+    SetSequenceSetting(SequenceSettingParams),
 
     // -- Misc / system --
     /// Play a built-in sound (firmware 7.06+).
@@ -114,7 +116,6 @@ pub fn command_method_names() -> &'static [&'static str] {
         "get_camera_info",
         "get_camera_state",
         "get_setting",
-        "get_stack_setting",
         "get_stack_info",
         "get_disk_volume",
         "get_user_location",
@@ -123,7 +124,7 @@ pub fn command_method_names() -> &'static [&'static str] {
         "get_wheel_state",
         "get_last_solve_result",
         "get_solve_result",
-        "get_annotated_result",
+        "get_annotate_result",
         "scope_get_equ_coord",
         "scope_get_ra_dec",
         "scope_get_horiz_coord",
@@ -141,9 +142,9 @@ pub fn command_method_names() -> &'static [&'static str] {
         "stop_auto_focuse",
         "set_user_location",
         "set_setting",
-        "set_stack_setting",
         "set_control_value",
         "pi_output_set2",
+        "get_sequence_setting",
         "set_sequence_setting",
         "play_sound",
         "pi_station_state",
@@ -169,7 +170,6 @@ impl Command {
             Self::GetCameraInfo => "get_camera_info",
             Self::GetCameraState => "get_camera_state",
             Self::GetSetting => "get_setting",
-            Self::GetStackSetting => "get_stack_setting",
             Self::GetStackInfo => "get_stack_info",
             Self::GetDiskVolume => "get_disk_volume",
             Self::GetUserLocation => "get_user_location",
@@ -178,7 +178,7 @@ impl Command {
             Self::GetWheelState => "get_wheel_state",
             Self::GetLastSolveResult => "get_last_solve_result",
             Self::GetSolveResult => "get_solve_result",
-            Self::GetAnnotatedResult => "get_annotated_result",
+            Self::GetAnnotateResult => "get_annotate_result",
             Self::ScopeGetEquCoord => "scope_get_equ_coord",
             Self::ScopeGetRaDec => "scope_get_ra_dec",
             Self::ScopeGetHorizCoord => "scope_get_horiz_coord",
@@ -197,9 +197,9 @@ impl Command {
             Self::StopAutoFocus => "stop_auto_focuse",
             Self::SetUserLocation(_) => "set_user_location",
             Self::SetSetting(_) => "set_setting",
-            Self::SetStackSetting(_) => "set_stack_setting",
             Self::SetControlValue(_, _) => "set_control_value",
             Self::PiOutputSet2(_) => "pi_output_set2",
+            Self::GetSequenceSetting => "get_sequence_setting",
             Self::SetSequenceSetting(_) => "set_sequence_setting",
             Self::PlaySound(_) => "play_sound",
             Self::PiStationState => "pi_station_state",
@@ -312,7 +312,6 @@ pub(crate) mod tests {
             Command::GetCameraInfo,
             Command::GetCameraState,
             Command::GetSetting,
-            Command::GetStackSetting,
             Command::GetStackInfo,
             Command::GetDiskVolume,
             Command::GetUserLocation,
@@ -321,7 +320,7 @@ pub(crate) mod tests {
             Command::GetWheelState,
             Command::GetLastSolveResult,
             Command::GetSolveResult,
-            Command::GetAnnotatedResult,
+            Command::GetAnnotateResult,
             Command::ScopeGetEquCoord,
             Command::ScopeGetRaDec,
             Command::ScopeGetHorizCoord,
@@ -358,10 +357,10 @@ pub(crate) mod tests {
                 force: true,
             }),
             Command::SetSetting(SettingParams::default()),
-            Command::SetStackSetting(SetStackSettingParams::default()),
             Command::SetControlValue("gain".into(), 0),
             Command::PiOutputSet2(json!({})),
-            Command::SetSequenceSetting(vec![]),
+            Command::GetSequenceSetting,
+            Command::SetSequenceSetting(SequenceSettingParams::default()),
             Command::PlaySound(PlaySoundParams { num: 0 }),
             Command::PiStationState,
             Command::StartSolve,

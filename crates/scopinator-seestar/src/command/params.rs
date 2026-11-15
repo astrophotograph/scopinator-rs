@@ -272,41 +272,33 @@ pub struct SettingParams {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Parameters for `set_stack_setting`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SetStackSettingParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub save_discrete_ok_frame: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub save_discrete_frame: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub light_duration_min: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capt_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capt_num: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub brightness: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contrast: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub saturation: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dbe_enable: Option<bool>,
-}
-
-/// Parameters for `set_control_value`.
-pub type SetControlValueParams = (String, i32);
-
-/// A single sequence-setting group entry for `set_sequence_setting`.
-///
-/// On the wire the command sends `[[{group_name: ...}], "verify"]` — a list
-/// containing the list of group entries, with `"verify"` appended by firmware
-/// injection. See [`crate::command::serialize`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Parameters for `set_sequence_setting`: the autosave and sequence
+/// behaviour settings. Every member is optional and patches the current
+/// value. Read the current values with `get_sequence_setting`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SequenceSettingParams {
+    /// Seconds to wait before the first frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay_first: Option<i64>,
+    /// Seconds to wait between frames.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay_between_frame: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_by_slot: Option<bool>,
+    /// Allow a meridian flip during the sequence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merid_flip: Option<bool>,
+    /// Name under which frames are grouped (usually the target name).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_name: Option<String>,
+    /// Park the mount when the sequence ends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub park_mount: Option<bool>,
+    /// Shut the device down when the sequence ends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shutdown_pi: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_cooler: Option<bool>,
 }
 
 /// Parameters for `play_sound`.

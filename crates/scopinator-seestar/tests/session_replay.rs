@@ -169,16 +169,19 @@ fn rebuild(method: &str, base: Option<&Value>) -> Result<Rebuild, String> {
             }
         },
         "set_sequence_setting" => {
-            // Captured base is the nested form [[{group_name: ...}]]; the inner
-            // element is the actual list of group entries.
-            let inner = base
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .cloned()
-                .ok_or_else(|| "set_sequence_setting: unexpected param shape".to_string())?;
-            let groups: Vec<SequenceSettingParams> = serde_json::from_value(inner)
-                .map_err(|e| format!("set_sequence_setting groups: {e}"))?;
-            Command::SetSequenceSetting(groups)
+            // Known client bug in the capture: the app-side client sent the
+            // nested form [[{group_name: ...}]], which the firmware rejected
+            // with 107 "expected object param" (also confirmed on an S50,
+            // firmware 6.70). It is not a round-trip target; this crate sends
+            // the settings object.
+            if base.and_then(|v| v.as_array()).is_some() {
+                return Ok(Rebuild::Skip(
+                    "set_sequence_setting nested-array form (firmware-rejected)",
+                ));
+            }
+            let p: SequenceSettingParams = serde_json::from_value(parse(base)?)
+                .map_err(|e| format!("set_sequence_setting params: {e}"))?;
+            Command::SetSequenceSetting(p)
         }
         "set_setting" => {
             // cli_name / master_cli are app-specific keys the firmware rejects

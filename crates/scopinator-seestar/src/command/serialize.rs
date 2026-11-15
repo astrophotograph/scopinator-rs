@@ -137,7 +137,6 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::GetCameraInfo
         | Command::GetCameraState
         | Command::GetSetting
-        | Command::GetStackSetting
         | Command::GetStackInfo
         | Command::GetDiskVolume
         | Command::GetUserLocation
@@ -146,7 +145,8 @@ fn command_params(cmd: &Command) -> Option<Value> {
         | Command::GetWheelState
         | Command::GetLastSolveResult
         | Command::GetSolveResult
-        | Command::GetAnnotatedResult
+        | Command::GetAnnotateResult
+        | Command::GetSequenceSetting
         | Command::ScopeGetEquCoord
         | Command::ScopeGetRaDec
         | Command::ScopeGetHorizCoord
@@ -181,14 +181,13 @@ fn command_params(cmd: &Command) -> Option<Value> {
         Command::PiSetTime(p) => Some(json!([p])),
         Command::SetUserLocation(p) => serde_json::to_value(p).ok(),
         Command::SetSetting(p) => serde_json::to_value(p).ok(),
-        Command::SetStackSetting(p) => serde_json::to_value(p).ok(),
         Command::PiOutputSet2(v) => Some(v.clone()),
         Command::SetViewPlan(v) => Some(v.clone()),
         Command::StopViewPlan => Some(json!({"name": "ViewPlan"})),
         Command::PlaySound(p) => serde_json::to_value(p).ok(),
-        // Nested form: a list wrapping the list of group entries. Firmware then
-        // appends "verify" -> [[{group_name: ...}], "verify"].
-        Command::SetSequenceSetting(groups) => Some(json!([groups])),
+        // The settings object itself. (The nested `[[{...}]]` form seen in
+        // one capture is rejected by the firmware with 107.)
+        Command::SetSequenceSetting(p) => serde_json::to_value(p).ok(),
     }
 }
 
@@ -201,12 +200,20 @@ fn command_params(cmd: &Command) -> Option<Value> {
 /// - scalar params: wrapped as `[value, "verify"]`
 /// - no params: `["verify"]`
 ///
-/// One method cannot take the array form. `get_disk_volume` reads its first
-/// positional element as a path, so `["verify"]` fails with 255 "file not
-/// exist" (S50, firmware 6.70); it gets `{"verify": true}`, which works.
+/// Two parameterless methods cannot take the array form, because they read
+/// their first positional element (S50, firmware 6.70): `get_disk_volume`
+/// takes it for a path (255 "file not exist") and `get_annotate_result` for
+/// an image id (104 "expected int param"). They get `{"verify": true}`,
+/// which the firmware treats like no params.
+///
+/// `get_camera_info` has no working marked form for "the open camera": every
+/// marker shape is read as a non-integer ordinal (104). It answers properly
+/// on a socket verified by the handshake.
 fn inject_verify(cmd: &Command, params: Option<Value>) -> Value {
     match params {
-        None if matches!(cmd, Command::GetDiskVolume) => json!({"verify": true}),
+        None if matches!(cmd, Command::GetDiskVolume | Command::GetAnnotateResult) => {
+            json!({"verify": true})
+        }
         None => json!(["verify"]),
         Some(Value::Object(mut map)) => {
             map.insert("verify".to_string(), Value::Bool(true));
@@ -356,6 +363,11 @@ mod tests {
                 r#"{"id":9,"method":"get_disk_volume"}"#,
             ),
             (
+                Command::GetAnnotateResult,
+                r#"{"id":9,"method":"get_annotate_result","params":{"verify":true}}"#,
+                r#"{"id":9,"method":"get_annotate_result"}"#,
+            ),
+            (
                 goto,
                 r#"{"id":9,"method":"iscope_start_view","params":{"target_name":"x","verify":true}}"#,
                 r#"{"id":9,"method":"iscope_start_view","params":{"target_name":"x"}}"#,
@@ -452,17 +464,26 @@ mod tests {
         assert_eq!(msg["params"], json!(["verify"]));
     }
 
+    // Shapes checked on an S50, firmware 6.70 (2026-11-14): the bare object
+    // on a verified socket and the object with the marker both return code
+    // 0; the nested `[[{...}]]` form an earlier client sent returns 107
+    // "expected object param".
     #[test]
-    fn serialize_set_sequence_setting_matches_capture() {
-        // Captured (fw 7.06):
-        // {"method":"set_sequence_setting","params":[[{"group_name":"M44"}],"verify"],"id":...}
+    fn serialize_set_sequence_setting_is_the_settings_object() {
         use crate::command::params::SequenceSettingParams;
-        let cmd = Command::SetSequenceSetting(vec![SequenceSettingParams {
+        let cmd = Command::SetSequenceSetting(SequenceSettingParams {
             group_name: Some("M44".into()),
-        }]);
-        let msg = serialize_command(&cmd, 10027, &WireProfile::legacy(None));
-        assert_eq!(msg["method"], "set_sequence_setting");
-        assert_eq!(msg["params"], json!([[{ "group_name": "M44" }], "verify"]));
+            merid_flip: Some(true),
+            ..Default::default()
+        });
+        assert_eq!(
+            WireProfile::new(Verification::Handshake).line(&cmd, 3),
+            "{\"id\":3,\"method\":\"set_sequence_setting\",\"params\":{\"group_name\":\"M44\",\"merid_flip\":true}}\r\n"
+        );
+        assert_eq!(
+            WireProfile::new(Verification::Marker).line(&cmd, 3),
+            "{\"id\":3,\"method\":\"set_sequence_setting\",\"params\":{\"group_name\":\"M44\",\"merid_flip\":true,\"verify\":true}}\r\n"
+        );
     }
 
     #[test]

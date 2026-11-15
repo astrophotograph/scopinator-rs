@@ -61,17 +61,17 @@ from collections import defaultdict
 KNOWN_RUST_COMMANDS = {
     "test_connection", "pi_is_verified", "pi_reboot", "pi_get_time", "pi_set_time",
     "get_device_state", "get_view_state", "get_camera_info", "get_camera_state",
-    "get_setting", "get_stack_setting", "get_stack_info", "get_disk_volume",
+    "get_setting", "get_stack_info", "get_disk_volume",
     "get_user_location", "get_wheel_position", "get_wheel_setting", "get_wheel_state",
-    "get_last_solve_result", "get_solve_result", "get_annotated_result",
+    "get_last_solve_result", "get_solve_result", "get_annotate_result",
     "scope_get_equ_coord", "scope_get_ra_dec", "scope_get_horiz_coord", "scope_sync",
     "scope_park", "scope_move_to_horizon", "scope_speed_move", "scope_set_track_state",
     "iscope_start_view", "iscope_stop_view", "iscope_start_stack",
     "get_focuser_position", "move_focuser", "start_auto_focuse", "stop_auto_focuse",
-    "set_user_location", "set_setting", "set_stack_setting", "set_control_value",
+    "set_user_location", "set_setting", "set_control_value",
     "pi_output_set2", "begin_streaming", "stop_streaming", "get_stacked_img",
     "start_solve", "start_scan_planet", "set_view_plan", "stop_func",
-    "set_sequence_setting", "play_sound", "pi_station_state",
+    "get_sequence_setting", "set_sequence_setting", "play_sound", "pi_station_state",
 }
 
 # Event variants the Rust `SeestarEvent` enum currently models (Event strings).
