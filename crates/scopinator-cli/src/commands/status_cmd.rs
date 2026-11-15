@@ -20,7 +20,7 @@ pub async fn status(host: Ipv4Addr, interop_key: Option<InteropKey>) -> Result<(
     client
         .wait_for_connection(Duration::from_secs(10))
         .await
-        .context("timed out waiting for connection")?;
+        .context("could not connect to the telescope")?;
 
     println!("Connected. Fetching device state...\n");
 

@@ -26,7 +26,7 @@ pub async fn goto(
     client
         .wait_for_connection(Duration::from_secs(10))
         .await
-        .context("timed out waiting for connection")?;
+        .context("could not connect to the telescope")?;
 
     println!("Slewing to {name} ({coords})...");
 

@@ -9,8 +9,11 @@ correct: the parity corpus pinned several requests the device rejects.
 Every entry is labelled OBSERVED with the date, model and firmware, following the spec's own
 labelling. Nothing here is inferred from another firmware version.
 
-**Device for all entries below:** Seestar S50, firmware 6.70 (`firmware_ver_int` 2670), on the LAN,
-indoors, 2026-11-14. "Marker" means the `verify` marker in `params`. "Verified socket" means a
+Two devices have been observed. The sections up to "Image socket" are the first; the second has its
+own section, [Seestar S30, firmware 9.75](#seestar-s30-firmware-975).
+
+**Device for the entries below, unless a section says otherwise:** Seestar S50, firmware 6.70
+(`firmware_ver_int` 2670), on the LAN, indoors, 2026-11-14. "Marker" means the `verify` marker in `params`. "Verified socket" means a
 control connection that completed `verify_client` with an interop key.
 
 ## Verification gate (port 4700)
@@ -116,10 +119,65 @@ Writing the current `group_name` back:
 | `get_current_img` while parked | Still returns the last preview frame |
 | `get_stacked_img` with nothing stacked | Text error (dataType 1): `there is no image now` |
 
+## Seestar S30, firmware 9.75
+
+Seestar S30 (two cameras), firmware 9.75 (`firmware_ver_int` 2975), on the LAN, parked, 2026-11-14.
+This is one of the two firmware versions the specification describes. Nothing was moved; the only
+write was `set_setting` with `stack_after_goto`, toggled and restored.
+
+### Verification gate
+
+| Observation | Result |
+|---|---|
+| Unverified socket: `test_connection` unmarked, `test_connection ["verify"]`, `get_device_state {"verify": true}` | All silently consumed. **The marker no longer passes the gate** |
+| `get_verify_str` on an unverified socket | Code 0, a 32-character challenge (base64 alphabet) |
+| `verify_client {sign, data}`, same key and signature scheme as on 6.70 | Code 0, `result: {"key_envelope": {cipher, data, kdf, version, wrap}}` instead of `0` |
+| Requests on the verified socket with no marker | Served, without using the key envelope or any encryption |
+| `get_device_state ["verify"]` and `{"verify": true}` on the verified socket | Code 0: the marker is tolerated on a getter |
+| `set_setting {"stack_after_goto": false, "verify": true}` on the verified socket | 109 "unexpected param", as on 6.70 |
+| `set_setting {"stack_after_goto": ...}` and `set_setting {}` on the verified socket | Code 0, `result: 0` |
+| `Version` greeting after connect | None within 1.5 s |
+
+So on this firmware a client without the key cannot do anything on port 4700, and a client with it
+needs no marker anywhere.
+
+### Methods
+
+- 103 "method not found", as on 6.70: `goto_target`, `get_stacked_img` (port 4700),
+  `get_annotated_result`, `get_stack_setting`, `set_stack_setting`.
+- With no params on the verified socket: `get_camera_info` code 0 (chip 1080×1920, 2.9 µm);
+  `get_disk_volume` code 0; `get_annotate_result` 207 (nothing annotated); `get_sequence_setting`,
+  `get_stack_info`, `get_wheel_position`, `get_focuser_position`, `scope_get_equ_coord`,
+  `pi_get_time`, `get_view_state` (`{}` when parked), `iscope_get_app_state` all code 0.
+- `get_device_state {"keys": ["client"]}` returns `{}`, as the spec warns.
+
+### Device state
+
+- `device` has `product_model` "Seestar S30", `user_product_model`, `focal_len` 150, `fnumber` 5 and
+  ten `can_*` flags: `can_4k_quality`, `can_comet_post_stack`, `can_dark_correction` true;
+  `can_dual_capture`, `can_motion_monitor`, `can_roi_smart_follow`, `can_star_mode_sel_cam`,
+  `can_wide_cam_af`, `can_wide_cam_roi`, `can_wide_mosaic_8k` false. There is no
+  `firmware_platform` or `main_version` member.
+- `camera`: chip 1080×1920, 2.9 µm, focal length 150 mm, `debayer_pattern` "GR".
+- `second_camera` (the wide camera): chip **1920×1080** (landscape), 2.7 µm, focal length 14 mm,
+  `debayer_pattern` "RG".
+- `get_setting` has 48 members, including `wide_cam`, `wide_4k`, `second_camera`, `sky_replay`,
+  `can_encrypt`, `enable_dark_library`, `guest_mode` and, still, `expert_mode`.
+
+### Image sockets
+
+| Observation | Result |
+|---|---|
+| Port 4800 and port 4804 (wide camera), `test_connection` with no marker and no verification | Both answer `server connected!`; magic `03 C3`, version 2, header length 80, byte 15 = request id |
+| `get_stacked_img` on 4800 and on 4804, nothing stacked | Text error (dataType 1) `there is no image now` on both |
+| `get_current_img` while parked with no view | `there is no image now` (the S50 on 6.70 returned its last frame) |
+
 ## Not yet observed
 
-- Any firmware other than 6.70. Whether the marker still passes the gate between 7.06 (corpus) and
-  9.31 (spec, which does not mention it) is unknown; the client probes for it per connection.
+- Firmware between 7.06 and 9.75. The marker passes the gate on 6.70 (hardware) and 7.06 (corpus)
+  and does not on 9.75 (hardware); where it stopped is unknown, so the client probes for it per
+  connection.
+- A goto, a view or any mount movement on firmware 9.75; and the wide camera's image stream.
 - A zip-compressed (dataType 3) or JPEG reply on the image socket.
 - `Alert` 429 on exceeding the connection limit.
 - Plate solving, stacking and annotation results (the device was indoors).
