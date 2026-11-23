@@ -4,7 +4,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
-use scopinator_types::{Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind, RaDegrees};
+use scopinator_types::{
+    Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind, Epoch, RaDegrees,
+};
 
 use crate::device::capabilities::MountCapabilities;
 use crate::device::status::{DeviceStatus, MountStatus};
@@ -18,6 +20,13 @@ use super::GotoTracker;
 /// moving. A goto the telescope accepts and then silently ignores (seen with
 /// an unset clock) stops counting as a slew when this runs out.
 const GOTO_START_GRACE: Duration = Duration::from_secs(15);
+
+/// The equatorial system a Seestar takes goto targets in and reports its
+/// position in: the equinox of date, according to the protocol
+/// specification. This has not been checked against a telescope; plate-solve
+/// centring hides the difference from J2000 (about 0.37 degrees in 2026) on
+/// the device itself.
+const SEESTAR_EPOCH: Epoch = Epoch::JNow;
 
 /// Seestar mount adapter.
 pub struct SeestarMount {
@@ -184,12 +193,20 @@ impl Mount for SeestarMount {
             RaDegrees::from_hours(ra_hours).map_err(|e| ScopinatorError::Backend(e.to_string()))?;
         let dec = DecDegrees::new(dec_deg).map_err(|e| ScopinatorError::Backend(e.to_string()))?;
 
-        Ok(Coordinates::new(ra, dec))
+        // The telescope reports the equinox of date, as it takes it.
+        Ok(Coordinates::with_epoch(ra, dec, SEESTAR_EPOCH))
     }
 
     async fn slew_to_coordinates(&self, coords: &Coordinates) -> Result<(), ScopinatorError> {
-        let (ra_hours, dec_deg) = (coords.ra.as_hours(), coords.dec.as_degrees());
-        let name = format!("RA {ra_hours:.4} Dec {dec_deg:.4}");
+        // Name the target after what was asked for; send what the
+        // telescope understands.
+        let name = format!(
+            "RA {:.4} Dec {:.4}",
+            coords.ra.as_hours(),
+            coords.dec.as_degrees()
+        );
+        let of_date = coords.to_epoch(SEESTAR_EPOCH, chrono::Utc::now());
+        let (ra_hours, dec_deg) = (of_date.ra.as_hours(), of_date.dec.as_degrees());
         self.client
             .goto(&name, ra_hours, dec_deg)
             .await?
@@ -278,6 +295,7 @@ impl Mount for SeestarMount {
             can_park: true,
             can_track: true,
             can_move_axis: true,
+            equatorial_system: SEESTAR_EPOCH,
         }
     }
 

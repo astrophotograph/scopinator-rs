@@ -19,7 +19,7 @@ use common::FakeSeestar;
 use scopinator::backend::seestar::{SeestarBackend, SeestarEndpoints};
 use scopinator::{Mount, ScopinatorError, UnifiedEventBus};
 use scopinator_seestar::SeestarConfig;
-use scopinator_types::{Coordinates, SlewState};
+use scopinator_types::{Coordinates, DecDegrees, Epoch, RaDegrees, SlewState};
 use serde_json::{Value, json};
 
 fn mount_state(move_type: &str, tracking: bool, close: bool) -> Value {
@@ -208,5 +208,79 @@ async fn a_state_reply_without_the_mount_members_is_an_error() {
     assert!(mount.is_parked().await.is_err());
     assert!(mount.is_tracking().await.is_err());
     assert!(mount.is_slewing().await.is_err());
+    backend.disconnect().await;
+}
+
+/// The `target_ra_dec` of the last goto the fake telescope received.
+fn sent_target(fake: &FakeSeestar) -> (f64, f64) {
+    let request = fake
+        .received()
+        .into_iter()
+        .rev()
+        .find(|msg| msg["method"] == "iscope_start_view")
+        .expect("a goto was sent");
+    let target = &request["params"]["target_ra_dec"];
+    (
+        target[0].as_f64().expect("ra"),
+        target[1].as_f64().expect("dec"),
+    )
+}
+
+#[tokio::test]
+async fn a_j2000_target_is_sent_in_the_equinox_of_date() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, false));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+    assert_eq!(mount.capabilities().equatorial_system, Epoch::JNow);
+
+    let j2000 = Coordinates::from_hours(6.0, 20.0).unwrap();
+    assert_eq!(j2000.epoch, Epoch::J2000);
+    mount.slew_to_coordinates(&j2000).await.unwrap();
+
+    let (ra_hours, dec_deg) = sent_target(&fake);
+    let expected = j2000.to_epoch(Epoch::JNow, chrono::Utc::now());
+    assert!(
+        (ra_hours - expected.ra.as_hours()).abs() < 1e-6,
+        "{ra_hours}"
+    );
+    assert!(
+        (dec_deg - expected.dec.as_degrees()).abs() < 1e-6,
+        "{dec_deg}"
+    );
+    // And that is not what was passed in: precession since 2000 moves a
+    // position at 6 h by more than a minute of right ascension.
+    assert!(ra_hours - 6.0 > 0.02, "{ra_hours}");
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_target_already_in_the_equinox_of_date_is_sent_unchanged() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, false));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+
+    let of_date = Coordinates::with_epoch(
+        RaDegrees::from_hours(6.0).unwrap(),
+        DecDegrees::new(20.0).unwrap(),
+        Epoch::JNow,
+    );
+    mount.slew_to_coordinates(&of_date).await.unwrap();
+    assert_eq!(sent_target(&fake), (6.0, 20.0));
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn the_reported_position_is_labelled_equinox_of_date() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", true, false));
+    fake.respond_ok("scope_get_equ_coord", json!({"ra": 20.6917, "dec": 45.279}));
+    let backend = backend(&fake).await;
+
+    let position = backend.mount().get_coordinates().await.unwrap();
+    assert_eq!(position.epoch, Epoch::JNow);
+    assert!((position.ra.as_hours() - 20.6917).abs() < 1e-9);
+    assert!((position.dec.as_degrees() - 45.279).abs() < 1e-9);
     backend.disconnect().await;
 }

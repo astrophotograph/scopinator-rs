@@ -29,6 +29,13 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Changed
 
+- `SeestarMount::slew_to_coordinates` converts its target to the equinox of date before sending
+  it, and `get_coordinates` labels the position it returns `Epoch::JNow`. The epoch of a
+  `Coordinates` used to be ignored, so a J2000 position was sent as it was, about 0.37 degrees
+  off in 2026. That a Seestar works in the equinox of date comes from the protocol
+  specification and has not yet been confirmed on a telescope. `MountCapabilities` has a new
+  `equatorial_system` field. `scopinator goto` is unchanged: it still sends the coordinates it
+  is given.
 - The sequencer's `GoToTarget` waits for the mount to arrive before the next command runs. It
   used to return as soon as the mount accepted the slew, so a following `StartImaging` began
   during the slew. It has two new optional fields, `timeout_seconds` (default 300) and

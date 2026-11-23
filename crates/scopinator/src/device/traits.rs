@@ -52,12 +52,17 @@ pub trait Device: Send + Sync {
 /// A telescope mount.
 #[async_trait]
 pub trait Mount: Device {
-    /// Get the current equatorial coordinates.
+    /// Get the current equatorial coordinates, in the mount's own system
+    /// ([`MountCapabilities::equatorial_system`]) and labelled with it. Use
+    /// [`Coordinates::to_epoch`] for another system.
     async fn get_coordinates(&self) -> Result<Coordinates, ScopinatorError>;
 
     /// Start a slew to equatorial coordinates. Returns when the mount has
     /// accepted the request; [`is_slewing`](Self::is_slewing) says when it
     /// has arrived.
+    ///
+    /// The coordinates can be in any system: the backend converts them to
+    /// the one the mount works in. A catalogue position is J2000.
     async fn slew_to_coordinates(&self, coords: &Coordinates) -> Result<(), ScopinatorError>;
 
     /// Abort any in-progress slew.

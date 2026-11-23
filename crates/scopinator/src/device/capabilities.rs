@@ -1,3 +1,5 @@
+use scopinator_types::Epoch;
+
 /// Describes what a mount can do.
 ///
 /// More fields will be added as backends need them, so the struct cannot be
@@ -11,6 +13,10 @@ pub struct MountCapabilities {
     pub can_park: bool,
     pub can_track: bool,
     pub can_move_axis: bool,
+    /// The equatorial system the mount itself works in: what
+    /// [`Mount::get_coordinates`](super::traits::Mount::get_coordinates)
+    /// returns, and what a slew target is converted to before it is sent.
+    pub equatorial_system: Epoch,
 }
 
 /// Describes what a camera can do.
@@ -41,6 +47,7 @@ mod tests {
         assert!(!caps.can_park);
         assert!(!caps.can_track);
         assert!(!caps.can_move_axis);
+        assert_eq!(caps.equatorial_system, Epoch::J2000);
     }
 
     #[test]
