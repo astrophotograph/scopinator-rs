@@ -32,7 +32,7 @@ hide the difference with one rule.
 
 3. **Failure after acceptance comes back from the query.** If the operation fails once under
    way, the next call to its state query returns the error, and calls after that return the
-   idle answer. The backend also emits an `Error` event.
+   idle answer. The backend also emits an event: `SlewFailed` for a slew, `Error` otherwise.
 
 4. **A device that cannot tell says so.** A query returns `ScopinatorError::NotSupported` when
    the device has no way to report the state. It does not guess.
@@ -46,3 +46,11 @@ hide the difference with one rule.
 Every device has an id (`Device::id`) that is unique among the devices a program has open. The
 devices of one instrument share its id as a prefix: `seestar:192.168.1.100:mount`,
 `seestar:192.168.1.100:camera`. Events carry the instrument's id.
+
+## Events
+
+Every event carries the id of the instrument it came from (`UnifiedEvent::device_id`) and,
+when it is about one device of that instrument, that device's id (`UnifiedEvent::source`).
+A backend whose protocol has events translates them; one whose protocol has none polls the
+state queries and emits the same events on each change.
+

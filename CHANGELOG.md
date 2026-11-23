@@ -7,6 +7,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Breaking
 
+- `UnifiedEvent` has a `source` field (the device of the instrument the event is about) and is
+  `#[non_exhaustive]`: build one with `UnifiedEvent::new`. `EventPayload::Error` has a `kind`
+  field.
+- A Seestar goto that fails is reported as `EventType::SlewFailed`, not `EventType::Error`.
 - `Focuser::get_position` is now `focuser_position`, returning a `FocuserPosition`;
   `FilterWheel::get_position` and `set_position` are now `filter_position` (a `FilterPosition`,
   or `None` while the wheel turns) and `set_filter_position`. Filter positions count from zero
@@ -63,6 +67,11 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- Event types `SlewFailed`, `Parked`, `Unparked`, `PierSideChanged`, `ImageReady`,
+  `FocuserMoveCompleted`, `FilterChanged` and `OperationProgress`, and payloads
+  `FocuserPosition`, `FilterPosition` and `Progress`. The Seestar backend emits `Parked`,
+  `SlewFailed`, `FocuserMoveCompleted`, `FilterChanged` and progress for autofocus and plate
+  solving.
 - `scopinator::discovery`: a `Discoverer` trait, `discover_all` to search for every kind of
   instrument at once, and `DeviceManager::connect` to connect to what was found.
   `SeestarDiscoverer` wraps the Seestar's UDP discovery.
