@@ -21,6 +21,67 @@ impl fmt::Display for DeviceId {
     }
 }
 
+/// What kind of device something is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum DeviceKind {
+    Mount,
+    Camera,
+    Focuser,
+    FilterWheel,
+    Switch,
+    Other,
+}
+
+impl fmt::Display for DeviceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Mount => "mount",
+            Self::Camera => "camera",
+            Self::Focuser => "focuser",
+            Self::FilterWheel => "filter wheel",
+            Self::Switch => "switch",
+            Self::Other => "other",
+        })
+    }
+}
+
+/// Who a device is: enough to tell it from the other devices of an
+/// instrument and to show it to a person.
+///
+/// Fields may be added; build one with [`DeviceInfo::new`] and set the
+/// optional fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct DeviceInfo {
+    /// Unique among the devices a program has open, and stable for as long
+    /// as the device stays at the same address.
+    pub id: DeviceId,
+    pub kind: DeviceKind,
+    /// A name to show a person.
+    pub name: String,
+    /// The product model, e.g. `Seestar S50`, when the device reports one.
+    pub model: Option<String>,
+    /// The firmware version as the device writes it, e.g. `6.70`.
+    pub firmware: Option<String>,
+    /// The driver behind the device, for backends that have one (an ASCOM
+    /// driver's name and version, an INDI driver).
+    pub driver: Option<String>,
+}
+
+impl DeviceInfo {
+    pub fn new(id: DeviceId, kind: DeviceKind, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            kind,
+            name: name.into(),
+            model: None,
+            firmware: None,
+            driver: None,
+        }
+    }
+}
+
 /// Human-readable device name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceName(String);
@@ -65,6 +126,22 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn device_kind_roundtrip() {
+        for kind in [
+            DeviceKind::Mount,
+            DeviceKind::Camera,
+            DeviceKind::Focuser,
+            DeviceKind::FilterWheel,
+            DeviceKind::Switch,
+            DeviceKind::Other,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            let back: DeviceKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, back);
+        }
+    }
+
     proptest! {
         #[test]
         fn device_id_roundtrip(s in ".{0,64}") {
@@ -81,6 +158,15 @@ mod tests {
             let json = serde_json::to_string(&name).unwrap();
             let back: DeviceName = serde_json::from_str(&json).unwrap();
             prop_assert_eq!(name, back);
+        }
+
+        #[test]
+        fn device_info_roundtrip(id in ".{0,32}", name in ".{0,32}", model in proptest::option::of(".{0,16}")) {
+            let mut info = DeviceInfo::new(DeviceId::new(id), DeviceKind::Camera, name);
+            info.model = model;
+            let json = serde_json::to_string(&info).unwrap();
+            let back: DeviceInfo = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(info, back);
         }
 
         #[test]

@@ -7,6 +7,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Breaking
 
+- `Device` has two new required methods, `id()` and `info()`. A Seestar's mount and cameras now
+  have their own ids under the telescope's (`seestar:<ip>:mount`, `seestar:<ip>:camera`,
+  `seestar:<ip>:wide`); the mount and main camera used to report the telescope's id as their
+  name. Events still carry the telescope's id.
 - `MountCapabilities`, `CameraCapabilities`, `DeviceStatus`, `MountStatus`, `CameraStatus` and
   `ScopinatorError` are `#[non_exhaustive]`, so that fields and variants can be added for other
   telescope backends without another breaking release. Code outside the `scopinator` crate can
@@ -25,6 +29,7 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `DeviceKind` and `DeviceInfo` (id, kind, name, model, firmware, driver) in `scopinator-types`.
 - `ScopinatorError` has kinds a caller can match on for any backend: `Busy`, `Parked`,
   `InvalidState`, `OutOfRange` and `ConnectionLost`, plus `Alpaca` and `Indi` variants behind
   those features and `is_not_supported()`.

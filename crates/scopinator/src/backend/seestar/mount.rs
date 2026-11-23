@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
-use scopinator_types::{Coordinates, DecDegrees, DeviceId, RaDegrees};
+use scopinator_types::{Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind, RaDegrees};
 
 use crate::device::capabilities::MountCapabilities;
 use crate::device::status::{DeviceStatus, MountStatus};
@@ -24,6 +24,18 @@ impl SeestarMount {
 
 #[async_trait]
 impl Device for SeestarMount {
+    fn id(&self) -> DeviceId {
+        self.device_id.clone()
+    }
+
+    fn info(&self) -> DeviceInfo {
+        let summary = self.client.device_info();
+        let mut info = DeviceInfo::new(self.device_id.clone(), DeviceKind::Mount, "Seestar mount");
+        info.model = summary.model;
+        info.firmware = summary.firmware_string;
+        info
+    }
+
     async fn connect(&self) -> Result<(), ScopinatorError> {
         // Connection is managed by the backend
         Ok(())

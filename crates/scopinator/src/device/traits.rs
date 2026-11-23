@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use scopinator_types::{Coordinates, ExposureSettings, ImageData};
+use scopinator_types::{Coordinates, DeviceId, DeviceInfo, ExposureSettings, ImageData};
 
 use crate::device::capabilities::{CameraCapabilities, MountCapabilities};
 use crate::device::status::{CameraStatus, DeviceStatus, MountStatus};
@@ -8,6 +8,16 @@ use crate::error::ScopinatorError;
 /// Base trait for all telescope devices.
 #[async_trait]
 pub trait Device: Send + Sync {
+    /// This device's id: unique among the devices a program has open. The
+    /// devices of one instrument share its id as a prefix, e.g.
+    /// `seestar:192.168.1.100:mount` and `seestar:192.168.1.100:camera`.
+    fn id(&self) -> DeviceId;
+
+    /// Who this device is: id, kind, name and, where the device reports
+    /// them, model and firmware. Does no I/O; fields the device has not
+    /// reported yet are `None`.
+    fn info(&self) -> DeviceInfo;
+
     /// Connect to the device.
     async fn connect(&self) -> Result<(), ScopinatorError>;
 

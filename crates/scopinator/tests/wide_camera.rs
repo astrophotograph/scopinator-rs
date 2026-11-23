@@ -183,3 +183,36 @@ async fn wide_camera_streams_from_its_own_ports() {
     assert!(methods(&wide).contains(&"iscope_stop_view".to_string()));
     backend.disconnect().await;
 }
+
+#[tokio::test]
+async fn devices_of_one_telescope_have_distinct_ids_under_the_backend_id() {
+    use scopinator_types::DeviceKind;
+
+    let main = FakeSeestar::start().await;
+    let wide = FakeSeestar::start().await;
+    main.respond("get_device_state", device_state(true));
+    let backend = backend(&main, &wide).await;
+
+    let mount = backend.mount();
+    let camera = backend.camera();
+    let wide_camera = backend
+        .second_camera()
+        .await
+        .expect("lookup")
+        .expect("second camera");
+
+    assert_eq!(backend.device_id().as_str(), "seestar:127.0.0.1");
+    assert_eq!(mount.id().as_str(), "seestar:127.0.0.1:mount");
+    assert_eq!(camera.id().as_str(), "seestar:127.0.0.1:camera");
+    assert_eq!(wide_camera.id().as_str(), "seestar:127.0.0.1:wide");
+
+    assert_eq!(mount.info().kind, DeviceKind::Mount);
+    assert_eq!(camera.info().kind, DeviceKind::Camera);
+    assert_eq!(wide_camera.info().kind, DeviceKind::Camera);
+    for info in [mount.info(), camera.info(), wide_camera.info()] {
+        assert_eq!(info.model.as_deref(), Some("Seestar S30"));
+        assert_eq!(info.firmware.as_deref(), Some("9.75"));
+    }
+    assert_eq!(mount.info().id, mount.id());
+    backend.disconnect().await;
+}

@@ -172,12 +172,18 @@ impl SeestarBackend {
 
     /// Get a mount adapter for this Seestar.
     pub fn mount(&self) -> SeestarMount {
-        SeestarMount::new(Arc::clone(&self.client), self.device_id.clone())
+        SeestarMount::new(
+            Arc::clone(&self.client),
+            DeviceId::new(format!("{}:mount", self.device_id)),
+        )
     }
 
     /// Get a camera adapter for this Seestar.
     pub fn camera(&self) -> SeestarCamera {
-        SeestarCamera::new(Arc::clone(&self.client), self.device_id.clone())
+        SeestarCamera::new(
+            Arc::clone(&self.client),
+            DeviceId::new(format!("{}:camera", self.device_id)),
+        )
     }
 
     /// Get the underlying client (for advanced use).
@@ -191,7 +197,10 @@ impl SeestarBackend {
         self.client.device_info()
     }
 
-    /// Get the device ID.
+    /// The id of the telescope as a whole (`seestar:<ip>`), which is the
+    /// `device_id` on the events it emits. Its mount and cameras have ids
+    /// under it: `seestar:<ip>:mount`, `seestar:<ip>:camera` and
+    /// `seestar:<ip>:wide`.
     pub fn device_id(&self) -> &DeviceId {
         &self.device_id
     }

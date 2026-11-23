@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::{StartViewParams, ViewMode};
-use scopinator_types::{BayerPattern, DeviceId, ExposureSettings, ImageData};
+use scopinator_types::{
+    BayerPattern, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, ImageData,
+};
 
 use crate::device::capabilities::CameraCapabilities;
 use crate::device::status::{CameraStatus, DeviceStatus};
@@ -25,6 +27,19 @@ impl SeestarCamera {
 
 #[async_trait]
 impl Device for SeestarCamera {
+    fn id(&self) -> DeviceId {
+        self.device_id.clone()
+    }
+
+    fn info(&self) -> DeviceInfo {
+        let summary = self.client.device_info();
+        let mut info =
+            DeviceInfo::new(self.device_id.clone(), DeviceKind::Camera, "Seestar camera");
+        info.model = summary.model;
+        info.firmware = summary.firmware_string;
+        info
+    }
+
     async fn connect(&self) -> Result<(), ScopinatorError> {
         Ok(())
     }
