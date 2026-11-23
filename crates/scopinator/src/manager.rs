@@ -149,10 +149,54 @@ impl DeviceManager {
                     format!("a Seestar has an IPv4 address, not {address}"),
                 )),
             },
+            #[cfg(feature = "alpaca")]
+            "alpaca" => match found.address {
+                std::net::SocketAddr::V4(address) => {
+                    self.add_alpaca(*address.ip(), address.port()).await
+                }
+                std::net::SocketAddr::V6(address) => Err(ScopinatorError::InvalidArgument(
+                    format!("this Alpaca client takes an IPv4 address, not {address}"),
+                )),
+            },
             kind => Err(ScopinatorError::NotSupported(format!(
                 "no `{kind}` backend in this build"
             ))),
         }
+    }
+
+    /// Connect to the Alpaca server at `host:port` with the default
+    /// configuration and add it.
+    #[cfg(feature = "alpaca")]
+    pub async fn add_alpaca(
+        &self,
+        host: std::net::Ipv4Addr,
+        port: u16,
+    ) -> Result<DeviceId, ScopinatorError> {
+        self.add_alpaca_with_config(host, port, Default::default())
+            .await
+    }
+
+    /// Connect to the Alpaca server at `host:port`, choosing devices and the
+    /// polling interval with an
+    /// [`AlpacaConfig`](crate::backend::alpaca::AlpacaConfig), and add it.
+    #[cfg(feature = "alpaca")]
+    pub async fn add_alpaca_with_config(
+        &self,
+        host: std::net::Ipv4Addr,
+        port: u16,
+        config: crate::backend::alpaca::AlpacaConfig,
+    ) -> Result<DeviceId, ScopinatorError> {
+        use crate::backend::alpaca::AlpacaBackend;
+
+        let id = AlpacaBackend::id_for(host, port);
+        if self.get(&id).is_some() {
+            return Err(ScopinatorError::InvalidState(format!(
+                "{id} has already been added"
+            )));
+        }
+        let backend =
+            AlpacaBackend::connect(host, port, config, Arc::clone(&self.event_bus)).await?;
+        self.add(Arc::new(backend))
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<DeviceId, Arc<dyn Backend>>> {

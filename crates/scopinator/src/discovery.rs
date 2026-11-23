@@ -58,6 +58,8 @@ pub trait Discoverer: Send + Sync {
 #[allow(clippy::vec_init_then_push, unused_mut)]
 pub fn discoverers() -> Vec<Arc<dyn Discoverer>> {
     let mut all: Vec<Arc<dyn Discoverer>> = Vec::new();
+    #[cfg(feature = "alpaca")]
+    all.push(Arc::new(crate::backend::alpaca::AlpacaDiscoverer));
     #[cfg(feature = "seestar")]
     all.push(Arc::new(crate::backend::seestar::SeestarDiscoverer));
     all

@@ -73,6 +73,12 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `scopinator::backend::alpaca::AlpacaBackend`: a whole Alpaca server as a `Backend`. It asks
+  the server what devices it has, connects its mount, cameras, focuser and filter wheel
+  (`AlpacaConfig` chooses among several), and polls them to put the same events on the bus that
+  a Seestar reports by itself: slews, parking, tracking, exposures, focuser and filter moves,
+  and the server going away and coming back. `DeviceManager::add_alpaca` connects one;
+  `AlpacaDiscoverer` makes Alpaca servers show up in `discover_all`.
 - `scopinator::backend::alpaca::AlpacaCameraDevice`: an Alpaca camera as a neutral `Camera`,
   taking real single exposures. It checks the settings against the ranges the camera reports,
   applies binning, subframe, gain and offset, and returns the image as 16-bit samples in rows
