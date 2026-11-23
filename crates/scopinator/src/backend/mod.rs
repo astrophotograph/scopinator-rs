@@ -3,6 +3,8 @@
 //! A [`Backend`] is one instrument a program is connected to, and hands out
 //! its devices as the vendor-neutral traits of [`crate::device`].
 
+#[cfg(feature = "alpaca")]
+pub mod alpaca;
 #[cfg(feature = "seestar")]
 pub mod seestar;
 

@@ -73,6 +73,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `scopinator::backend::alpaca::AlpacaMount` (feature `alpaca`): an ASCOM Alpaca telescope as a
+  neutral `Mount`. It reads the mount's capabilities at connect, converts slew and sync targets
+  to the equatorial system the mount works in, and maps Alpaca's error numbers onto
+  `ScopinatorError` kinds (`Parked`, `NotSupported`, `OutOfRange`, ...).
 - `scopinator-alpaca` has typed clients for the four Alpaca device types a telescope setup is
   made of: `AlpacaTelescope`, `AlpacaCamera`, `AlpacaFocuser` and `AlpacaFilterWheel`, over the
   existing raw property client. `AlpacaCamera::image_bytes` fetches an image in the binary
