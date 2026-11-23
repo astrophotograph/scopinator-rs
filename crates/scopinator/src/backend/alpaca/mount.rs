@@ -39,8 +39,9 @@ struct Profile {
     /// to. `None` for B1950, J2050 and "other".
     system: Option<Epoch>,
     system_name: String,
-    /// The fastest each axis can be moved by hand, in degrees per second.
-    max_axis_rate: [Option<f64>; 2],
+    /// The ranges of speed each axis can be moved at by hand, in degrees per
+    /// second. Empty for an axis that cannot be moved.
+    axis_rates: [Vec<(f64, f64)>; 2],
     name: Option<String>,
     driver: Option<String>,
 }
@@ -79,20 +80,23 @@ impl AlpacaMount {
 
         let system = optional(scope.equatorial_system().await)?;
         let rates = optional(scope.tracking_rates().await)?.unwrap_or_default();
-        let mut max_axis_rate = [None, None];
+        let mut axis_rates = [Vec::new(), Vec::new()];
         for (slot, axis) in [TelescopeAxis::Primary, TelescopeAxis::Secondary]
             .into_iter()
             .enumerate()
         {
             if can(scope.can_move_axis(axis).await)? {
-                max_axis_rate[slot] = optional(scope.axis_rates(axis).await)?
+                axis_rates[slot] = optional(scope.axis_rates(axis).await)?
                     .unwrap_or_default()
                     .iter()
-                    .map(|rate| rate.maximum)
-                    .fold(None, |best: Option<f64>, rate| {
-                        Some(best.map_or(rate, |b| b.max(rate)))
+                    .map(|rate| {
+                        (
+                            rate.minimum.min(rate.maximum),
+                            rate.maximum.max(rate.minimum),
+                        )
                     })
-                    .filter(|rate| *rate > 0.0);
+                    .filter(|(_, maximum)| *maximum > 0.0)
+                    .collect();
             }
         }
         let can_slew = can(scope.can_slew_async().await)?;
@@ -104,7 +108,7 @@ impl AlpacaMount {
         capabilities.can_park = can(scope.can_park().await)?;
         capabilities.can_unpark = can(scope.can_unpark().await)?;
         capabilities.can_track = can_set_tracking;
-        capabilities.can_move_axis = max_axis_rate.iter().any(Option::is_some);
+        capabilities.can_move_axis = axis_rates.iter().any(|rates| !rates.is_empty());
         capabilities.can_slew_alt_az = can(scope.can_slew_alt_az_async().await)?;
         capabilities.can_find_home = can(scope.can_find_home().await)?;
         capabilities.can_pulse_guide = can(scope.can_pulse_guide().await)?;
@@ -125,7 +129,7 @@ impl AlpacaMount {
             capabilities,
             system: epoch,
             system_name: system.map_or_else(|| "unknown".to_string(), |s| format!("{s:?}")),
-            max_axis_rate,
+            axis_rates,
             name: optional(scope.name().await)?,
             driver: optional(scope.driver_info().await)?,
         })
@@ -148,6 +152,28 @@ impl AlpacaMount {
         let native = coords.to_epoch(self.native_system()?, chrono::Utc::now());
         Ok((native.ra.as_hours(), native.dec.as_degrees()))
     }
+}
+
+/// The rate in degrees per second for a speed that is a fraction (-1 to 1)
+/// of the fastest rate in `ranges`, or `None` if the axis has no rates.
+///
+/// Zero is always zero: it stops the axis. Any other speed is scaled to the
+/// fastest rate and, if that lands in a gap between two ranges or below the
+/// slowest rate, moved to the nearest end of a range.
+fn rate_for(speed: f64, ranges: &[(f64, f64)]) -> Option<f64> {
+    let fastest = ranges
+        .iter()
+        .map(|(_, maximum)| *maximum)
+        .reduce(f64::max)?;
+    if speed == 0.0 {
+        return Some(0.0);
+    }
+    let wanted = speed.abs() * fastest;
+    let nearest = ranges
+        .iter()
+        .map(|(minimum, maximum)| wanted.clamp(*minimum, *maximum))
+        .min_by(|a, b| (a - wanted).abs().total_cmp(&(b - wanted).abs()))?;
+    Some(nearest.copysign(speed))
 }
 
 fn tracking_rate(rate: DriveRate) -> TrackingRate {
@@ -275,7 +301,9 @@ impl Mount for AlpacaMount {
     }
 
     /// `speed` is a fraction of the fastest rate the axis offers
-    /// (`AxisRates`).
+    /// (`AxisRates`). A mount can offer its rates in separate ranges, say 0
+    /// to 6.7 and 10 to 20 degrees per second; a speed that falls between
+    /// two ranges is moved to the nearest rate the mount accepts.
     async fn move_axis(&self, mount_axis: MountAxis, speed: f64) -> Result<(), ScopinatorError> {
         if !(-1.0..=1.0).contains(&speed) {
             return Err(ScopinatorError::InvalidArgument(format!(
@@ -283,25 +311,25 @@ impl Mount for AlpacaMount {
             )));
         }
         let (slot, alpaca_axis) = axis(mount_axis)?;
-        let max = self.profile().max_axis_rate[slot].ok_or_else(|| {
+        let rate = rate_for(speed, &self.profile().axis_rates[slot]).ok_or_else(|| {
             ScopinatorError::NotSupported(format!("moving the {mount_axis:?} axis"))
         })?;
         self.scope
-            .move_axis(alpaca_axis, speed * max)
+            .move_axis(alpaca_axis, rate)
             .await
             .map_err(neutral)
     }
 
     async fn stop_motion(&self) -> Result<(), ScopinatorError> {
         let profile = self.profile();
-        if profile.max_axis_rate.iter().all(Option::is_none) {
+        if profile.axis_rates.iter().all(Vec::is_empty) {
             return Err(ScopinatorError::NotSupported("move_axis".into()));
         }
         for (slot, alpaca_axis) in [TelescopeAxis::Primary, TelescopeAxis::Secondary]
             .into_iter()
             .enumerate()
         {
-            if profile.max_axis_rate[slot].is_some() {
+            if !profile.axis_rates[slot].is_empty() {
                 self.scope
                     .move_axis(alpaca_axis, 0.0)
                     .await
@@ -460,5 +488,46 @@ impl Mount for AlpacaMount {
             tracking_rate: optional(self.scope.tracking_rate().await)?.map(tracking_rate),
             coordinates: self.get_coordinates().await.ok(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The simulator's axes: 0 to 6.67 and 10 to 20 degrees per second.
+    const SPLIT: [(f64, f64); 2] = [(0.0, 20.0 / 3.0), (10.0, 20.0)];
+
+    #[test]
+    fn a_speed_is_a_fraction_of_the_fastest_rate() {
+        let one = [(0.0, 4.0)];
+        assert_eq!(rate_for(0.5, &one), Some(2.0));
+        assert_eq!(rate_for(-1.0, &one), Some(-4.0));
+        assert_eq!(rate_for(1.0, &SPLIT), Some(20.0));
+        assert_eq!(rate_for(0.75, &SPLIT), Some(15.0));
+        assert_eq!(rate_for(0.1, &SPLIT), Some(2.0));
+    }
+
+    #[test]
+    fn a_speed_in_a_gap_between_ranges_goes_to_the_nearest_rate() {
+        // 0.4 of 20 is 8: between 6.67 and 10, nearer 6.67.
+        assert_eq!(rate_for(0.4, &SPLIT), Some(20.0 / 3.0));
+        assert_eq!(rate_for(-0.4, &SPLIT), Some(-20.0 / 3.0));
+        // 0.45 of 20 is 9: nearer 10.
+        assert_eq!(rate_for(0.45, &SPLIT), Some(10.0));
+    }
+
+    #[test]
+    fn a_speed_below_the_slowest_rate_goes_up_to_it_and_zero_stays_zero() {
+        let geared = [(1.0, 4.0)];
+        assert_eq!(rate_for(0.1, &geared), Some(1.0));
+        assert_eq!(rate_for(-0.1, &geared), Some(-1.0));
+        assert_eq!(rate_for(0.0, &geared), Some(0.0));
+    }
+
+    #[test]
+    fn an_axis_with_no_rates_cannot_be_moved() {
+        assert_eq!(rate_for(0.5, &[]), None);
+        assert_eq!(rate_for(0.0, &[]), None);
     }
 }
