@@ -7,6 +7,11 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Breaking
 
+- `Focuser::get_position` is now `focuser_position`, returning a `FocuserPosition`;
+  `FilterWheel::get_position` and `set_position` are now `filter_position` (a `FilterPosition`,
+  or `None` while the wheel turns) and `set_filter_position`. Filter positions count from zero
+  for every backend. Both traits have a required `capabilities()`, with `FocuserCapabilities`
+  and `FilterWheelCapabilities`. `FocuserPosition::max_position` is an `Option`.
 - `ImageData` describes its pixels with `format: PixelFormat` (`Mono8`, `Mono16`, `Bayer8`,
   `Bayer16`, `Rgb8`, `Rgb16`, `Jpeg`) in place of `bit_depth`, `is_color` and `bayer_pattern`,
   which could not tell an RGB image from a Bayer mosaic. It also has `metadata: FrameMetadata`,

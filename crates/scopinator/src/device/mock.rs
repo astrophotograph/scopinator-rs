@@ -5,11 +5,13 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use scopinator_types::{
-    Coordinates, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, FrameKind, ImageData,
-    PixelFormat,
+    Coordinates, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, FilterPosition,
+    FocuserPosition, FrameKind, ImageData, PixelFormat,
 };
 
-use super::capabilities::{CameraCapabilities, MountCapabilities};
+use super::capabilities::{
+    CameraCapabilities, FilterWheelCapabilities, FocuserCapabilities, MountCapabilities,
+};
 use super::status::{CameraStatus, DeviceStatus, MountStatus};
 use super::traits::{Camera, Device, FilterWheel, Focuser, Mount};
 use crate::error::ScopinatorError;
@@ -217,17 +219,35 @@ impl Camera for MockCamera {
 pub(crate) struct MockFocuser {
     pub(crate) moving: Script,
     pub(crate) position: Mutex<i32>,
+    /// A focuser that only moves by relative amounts.
+    pub(crate) relative_only: bool,
 }
 
 mock_device!(MockFocuser, DeviceKind::Focuser, "focuser");
 
 #[async_trait]
 impl Focuser for MockFocuser {
-    async fn get_position(&self) -> Result<i32, ScopinatorError> {
-        Ok(*self.position.lock().unwrap())
+    fn capabilities(&self) -> FocuserCapabilities {
+        FocuserCapabilities {
+            absolute: !self.relative_only,
+            max_position: (!self.relative_only).then_some(10_000),
+            ..FocuserCapabilities::default()
+        }
+    }
+
+    async fn focuser_position(&self) -> Result<FocuserPosition, ScopinatorError> {
+        Ok(FocuserPosition {
+            position: *self.position.lock().unwrap(),
+            max_position: self.capabilities().max_position,
+            temperature: None,
+            is_moving: false,
+        })
     }
 
     async fn move_to(&self, position: i32) -> Result<(), ScopinatorError> {
+        if self.relative_only {
+            return Err(ScopinatorError::NotSupported("absolute move".into()));
+        }
         *self.position.lock().unwrap() = position;
         Ok(())
     }
@@ -246,22 +266,46 @@ impl Focuser for MockFocuser {
     }
 }
 
-/// A filter wheel that answers `is_moving` from a script.
+/// A four-slot filter wheel that answers `is_moving` from a script.
 #[derive(Debug, Default)]
 pub(crate) struct MockFilterWheel {
     pub(crate) moving: Script,
     pub(crate) position: Mutex<u32>,
+    /// Report the wheel as between filters.
+    pub(crate) turning: Mutex<bool>,
 }
+
+const MOCK_FILTERS: [&str; 4] = ["L", "R", "G", "B"];
 
 mock_device!(MockFilterWheel, DeviceKind::FilterWheel, "filter wheel");
 
 #[async_trait]
 impl FilterWheel for MockFilterWheel {
-    async fn get_position(&self) -> Result<u32, ScopinatorError> {
-        Ok(*self.position.lock().unwrap())
+    fn capabilities(&self) -> FilterWheelCapabilities {
+        FilterWheelCapabilities {
+            slot_count: MOCK_FILTERS.len() as u32,
+            ..FilterWheelCapabilities::default()
+        }
     }
 
-    async fn set_position(&self, position: u32) -> Result<(), ScopinatorError> {
+    async fn filter_position(&self) -> Result<Option<FilterPosition>, ScopinatorError> {
+        if *self.turning.lock().unwrap() {
+            return Ok(None);
+        }
+        let position = *self.position.lock().unwrap();
+        Ok(Some(FilterPosition {
+            position,
+            name: MOCK_FILTERS.get(position as usize).map(|n| n.to_string()),
+        }))
+    }
+
+    async fn set_filter_position(&self, position: u32) -> Result<(), ScopinatorError> {
+        if position as usize >= MOCK_FILTERS.len() {
+            return Err(ScopinatorError::OutOfRange(format!(
+                "filter {position} of {}",
+                MOCK_FILTERS.len()
+            )));
+        }
         *self.position.lock().unwrap() = position;
         Ok(())
     }
@@ -271,6 +315,126 @@ impl FilterWheel for MockFilterWheel {
     }
 
     async fn get_filter_names(&self) -> Result<Vec<String>, ScopinatorError> {
-        Ok(vec!["L".into(), "R".into(), "G".into(), "B".into()])
+        Ok(MOCK_FILTERS.iter().map(|n| n.to_string()).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_relative_only_focuser_refuses_an_absolute_move() {
+        let focuser = MockFocuser {
+            relative_only: true,
+            ..MockFocuser::default()
+        };
+        assert!(!Focuser::capabilities(&focuser).absolute);
+        assert!(focuser.move_to(100).await.unwrap_err().is_not_supported());
+        focuser.move_relative(25).await.unwrap();
+        focuser.move_relative(-5).await.unwrap();
+        let position = focuser.focuser_position().await.unwrap();
+        assert_eq!(position.position, 20);
+        assert_eq!(position.max_position, None);
+    }
+
+    #[tokio::test]
+    async fn an_absolute_focuser_reports_its_travel() {
+        let focuser = MockFocuser::default();
+        assert!(Focuser::capabilities(&focuser).absolute);
+        focuser.move_to(1500).await.unwrap();
+        let position = focuser.focuser_position().await.unwrap();
+        assert_eq!(position.position, 1500);
+        assert_eq!(position.max_position, Some(10_000));
+    }
+
+    #[tokio::test]
+    async fn filter_positions_count_from_zero_and_are_none_while_turning() {
+        let wheel = MockFilterWheel::default();
+        assert_eq!(FilterWheel::capabilities(&wheel).slot_count, 4);
+        let first = wheel.filter_position().await.unwrap().unwrap();
+        assert_eq!((first.position, first.name.as_deref()), (0, Some("L")));
+
+        wheel.set_filter_position(3).await.unwrap();
+        let last = wheel.filter_position().await.unwrap().unwrap();
+        assert_eq!((last.position, last.name.as_deref()), (3, Some("B")));
+
+        let err = wheel.set_filter_position(4).await.unwrap_err();
+        assert!(matches!(err, ScopinatorError::OutOfRange(_)), "{err:?}");
+
+        *wheel.turning.lock().unwrap() = true;
+        assert_eq!(wheel.filter_position().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_wheel_without_focus_offsets_says_not_supported() {
+        let wheel = MockFilterWheel::default();
+        assert!(!FilterWheel::capabilities(&wheel).has_focus_offsets);
+        assert!(
+            wheel
+                .get_focus_offsets()
+                .await
+                .unwrap_err()
+                .is_not_supported()
+        );
+    }
+
+    /// One object can be both a focuser and a filter wheel (a smart
+    /// telescope's optical train); the position methods do not clash.
+    #[tokio::test]
+    async fn one_type_can_be_a_focuser_and_a_filter_wheel() {
+        #[derive(Default)]
+        struct Both {
+            focuser: MockFocuser,
+            wheel: MockFilterWheel,
+        }
+        mock_device!(Both, DeviceKind::Other, "both");
+
+        #[async_trait]
+        impl Focuser for Both {
+            fn capabilities(&self) -> FocuserCapabilities {
+                Focuser::capabilities(&self.focuser)
+            }
+            async fn focuser_position(&self) -> Result<FocuserPosition, ScopinatorError> {
+                self.focuser.focuser_position().await
+            }
+            async fn move_to(&self, position: i32) -> Result<(), ScopinatorError> {
+                self.focuser.move_to(position).await
+            }
+            async fn move_relative(&self, offset: i32) -> Result<(), ScopinatorError> {
+                self.focuser.move_relative(offset).await
+            }
+            async fn is_moving(&self) -> Result<bool, ScopinatorError> {
+                Focuser::is_moving(&self.focuser).await
+            }
+            async fn halt(&self) -> Result<(), ScopinatorError> {
+                self.focuser.halt().await
+            }
+        }
+
+        #[async_trait]
+        impl FilterWheel for Both {
+            fn capabilities(&self) -> FilterWheelCapabilities {
+                FilterWheel::capabilities(&self.wheel)
+            }
+            async fn filter_position(&self) -> Result<Option<FilterPosition>, ScopinatorError> {
+                self.wheel.filter_position().await
+            }
+            async fn set_filter_position(&self, position: u32) -> Result<(), ScopinatorError> {
+                self.wheel.set_filter_position(position).await
+            }
+            async fn is_moving(&self) -> Result<bool, ScopinatorError> {
+                FilterWheel::is_moving(&self.wheel).await
+            }
+            async fn get_filter_names(&self) -> Result<Vec<String>, ScopinatorError> {
+                self.wheel.get_filter_names().await
+            }
+        }
+
+        let both = Both::default();
+        both.move_to(700).await.unwrap();
+        both.set_filter_position(2).await.unwrap();
+        assert_eq!(both.focuser_position().await.unwrap().position, 700);
+        assert_eq!(both.filter_position().await.unwrap().unwrap().position, 2);
     }
 }

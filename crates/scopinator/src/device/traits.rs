@@ -18,10 +18,13 @@
 
 use async_trait::async_trait;
 use scopinator_types::{
-    Coordinates, DeviceId, DeviceInfo, ExposureSettings, ImageData, MountAxis, SiteLocation,
+    Coordinates, DeviceId, DeviceInfo, ExposureSettings, FilterPosition, FocuserPosition,
+    ImageData, MountAxis, SiteLocation,
 };
 
-use crate::device::capabilities::{CameraCapabilities, MountCapabilities};
+use crate::device::capabilities::{
+    CameraCapabilities, FilterWheelCapabilities, FocuserCapabilities, MountCapabilities,
+};
 use crate::device::status::{CameraStatus, DeviceStatus, MountStatus};
 use crate::error::ScopinatorError;
 
@@ -193,11 +196,18 @@ pub trait Camera: Device {
 /// A telescope focuser.
 #[async_trait]
 pub trait Focuser: Device {
-    /// Get the current focuser position.
-    async fn get_position(&self) -> Result<i32, ScopinatorError>;
+    /// Get focuser capabilities.
+    fn capabilities(&self) -> FocuserCapabilities;
+
+    /// Where the focuser is, with what else it reports: the end of its
+    /// travel, its temperature, whether it is moving. On a focuser that is
+    /// not [`absolute`](FocuserCapabilities::absolute) the position means
+    /// nothing.
+    async fn focuser_position(&self) -> Result<FocuserPosition, ScopinatorError>;
 
     /// Start a move to an absolute position. Returns when the focuser has
-    /// accepted the request.
+    /// accepted the request. `NotSupported` on a focuser that is not
+    /// absolute.
     async fn move_to(&self, position: i32) -> Result<(), ScopinatorError>;
 
     /// Start a move by a relative amount. Returns when the focuser has
@@ -212,18 +222,30 @@ pub trait Focuser: Device {
 }
 
 /// A filter wheel.
+///
+/// Filter positions count from zero, whatever the device's own protocol
+/// does; a backend translates.
 #[async_trait]
 pub trait FilterWheel: Device {
-    /// Get the current filter position.
-    async fn get_position(&self) -> Result<u32, ScopinatorError>;
+    /// Get filter wheel capabilities.
+    fn capabilities(&self) -> FilterWheelCapabilities;
 
-    /// Start a move to a filter position. Returns when the wheel has
-    /// accepted the request.
-    async fn set_position(&self, position: u32) -> Result<(), ScopinatorError>;
+    /// The filter in the light path, or `None` while the wheel is turning.
+    async fn filter_position(&self) -> Result<Option<FilterPosition>, ScopinatorError>;
+
+    /// Start a move to a filter position, counted from zero. Returns when
+    /// the wheel has accepted the request.
+    async fn set_filter_position(&self, position: u32) -> Result<(), ScopinatorError>;
 
     /// True while the wheel is turning.
     async fn is_moving(&self) -> Result<bool, ScopinatorError>;
 
-    /// Get the names of available filters.
+    /// Get the names of available filters, in position order.
     async fn get_filter_names(&self) -> Result<Vec<String>, ScopinatorError>;
+
+    /// The focus offset of each filter, in focuser steps and position
+    /// order, on a wheel that knows them.
+    async fn get_focus_offsets(&self) -> Result<Vec<i32>, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("focus offsets".into()))
+    }
 }

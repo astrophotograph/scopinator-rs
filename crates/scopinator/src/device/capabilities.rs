@@ -42,6 +42,35 @@ pub struct CameraCapabilities {
     pub bit_depth: Option<u32>,
 }
 
+/// Describes what a focuser can do. Start from [`Default`].
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct FocuserCapabilities {
+    /// The focuser knows its position and can be sent to one. A focuser
+    /// without this only moves by relative amounts.
+    pub absolute: bool,
+    /// The far end of the travel, in steps.
+    pub max_position: Option<i32>,
+    /// The most steps one move can cover.
+    pub max_increment: Option<i32>,
+    /// The size of one step in micrometres.
+    pub step_size_um: Option<f64>,
+    /// The focuser reports a temperature.
+    pub has_temperature: bool,
+    /// The focuser can compensate for temperature by itself.
+    pub can_temp_compensate: bool,
+}
+
+/// Describes a filter wheel. Start from [`Default`].
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct FilterWheelCapabilities {
+    /// How many filters the wheel holds.
+    pub slot_count: u32,
+    /// The wheel knows a focus offset for each filter.
+    pub has_focus_offsets: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

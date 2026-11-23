@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FocuserPosition {
     pub position: i32,
-    pub max_position: i32,
+    /// The far end of the travel, on a focuser that knows it.
+    pub max_position: Option<i32>,
     pub temperature: Option<f64>,
     pub is_moving: bool,
 }
@@ -24,7 +25,7 @@ mod tests {
         #[test]
         fn focuser_position_roundtrip(
             position in any::<i32>(),
-            max_position in any::<i32>(),
+            max_position in proptest::option::of(any::<i32>()),
             temperature in temperatures(),
             is_moving in any::<bool>(),
         ) {
