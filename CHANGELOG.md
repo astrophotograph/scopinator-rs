@@ -25,6 +25,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Changed
 
+- The sequencer's `GoToTarget` waits for the mount to arrive before the next command runs. It
+  used to return as soon as the mount accepted the slew, so a following `StartImaging` began
+  during the slew. It has two new optional fields, `timeout_seconds` (default 300) and
+  `settle_seconds`; code that builds the variant must add them, JSON without them still loads.
 - `SeestarMount::get_mount_status` reports `Slewing` and `Parked`. It could only say `Tracking`
   or `Idle` before.
 - `scopinator goto` sets the telescope's clock when it is clearly wrong, using this computer's
