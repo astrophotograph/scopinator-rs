@@ -73,6 +73,12 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `scopinator-alpaca` has typed clients for the four Alpaca device types a telescope setup is
+  made of: `AlpacaTelescope`, `AlpacaCamera`, `AlpacaFocuser` and `AlpacaFilterWheel`, over the
+  existing raw property client. `AlpacaCamera::image_bytes` fetches an image in the binary
+  ImageBytes encoding, and `AlpacaImage::to_row_major_u16` reorders it from Alpaca's
+  column-by-column layout into rows. `AlpacaError::NotImplemented` separates "the device does
+  not have this" (error 0x400) from other device errors.
 - `CameraCapabilities` describes the sensor: type, gain, offset and exposure ranges, maximum
   binning, full well, electrons per ADU, and whether the camera has a region of interest and a
   cooler. `Camera` has `set_cooler`, `set_target_temperature` and `cooler_power`, and

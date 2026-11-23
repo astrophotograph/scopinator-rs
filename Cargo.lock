@@ -1508,6 +1508,8 @@ dependencies = [
 name = "scopinator-alpaca"
 version = "0.6.0"
 dependencies = [
+ "chrono",
+ "proptest",
  "reqwest",
  "scopinator-types",
  "serde",

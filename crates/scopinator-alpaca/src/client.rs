@@ -75,10 +75,10 @@ impl AlpacaClient {
             .await?;
 
         if resp.error_number != 0 {
-            return Err(AlpacaError::Device {
-                code: resp.error_number,
-                message: resp.error_message,
-            });
+            return Err(AlpacaError::from_reply(
+                resp.error_number,
+                resp.error_message,
+            ));
         }
 
         Ok(resp.value)
@@ -118,13 +118,48 @@ impl AlpacaClient {
             .await?;
 
         if resp.error_number != 0 {
-            return Err(AlpacaError::Device {
-                code: resp.error_number,
-                message: resp.error_message,
-            });
+            return Err(AlpacaError::from_reply(
+                resp.error_number,
+                resp.error_message,
+            ));
         }
 
         Ok(resp.value)
+    }
+
+    /// GET a property asking for the binary ImageBytes encoding
+    /// (`Accept: application/imagebytes`), and return the reply's content
+    /// type and body as they came.
+    pub(crate) async fn get_image_bytes(
+        &self,
+        device_type: &str,
+        device_number: u32,
+        property: &str,
+    ) -> Result<(String, Vec<u8>), AlpacaError> {
+        let url = format!(
+            "{}/api/v1/{device_type}/{device_number}/{property}",
+            self.base_url
+        );
+        let tid = self.next_transaction_id();
+        trace!(url = %url, "alpaca GET imagebytes");
+        let resp = self
+            .http
+            .get(&url)
+            .header(reqwest::header::ACCEPT, crate::image::IMAGE_BYTES_MIME)
+            .query(&[
+                ("ClientID", CLIENT_ID.to_string()),
+                ("ClientTransactionID", tid.to_string()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?;
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        Ok((content_type, resp.bytes().await?.to_vec()))
     }
 
     /// Query the management API for configured devices.
