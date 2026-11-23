@@ -244,6 +244,30 @@ mod tests {
         assert_eq!(wheel.moving.asked(), 3);
     }
 
+    #[tokio::test]
+    async fn a_mount_without_the_optional_requests_says_not_supported() {
+        use scopinator_types::{Coordinates, MountAxis};
+
+        let mount = MockMount::default();
+        let somewhere = Coordinates::from_hours(1.0, 2.0).unwrap();
+        assert!(mount.unpark().await.unwrap_err().is_not_supported());
+        assert!(
+            mount
+                .sync_to_coordinates(&somewhere)
+                .await
+                .unwrap_err()
+                .is_not_supported()
+        );
+        assert!(
+            mount
+                .move_axis(MountAxis::Primary, 0.5)
+                .await
+                .unwrap_err()
+                .is_not_supported()
+        );
+        assert!(mount.stop_motion().await.unwrap_err().is_not_supported());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_device_that_cannot_tell_ends_the_wait_with_not_supported() {
         let mount = MockMount::default();

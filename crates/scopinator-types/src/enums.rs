@@ -47,6 +47,16 @@ pub enum PierSide {
     Unknown,
 }
 
+/// One of a mount's two axes, whatever kind of mount it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum MountAxis {
+    /// Right ascension on an equatorial mount, azimuth on an alt-az mount.
+    Primary,
+    /// Declination on an equatorial mount, altitude on an alt-az mount.
+    Secondary,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +101,15 @@ mod tests {
             Just(PierSide::West),
             Just(PierSide::Unknown),
         ]
+    }
+
+    #[test]
+    fn mount_axis_roundtrip() {
+        for axis in [MountAxis::Primary, MountAxis::Secondary] {
+            let json = serde_json::to_string(&axis).unwrap();
+            let back: MountAxis = serde_json::from_str(&json).unwrap();
+            assert_eq!(axis, back);
+        }
     }
 
     proptest! {

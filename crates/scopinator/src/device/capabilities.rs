@@ -11,6 +11,9 @@ pub struct MountCapabilities {
     pub can_slew: bool,
     pub can_sync: bool,
     pub can_park: bool,
+    /// The mount has an unpark request. A mount without one usually leaves
+    /// park by itself when it is sent a slew.
+    pub can_unpark: bool,
     pub can_track: bool,
     pub can_move_axis: bool,
     /// The equatorial system the mount itself works in: what
@@ -45,6 +48,7 @@ mod tests {
         assert!(!caps.can_slew);
         assert!(!caps.can_sync);
         assert!(!caps.can_park);
+        assert!(!caps.can_unpark);
         assert!(!caps.can_track);
         assert!(!caps.can_move_axis);
         assert_eq!(caps.equatorial_system, Epoch::J2000);

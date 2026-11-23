@@ -4,8 +4,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
+use scopinator_seestar::command::params::Direction;
 use scopinator_types::{
-    Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind, Epoch, RaDegrees,
+    Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind, Epoch, MountAxis, RaDegrees,
 };
 
 use crate::device::capabilities::MountCapabilities;
@@ -27,6 +28,27 @@ const GOTO_START_GRACE: Duration = Duration::from_secs(15);
 /// centring hides the difference from J2000 (about 0.37 degrees in 2026) on
 /// the device itself.
 const SEESTAR_EPOCH: Epoch = Epoch::JNow;
+
+/// The speed gear manual moves use. Gear 2 at 60 percent moved an S50
+/// gently; what the other gears do has not been measured.
+const JOG_LEVEL: i32 = 2;
+
+/// How long the telescope keeps moving after one `move_axis` before it stops
+/// by itself, in seconds.
+const JOG_SECONDS: i32 = 10;
+
+/// Turn a refused command into an error.
+fn command_ok(
+    response: scopinator_seestar::response::CommandResponse,
+) -> Result<(), ScopinatorError> {
+    response
+        .into_result()
+        .map_err(|e| scopinator_seestar::SeestarError::CommandFailed {
+            code: e.code,
+            message: e.message,
+        })?;
+    Ok(())
+}
 
 /// Seestar mount adapter.
 pub struct SeestarMount {
@@ -209,12 +231,9 @@ impl Mount for SeestarMount {
         let (ra_hours, dec_deg) = (of_date.ra.as_hours(), of_date.dec.as_degrees());
         self.client
             .goto(&name, ra_hours, dec_deg)
-            .await?
-            .into_result()
-            .map_err(|e| scopinator_seestar::SeestarError::CommandFailed {
-                code: e.code,
-                message: e.message,
-            })?;
+            .await
+            .map_err(ScopinatorError::from)
+            .and_then(command_ok)?;
         self.goto.accepted();
         Ok(())
     }
@@ -277,6 +296,57 @@ impl Mount for SeestarMount {
         Ok(())
     }
 
+    /// `scope_sync` with the position in the telescope's own system. That
+    /// it takes right ascension in hours and declination in degrees, like a
+    /// goto, has not been checked against a telescope.
+    async fn sync_to_coordinates(&self, coords: &Coordinates) -> Result<(), ScopinatorError> {
+        let of_date = coords.to_epoch(SEESTAR_EPOCH, chrono::Utc::now());
+        self.client
+            .send_and_validate(Command::ScopeSync(
+                of_date.ra.as_hours(),
+                of_date.dec.as_degrees(),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    /// A manual move with `scope_speed_move`.
+    ///
+    /// The telescope moves in one direction at a time, so moving a second
+    /// axis replaces the motion of the first, and it stops by itself after
+    /// ten seconds. The directions are those found on an S50 in
+    /// equatorial mode (east increases right ascension, north increases
+    /// declination); in alt-az mode they have not been checked.
+    async fn move_axis(&self, axis: MountAxis, speed: f64) -> Result<(), ScopinatorError> {
+        if !(-1.0..=1.0).contains(&speed) {
+            return Err(ScopinatorError::InvalidArgument(format!(
+                "axis speed {speed} is not between -1 and 1"
+            )));
+        }
+        let percent = (speed.abs() * 100.0).round() as i32;
+        if percent == 0 {
+            return self.stop_motion().await;
+        }
+        let direction = match (axis, speed > 0.0) {
+            (MountAxis::Primary, true) => Direction::East,
+            (MountAxis::Primary, false) => Direction::West,
+            (MountAxis::Secondary, true) => Direction::North,
+            (MountAxis::Secondary, false) => Direction::South,
+            (other, _) => {
+                return Err(ScopinatorError::NotSupported(format!("axis {other:?}")));
+            }
+        };
+        command_ok(
+            self.client
+                .jog(direction, JOG_LEVEL, percent, JOG_SECONDS)
+                .await?,
+        )
+    }
+
+    async fn stop_motion(&self) -> Result<(), ScopinatorError> {
+        command_ok(self.client.stop_jog().await?)
+    }
+
     async fn set_tracking(&self, enabled: bool) -> Result<(), ScopinatorError> {
         self.client
             .send_and_validate(Command::ScopeSetTrackState(enabled))
@@ -293,6 +363,9 @@ impl Mount for SeestarMount {
             can_slew: true,
             can_sync: true,
             can_park: true,
+            // A Seestar opens its arm when it is sent a goto; it has no
+            // separate unpark request.
+            can_unpark: false,
             can_track: true,
             can_move_axis: true,
             equatorial_system: SEESTAR_EPOCH,

@@ -58,6 +58,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `Mount::sync_to_coordinates`, `unpark`, `move_axis` and `stop_motion`, which answer
+  `NotSupported` unless a backend provides them, with `MountAxis` and
+  `MountCapabilities::can_unpark`. The Seestar mount provides sync (`scope_sync`) and axis
+  motion (`scope_speed_move`); it has no unpark request.
 - The `Backend` trait: one connected instrument, handing out its mount, cameras, focuser and
   filter wheel as the neutral device traits. `SeestarBackend` implements it, and
   `DeviceManager::add` takes any implementation.

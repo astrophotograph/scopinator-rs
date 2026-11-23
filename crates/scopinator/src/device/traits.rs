@@ -17,7 +17,7 @@
 //!    backend, not by the backends themselves.
 
 use async_trait::async_trait;
-use scopinator_types::{Coordinates, DeviceId, DeviceInfo, ExposureSettings, ImageData};
+use scopinator_types::{Coordinates, DeviceId, DeviceInfo, ExposureSettings, ImageData, MountAxis};
 
 use crate::device::capabilities::{CameraCapabilities, MountCapabilities};
 use crate::device::status::{CameraStatus, DeviceStatus, MountStatus};
@@ -83,6 +83,43 @@ pub trait Mount: Device {
     /// Start parking the mount. Returns when the mount has accepted the
     /// request; [`is_parked`](Self::is_parked) says when it is there.
     async fn park(&self) -> Result<(), ScopinatorError>;
+
+    /// Leave the park position, on a mount that has a request for it
+    /// ([`MountCapabilities::can_unpark`]). Returns when the mount has
+    /// accepted the request; [`is_parked`](Self::is_parked) says when it is
+    /// out.
+    async fn unpark(&self) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("unpark".into()))
+    }
+
+    /// Tell the mount that it is pointing at `coords`, correcting its
+    /// pointing model, without moving it. The coordinates can be in any
+    /// system, as for a slew.
+    async fn sync_to_coordinates(&self, _coords: &Coordinates) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("sync".into()))
+    }
+
+    /// Start moving one axis by hand, as from a direction pad, and keep
+    /// moving until [`stop_motion`](Self::stop_motion).
+    ///
+    /// `speed` is a fraction of the mount's manual slewing speed, from -1 to
+    /// 1; a value outside that is an `InvalidArgument`. Positive is towards
+    /// increasing right ascension or azimuth on the primary axis and
+    /// increasing declination or altitude on the secondary axis. Zero stops
+    /// that axis.
+    ///
+    /// A backend may stop the motion by itself after some seconds as a
+    /// safeguard against a lost connection; to keep moving, send the request
+    /// again. Whether both axes can move at once depends on the mount.
+    async fn move_axis(&self, _axis: MountAxis, _speed: f64) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("move_axis".into()))
+    }
+
+    /// Stop all motion started with [`move_axis`](Self::move_axis). Does not
+    /// abort a slew or stop tracking.
+    async fn stop_motion(&self) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("move_axis".into()))
+    }
 
     /// Enable or disable sidereal tracking.
     async fn set_tracking(&self, enabled: bool) -> Result<(), ScopinatorError>;

@@ -19,7 +19,7 @@ use common::FakeSeestar;
 use scopinator::backend::seestar::{SeestarBackend, SeestarEndpoints};
 use scopinator::{Mount, ScopinatorError, UnifiedEventBus};
 use scopinator_seestar::SeestarConfig;
-use scopinator_types::{Coordinates, DecDegrees, Epoch, RaDegrees, SlewState};
+use scopinator_types::{Coordinates, DecDegrees, Epoch, MountAxis, RaDegrees, SlewState};
 use serde_json::{Value, json};
 
 fn mount_state(move_type: &str, tracking: bool, close: bool) -> Value {
@@ -282,5 +282,126 @@ async fn the_reported_position_is_labelled_equinox_of_date() {
     assert_eq!(position.epoch, Epoch::JNow);
     assert!((position.ra.as_hours() - 20.6917).abs() < 1e-9);
     assert!((position.dec.as_degrees() - 45.279).abs() < 1e-9);
+    backend.disconnect().await;
+}
+
+/// The parameters of every request for `method` the fake telescope got.
+fn sent(fake: &FakeSeestar, method: &str) -> Vec<Value> {
+    fake.received()
+        .into_iter()
+        .filter(|msg| msg["method"] == method)
+        .map(|msg| msg["params"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn sync_sends_the_position_in_the_equinox_of_date() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", true, false));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+    assert!(mount.capabilities().can_sync);
+
+    let j2000 = Coordinates::from_hours(6.0, 20.0).unwrap();
+    mount.sync_to_coordinates(&j2000).await.unwrap();
+
+    let params = sent(&fake, "scope_sync");
+    assert_eq!(params.len(), 1);
+    let expected = j2000.to_epoch(Epoch::JNow, chrono::Utc::now());
+    let ra = params[0][0].as_f64().unwrap();
+    let dec = params[0][1].as_f64().unwrap();
+    assert!((ra - expected.ra.as_hours()).abs() < 1e-6, "{ra}");
+    assert!((dec - expected.dec.as_degrees()).abs() < 1e-6, "{dec}");
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_refused_sync_is_an_error() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", true, false));
+    fake.respond_error("scope_sync", 207, "fail to operate");
+    let backend = backend(&fake).await;
+    let err = backend
+        .mount()
+        .sync_to_coordinates(&target())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("207"), "{err}");
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn move_axis_jogs_in_the_direction_of_the_axis_and_sign() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", true, false));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+    assert!(mount.capabilities().can_move_axis);
+
+    // Angles as found on an S50 in equatorial mode: west 0, north 90, east
+    // 180, south 270. East increases right ascension, north declination.
+    mount.move_axis(MountAxis::Primary, 0.6).await.unwrap();
+    mount.move_axis(MountAxis::Primary, -1.0).await.unwrap();
+    mount.move_axis(MountAxis::Secondary, 0.25).await.unwrap();
+    mount.move_axis(MountAxis::Secondary, -0.5).await.unwrap();
+
+    let moves: Vec<(i64, i64)> = sent(&fake, "scope_speed_move")
+        .iter()
+        .map(|p| (p["angle"].as_i64().unwrap(), p["percent"].as_i64().unwrap()))
+        .collect();
+    assert_eq!(moves, [(180, 60), (0, 100), (90, 25), (270, 50)]);
+    // Each move stops by itself after ten seconds.
+    for params in sent(&fake, "scope_speed_move") {
+        assert_eq!(params["dur_sec"], 10);
+    }
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn zero_speed_and_stop_motion_stop_the_jog() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", true, false));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+
+    mount.move_axis(MountAxis::Primary, 0.0).await.unwrap();
+    mount.stop_motion().await.unwrap();
+    let stops = sent(&fake, "scope_speed_move");
+    assert_eq!(stops.len(), 2);
+    for params in stops {
+        assert_eq!(params["percent"], 0);
+    }
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn an_axis_speed_outside_minus_one_to_one_is_refused_before_anything_is_sent() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", true, false));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+
+    for speed in [1.5, -1.01, f64::NAN, f64::INFINITY] {
+        let err = mount
+            .move_axis(MountAxis::Primary, speed)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ScopinatorError::InvalidArgument(_)),
+            "{speed}: {err:?}"
+        );
+    }
+    assert!(sent(&fake, "scope_speed_move").is_empty());
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_seestar_has_no_unpark_request() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, true));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+    assert!(!mount.capabilities().can_unpark);
+    assert!(mount.unpark().await.unwrap_err().is_not_supported());
     backend.disconnect().await;
 }
