@@ -2,8 +2,10 @@
 //! Alpaca server, which covers most computer-controlled astronomy gear
 //! (natively, or through ASCOM Remote in front of an ASCOM driver).
 
+mod camera;
 mod mount;
 
+pub use camera::AlpacaCameraDevice;
 pub use mount::AlpacaMount;
 
 use scopinator_alpaca::AlpacaError;
