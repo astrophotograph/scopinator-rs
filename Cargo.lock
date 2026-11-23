@@ -1548,6 +1548,7 @@ name = "scopinator-types"
 version = "0.6.0"
 dependencies = [
  "bytes",
+ "chrono",
  "proptest",
  "serde",
  "serde_json",

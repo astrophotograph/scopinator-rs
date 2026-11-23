@@ -29,6 +29,7 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `Coordinates::to_epoch` converts between J2000 and the equinox of date (precession only).
 - `DeviceKind` and `DeviceInfo` (id, kind, name, model, firmware, driver) in `scopinator-types`.
 - `ScopinatorError` has kinds a caller can match on for any backend: `Busy`, `Parked`,
   `InvalidState`, `OutOfRange` and `ConnectionLost`, plus `Alpaca` and `Indi` variants behind
