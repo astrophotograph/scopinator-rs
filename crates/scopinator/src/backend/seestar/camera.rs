@@ -5,7 +5,7 @@ use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::{StartViewParams, ViewMode};
 use scopinator_types::{
-    BayerPattern, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, ImageData,
+    BayerPattern, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, ImageData, SensorType,
 };
 
 use crate::device::capabilities::CameraCapabilities;
@@ -64,6 +64,7 @@ impl Device for SeestarCamera {
 #[async_trait]
 impl Camera for SeestarCamera {
     async fn start_exposure(&self, settings: &ExposureSettings) -> Result<(), ScopinatorError> {
+        super::check_exposure(settings)?;
         // Seestar uses iscope_start_view to begin observing,
         // then iscope_start_stack for stacking exposures.
         let cmd = Command::IscopeStartView(StartViewParams {
@@ -149,8 +150,12 @@ impl Camera for SeestarCamera {
             can_stream: true,
             max_width: info.chip_size.map(|(width, _)| width),
             max_height: info.chip_size.map(|(_, height)| height),
-            pixel_size_um: info.pixel_size_um,
+            pixel_size_x_um: info.pixel_size_um,
+            pixel_size_y_um: info.pixel_size_um,
             bit_depth: Some(12),
+            sensor_type: super::bayer_pattern(info.debayer_pattern.as_deref())
+                .map(SensorType::Bayer),
+            ..CameraCapabilities::default()
         }
     }
 
@@ -165,10 +170,7 @@ impl Camera for SeestarCamera {
             } else {
                 CameraState::Idle
             },
-            temperature: None,
-            gain: None,
-            stacked_frames: None,
-            dropped_frames: None,
+            ..CameraStatus::default()
         })
     }
 }

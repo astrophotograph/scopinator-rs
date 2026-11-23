@@ -1,4 +1,4 @@
-use scopinator_types::{Epoch, TrackingRate};
+use scopinator_types::{Epoch, SensorType, TrackingRate};
 
 /// Describes what a mount can do.
 ///
@@ -47,8 +47,30 @@ pub struct CameraCapabilities {
     pub can_stream: bool,
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
-    pub pixel_size_um: Option<f64>,
+    /// Pixel width and height in micrometres.
+    pub pixel_size_x_um: Option<f64>,
+    pub pixel_size_y_um: Option<f64>,
+    /// Bits of real signal per sample (12 for a 12-bit sensor, even when it
+    /// delivers 16-bit samples).
     pub bit_depth: Option<u32>,
+    pub sensor_type: Option<SensorType>,
+    /// The lowest and highest gain the camera accepts.
+    pub gain_range: Option<(i32, i32)>,
+    /// The lowest and highest offset the camera accepts.
+    pub offset_range: Option<(i32, i32)>,
+    /// The shortest and longest exposure in seconds.
+    pub exposure_range_s: Option<(f64, f64)>,
+    /// The highest binning factor.
+    pub max_bin: Option<u32>,
+    /// The camera can read out part of its sensor.
+    pub can_set_roi: bool,
+    pub has_cooler: bool,
+    /// The cooler regulates to a temperature that can be set.
+    pub can_set_temperature: bool,
+    /// Full well capacity in electrons.
+    pub full_well_e: Option<f64>,
+    /// Electrons per ADU at the current gain.
+    pub e_per_adu: Option<f64>,
 }
 
 /// Describes what a focuser can do. Start from [`Default`].
@@ -111,7 +133,13 @@ mod tests {
         assert!(!caps.can_stream);
         assert_eq!(caps.max_width, None);
         assert_eq!(caps.max_height, None);
-        assert_eq!(caps.pixel_size_um, None);
+        assert_eq!(caps.pixel_size_x_um, None);
+        assert_eq!(caps.pixel_size_y_um, None);
+        assert_eq!(caps.sensor_type, None);
+        assert_eq!(caps.gain_range, None);
+        assert!(!caps.can_set_roi);
+        assert!(!caps.has_cooler);
+        assert!(!caps.can_set_temperature);
         assert_eq!(caps.bit_depth, None);
     }
 }

@@ -17,7 +17,7 @@ use common::{FakeFrame, FakeSeestar};
 use scopinator::backend::seestar::{SeestarBackend, SeestarEndpoints};
 use scopinator::{Camera, Device, UnifiedEventBus};
 use scopinator_seestar::SeestarConfig;
-use scopinator_types::{BayerPattern, ExposureSettings, PixelFormat};
+use scopinator_types::{BayerPattern, ExposureSettings, PixelFormat, SensorType};
 use serde_json::{Value, json};
 
 fn device_state(second_camera: bool) -> Value {
@@ -118,7 +118,13 @@ async fn wide_camera_streams_from_its_own_ports() {
     // Capabilities are the wide sensor's, not the main camera's.
     let caps = camera.capabilities();
     assert_eq!((caps.max_width, caps.max_height), (Some(1920), Some(1080)));
-    assert_eq!(caps.pixel_size_um, Some(2.7));
+    assert_eq!(caps.pixel_size_x_um, Some(2.7));
+    assert_eq!(caps.pixel_size_y_um, Some(2.7));
+    assert_eq!(
+        caps.sensor_type,
+        Some(SensorType::Bayer(BayerPattern::Rggb))
+    );
+    assert!(!caps.can_set_roi && !caps.has_cooler);
     let main_caps = backend.camera().capabilities();
     assert_eq!(
         (main_caps.max_width, main_caps.max_height),
@@ -261,4 +267,65 @@ async fn a_one_camera_seestar_has_one_camera_as_a_backend() {
     assert_eq!(seestar.cameras().await.expect("cameras").len(), 1);
     assert_eq!(wide.connection_count(), 0);
     seestar.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn a_seestar_camera_refuses_frames_and_regions_it_cannot_take() {
+    use scopinator_types::{FrameType, Roi};
+
+    let main = FakeSeestar::start().await;
+    let wide = FakeSeestar::start().await;
+    main.respond("get_device_state", device_state(true));
+    let backend = backend(&main, &wide).await;
+    let camera = backend.camera();
+    let wide_camera = backend
+        .second_camera()
+        .await
+        .expect("lookup")
+        .expect("second camera");
+
+    let dark = ExposureSettings::new(10.0).with_frame_type(FrameType::Dark);
+    let region = ExposureSettings::new(10.0).with_roi(Roi::new(0, 0, 100, 100).unwrap());
+    for settings in [&dark, &region] {
+        assert!(
+            camera
+                .start_exposure(settings)
+                .await
+                .unwrap_err()
+                .is_not_supported()
+        );
+        assert!(
+            wide_camera
+                .start_exposure(settings)
+                .await
+                .unwrap_err()
+                .is_not_supported()
+        );
+    }
+    // Nothing was started on either camera.
+    let started = |fake: &FakeSeestar| {
+        fake.received()
+            .iter()
+            .any(|msg| msg["method"] == "iscope_start_view")
+    };
+    assert!(!started(&main));
+    assert!(!started(&wide));
+
+    // And it has no cooler to drive.
+    assert!(
+        camera
+            .set_cooler(true)
+            .await
+            .unwrap_err()
+            .is_not_supported()
+    );
+    assert!(
+        camera
+            .set_target_temperature(-10.0)
+            .await
+            .unwrap_err()
+            .is_not_supported()
+    );
+    assert!(camera.cooler_power().await.unwrap_err().is_not_supported());
+    backend.disconnect().await;
 }

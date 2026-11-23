@@ -171,11 +171,8 @@ async fn execute_command_inner(
                 .as_ref()
                 .ok_or_else(|| ScopinatorError::NotSupported("no camera in context".into()))?;
             debug!(exposure = exposure_seconds, gain = ?gain, "start imaging");
-            let settings = ExposureSettings {
-                duration_seconds: *exposure_seconds,
-                gain: *gain,
-                ..Default::default()
-            };
+            let mut settings = ExposureSettings::new(*exposure_seconds);
+            settings.gain = *gain;
             camera.start_exposure(&settings).await?;
             Ok(())
         }

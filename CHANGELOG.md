@@ -7,6 +7,12 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Breaking
 
+- `ExposureSettings` has `frame_type: FrameType` (light, dark, bias, flat) in place of
+  `light: bool`, and new `roi` and `readout_mode` fields. It is `#[non_exhaustive]`: build it
+  with `ExposureSettings::new(seconds)` and the `with_` methods.
+- `CameraCapabilities::pixel_size_um` is split into `pixel_size_x_um` and `pixel_size_y_um`.
+- The Seestar cameras refuse an exposure that asks for a dark, bias or flat frame or for a
+  region of interest, with `NotSupported`. They used to ignore the request and start a view.
 - `UnifiedEvent` has a `source` field (the device of the instrument the event is about) and is
   `#[non_exhaustive]`: build one with `UnifiedEvent::new`. `EventPayload::Error` has a `kind`
   field.
@@ -67,6 +73,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `CameraCapabilities` describes the sensor: type, gain, offset and exposure ranges, maximum
+  binning, full well, electrons per ADU, and whether the camera has a region of interest and a
+  cooler. `Camera` has `set_cooler`, `set_target_temperature` and `cooler_power`, and
+  `CameraStatus` reports the cooler. New types `FrameType`, `Roi` and `SensorType`.
 - Event types `SlewFailed`, `Parked`, `Unparked`, `PierSideChanged`, `ImageReady`,
   `FocuserMoveCompleted`, `FilterChanged` and `OperationProgress`, and payloads
   `FocuserPosition`, `FilterPosition` and `Progress`. The Seestar backend emits `Parked`,

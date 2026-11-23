@@ -6,7 +6,7 @@ use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::params::{StartViewParams, ViewMode};
 use scopinator_seestar::command::{Command, ImagingCommand};
 use scopinator_types::{
-    BayerPattern, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, ImageData,
+    BayerPattern, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, ImageData, SensorType,
 };
 
 use crate::device::capabilities::CameraCapabilities;
@@ -102,7 +102,8 @@ impl Device for SeestarWideCamera {
 impl Camera for SeestarWideCamera {
     /// Start the wide view and its frame stream. Exposure settings are not
     /// applied: the wide camera runs its own auto exposure.
-    async fn start_exposure(&self, _settings: &ExposureSettings) -> Result<(), ScopinatorError> {
+    async fn start_exposure(&self, settings: &ExposureSettings) -> Result<(), ScopinatorError> {
+        super::check_exposure(settings)?;
         self.ensure_connected().await?;
         let view = Command::IscopeStartView(StartViewParams {
             mode: Some(ViewMode::Star),
@@ -177,8 +178,12 @@ impl Camera for SeestarWideCamera {
             can_stream: true,
             max_width: sensor.chip_size.map(|(width, _)| width),
             max_height: sensor.chip_size.map(|(_, height)| height),
-            pixel_size_um: sensor.pixel_size_um,
+            pixel_size_x_um: sensor.pixel_size_um,
+            pixel_size_y_um: sensor.pixel_size_um,
             bit_depth: Some(12),
+            sensor_type: super::bayer_pattern(sensor.debayer_pattern.as_deref())
+                .map(SensorType::Bayer),
+            ..CameraCapabilities::default()
         }
     }
 
@@ -192,10 +197,7 @@ impl Camera for SeestarWideCamera {
             } else {
                 CameraState::Idle
             },
-            temperature: None,
-            gain: None,
-            stacked_frames: None,
-            dropped_frames: None,
+            ..CameraStatus::default()
         })
     }
 }

@@ -283,6 +283,24 @@ impl SeestarBackend {
     }
 }
 
+/// Refuse what a Seestar camera cannot do with an exposure request: it
+/// starts a view, and has no dark, bias or flat frames to ask for (the
+/// telescope takes its own darks) and no subframe.
+pub(crate) fn check_exposure(
+    settings: &scopinator_types::ExposureSettings,
+) -> Result<(), ScopinatorError> {
+    if settings.frame_type != scopinator_types::FrameType::Light {
+        return Err(ScopinatorError::NotSupported(format!(
+            "{:?} frames",
+            settings.frame_type
+        )));
+    }
+    if settings.roi.is_some() {
+        return Err(ScopinatorError::NotSupported("a region of interest".into()));
+    }
+    Ok(())
+}
+
 /// The colour filter mosaic a Seestar names in `debayer_pattern` (`GR`,
 /// `RG`, `BG`, `GB`: the first row of the mosaic).
 pub(crate) fn bayer_pattern(name: Option<&str>) -> Option<scopinator_types::BayerPattern> {

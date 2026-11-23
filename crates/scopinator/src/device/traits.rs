@@ -238,6 +238,22 @@ pub trait Camera: Device {
     /// Returns true if currently exposing.
     async fn is_exposing(&self) -> Result<bool, ScopinatorError>;
 
+    /// Turn the sensor cooler on or off, on a camera that has one
+    /// ([`CameraCapabilities::has_cooler`]).
+    async fn set_cooler(&self, _on: bool) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("cooler".into()))
+    }
+
+    /// Set the temperature the cooler regulates to, in degrees Celsius.
+    async fn set_target_temperature(&self, _celsius: f64) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("cooler".into()))
+    }
+
+    /// How hard the cooler is working, as a percentage of its maximum.
+    async fn cooler_power(&self) -> Result<f64, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("cooler".into()))
+    }
+
     /// Get camera capabilities.
     fn capabilities(&self) -> CameraCapabilities;
 

@@ -20,4 +20,7 @@ pub enum TypeError {
 
     #[error("invalid azimuth: {0} degrees (must be 0.0..360.0)")]
     InvalidAzimuth(f64),
+
+    #[error("empty region of interest: {width}x{height}")]
+    EmptyRoi { width: u32, height: u32 },
 }

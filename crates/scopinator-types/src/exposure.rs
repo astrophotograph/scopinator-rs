@@ -1,18 +1,126 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+/// What an exposure is for, which decides whether the shutter opens and
+/// how the frame is labelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[non_exhaustive]
+pub enum FrameType {
+    /// A picture of the sky.
+    #[default]
+    Light,
+    /// The same exposure with no light reaching the sensor.
+    Dark,
+    /// The shortest exposure with no light: the read-out offset alone.
+    Bias,
+    /// An evenly lit field, to measure vignetting and dust.
+    Flat,
+}
+
+impl FrameType {
+    /// True if light should reach the sensor (a light or flat frame).
+    pub fn needs_light(self) -> bool {
+        matches!(self, Self::Light | Self::Flat)
+    }
+}
+
+/// A rectangle of the sensor to read out, in unbinned sensor pixels from the
+/// top left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawRoi")]
+pub struct Roi {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Deserialize)]
+struct RawRoi {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl TryFrom<RawRoi> for Roi {
+    type Error = crate::error::TypeError;
+
+    fn try_from(raw: RawRoi) -> Result<Self, Self::Error> {
+        Self::new(raw.x, raw.y, raw.width, raw.height)
+    }
+}
+
+impl Roi {
+    /// A region `width` by `height` pixels with its top left corner at
+    /// (`x`, `y`). It must not be empty.
+    pub fn new(x: u32, y: u32, width: u32, height: u32) -> Result<Self, crate::error::TypeError> {
+        if width == 0 || height == 0 {
+            return Err(crate::error::TypeError::EmptyRoi { width, height });
+        }
+        Ok(Self {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    pub fn x(&self) -> u32 {
+        self.x
+    }
+
+    pub fn y(&self) -> u32 {
+        self.y
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// True if the whole region lies on a sensor of this size.
+    pub fn fits(&self, sensor_width: u32, sensor_height: u32) -> bool {
+        self.x
+            .checked_add(self.width)
+            .is_some_and(|right| right <= sensor_width)
+            && self
+                .y
+                .checked_add(self.height)
+                .is_some_and(|bottom| bottom <= sensor_height)
+    }
+}
+
 /// Settings for a camera exposure.
+///
+/// Fields may be added; start from [`ExposureSettings::new`] or
+/// [`Default`] and use the `with_` methods or set fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ExposureSettings {
     pub duration_seconds: f64,
+    /// `None` leaves the camera's gain as it is.
     pub gain: Option<i32>,
+    /// `None` leaves the camera's offset as it is.
     pub offset: Option<i32>,
     pub bin_x: u32,
     pub bin_y: u32,
-    pub light: bool,
+    #[serde(default)]
+    pub frame_type: FrameType,
+    /// The part of the sensor to read; `None` is all of it.
+    #[serde(default)]
+    pub roi: Option<Roi>,
+    /// One of the camera's read-out modes, by name; `None` leaves it.
+    #[serde(default)]
+    pub readout_mode: Option<String>,
 }
 
 impl Default for ExposureSettings {
+    /// A one-second light frame of the whole sensor, unbinned, with the
+    /// camera's gain and offset left alone.
     fn default() -> Self {
         Self {
             duration_seconds: 1.0,
@@ -20,9 +128,60 @@ impl Default for ExposureSettings {
             offset: None,
             bin_x: 1,
             bin_y: 1,
-            light: true,
+            frame_type: FrameType::Light,
+            roi: None,
+            readout_mode: None,
         }
     }
+}
+
+impl ExposureSettings {
+    /// The defaults with this exposure time.
+    pub fn new(duration_seconds: f64) -> Self {
+        Self {
+            duration_seconds,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_gain(mut self, gain: i32) -> Self {
+        self.gain = Some(gain);
+        self
+    }
+
+    pub fn with_offset(mut self, offset: i32) -> Self {
+        self.offset = Some(offset);
+        self
+    }
+
+    /// The same binning on both axes.
+    pub fn with_binning(mut self, bin: u32) -> Self {
+        self.bin_x = bin;
+        self.bin_y = bin;
+        self
+    }
+
+    pub fn with_frame_type(mut self, frame_type: FrameType) -> Self {
+        self.frame_type = frame_type;
+        self
+    }
+
+    pub fn with_roi(mut self, roi: Roi) -> Self {
+        self.roi = Some(roi);
+        self
+    }
+}
+
+/// What kind of sensor a camera has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum SensorType {
+    /// No colour filters: every pixel sees all the light.
+    Mono,
+    /// A colour sensor that delivers finished colour pixels.
+    Color,
+    /// A colour sensor that delivers the raw mosaic.
+    Bayer(BayerPattern),
 }
 
 /// Kind of frame received on the imaging connection.
@@ -213,6 +372,66 @@ mod tests {
     }
 
     #[test]
+    fn default_exposure_is_a_one_second_unbinned_light_frame() {
+        let exp = ExposureSettings::default();
+        assert_eq!(exp.duration_seconds, 1.0);
+        assert_eq!((exp.bin_x, exp.bin_y), (1, 1));
+        assert_eq!(exp.frame_type, FrameType::Light);
+        assert_eq!((exp.gain, exp.offset, exp.roi), (None, None, None));
+        assert_eq!(exp.readout_mode, None);
+    }
+
+    #[test]
+    fn exposure_builders_set_what_they_name() {
+        let roi = Roi::new(100, 200, 640, 480).unwrap();
+        let exp = ExposureSettings::new(30.0)
+            .with_gain(120)
+            .with_offset(10)
+            .with_binning(2)
+            .with_frame_type(FrameType::Dark)
+            .with_roi(roi);
+        assert_eq!(exp.duration_seconds, 30.0);
+        assert_eq!((exp.gain, exp.offset), (Some(120), Some(10)));
+        assert_eq!((exp.bin_x, exp.bin_y), (2, 2));
+        assert_eq!(exp.frame_type, FrameType::Dark);
+        assert_eq!(exp.roi, Some(roi));
+    }
+
+    #[test]
+    fn settings_written_before_frame_types_existed_still_load() {
+        let json = r#"{"duration_seconds":2.0,"gain":80,"offset":null,"bin_x":1,"bin_y":1}"#;
+        let exp: ExposureSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(exp.frame_type, FrameType::Light);
+        assert_eq!(exp.roi, None);
+    }
+
+    #[test]
+    fn only_light_and_flat_frames_need_light() {
+        assert!(FrameType::Light.needs_light());
+        assert!(FrameType::Flat.needs_light());
+        assert!(!FrameType::Dark.needs_light());
+        assert!(!FrameType::Bias.needs_light());
+    }
+
+    #[test]
+    fn a_roi_must_not_be_empty_and_knows_if_it_fits() {
+        assert!(Roi::new(0, 0, 0, 10).is_err());
+        assert!(Roi::new(0, 0, 10, 0).is_err());
+        assert!(serde_json::from_str::<Roi>(r#"{"x":0,"y":0,"width":0,"height":5}"#).is_err());
+
+        let roi = Roi::new(100, 200, 640, 480).unwrap();
+        assert_eq!(
+            (roi.x(), roi.y(), roi.width(), roi.height()),
+            (100, 200, 640, 480)
+        );
+        assert!(roi.fits(740, 680));
+        assert!(!roi.fits(739, 680));
+        assert!(!roi.fits(740, 679));
+        // No overflow at the far corner of the number range.
+        assert!(!Roi::new(u32::MAX, 0, 2, 1).unwrap().fits(u32::MAX, 10));
+    }
+
+    #[test]
     fn bytes_per_pixel_and_sample_size_for_every_format() {
         let p = BayerPattern::Rggb;
         let cases = [
@@ -307,10 +526,17 @@ mod tests {
             offset in proptest::option::of(any::<i32>()),
             bin_x in 1u32..=16,
             bin_y in 1u32..=16,
-            light in any::<bool>(),
+            which in 0usize..4,
+            roi in proptest::option::of((any::<u32>(), any::<u32>(), 1u32..=10_000, 1u32..=10_000)),
         ) {
-            let duration_seconds = f64::from(duration_ms) / 1000.0;
-            let exp = ExposureSettings { duration_seconds, gain, offset, bin_x, bin_y, light };
+            let mut exp = ExposureSettings::new(f64::from(duration_ms) / 1000.0);
+            exp.gain = gain;
+            exp.offset = offset;
+            exp.bin_x = bin_x;
+            exp.bin_y = bin_y;
+            exp.frame_type =
+                [FrameType::Light, FrameType::Dark, FrameType::Bias, FrameType::Flat][which];
+            exp.roi = roi.map(|(x, y, w, h)| Roi::new(x, y, w, h).unwrap());
             let s = serde_json::to_string(&exp).unwrap();
             let back: ExposureSettings = serde_json::from_str(&s).unwrap();
             prop_assert_eq!(exp, back);
