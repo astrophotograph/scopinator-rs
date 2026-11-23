@@ -53,11 +53,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for n in 1..=3 {
         match wide.get_image().await {
             Ok(image) => println!(
-                "frame {n}: {}x{} {}-bit bayer={:?} kind={:?} {} bytes",
+                "frame {n}: {}x{} {:?} kind={:?} {} bytes",
                 image.width,
                 image.height,
-                image.bit_depth,
-                image.bayer_pattern,
+                image.format,
                 image.frame_kind,
                 image.data.len()
             ),

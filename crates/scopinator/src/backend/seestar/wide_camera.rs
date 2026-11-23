@@ -149,41 +149,14 @@ impl Camera for SeestarWideCamera {
             }
         };
 
-        let header = &frame.header;
-        let (bit_depth, is_color) = match header.bytes_per_pixel() {
-            Some(1) => (8, false),
-            Some(2) => (16, false),
-            Some(3) => (8, true),
-            Some(6) => (16, true),
-            _ => {
-                return Err(ScopinatorError::Backend(format!(
-                    "unsupported image type {} in frame header",
-                    header.img_type
-                )));
-            }
-        };
-        let bayer = !is_color && header.can_debayer != 0;
         let info = self.main.device_info();
-        let pattern = match info
+        let name = info
             .second_camera
             .as_ref()
-            .and_then(|s| s.debayer_pattern.as_deref())
-        {
-            Some("GR") => BayerPattern::Grbg,
-            Some("BG") => BayerPattern::Bggr,
-            Some("GB") => BayerPattern::Gbrg,
-            // The S30's wide camera reports "RG".
-            _ => BayerPattern::Rggb,
-        };
-        Ok(ImageData {
-            width: header.width as u32,
-            height: header.height as u32,
-            data: frame.image_bytes()?,
-            bit_depth,
-            is_color: is_color || bayer,
-            bayer_pattern: bayer.then_some(pattern),
-            frame_kind: frame.kind,
-        })
+            .and_then(|sensor| sensor.debayer_pattern.as_deref());
+        // The S30's wide camera reports "RG".
+        let pattern = super::bayer_pattern(name).unwrap_or(BayerPattern::Rggb);
+        super::image_from_frame(&frame, pattern)
     }
 
     async fn is_exposing(&self) -> Result<bool, ScopinatorError> {

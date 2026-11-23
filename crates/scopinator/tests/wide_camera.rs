@@ -17,7 +17,7 @@ use common::{FakeFrame, FakeSeestar};
 use scopinator::backend::seestar::{SeestarBackend, SeestarEndpoints};
 use scopinator::{Camera, Device, UnifiedEventBus};
 use scopinator_seestar::SeestarConfig;
-use scopinator_types::{BayerPattern, ExposureSettings};
+use scopinator_types::{BayerPattern, ExposureSettings, PixelFormat};
 use serde_json::{Value, json};
 
 fn device_state(second_camera: bool) -> Value {
@@ -160,8 +160,8 @@ async fn wide_camera_streams_from_its_own_ports() {
             .expect("image")
     };
     assert_eq!((image.width, image.height), (4, 2));
-    assert_eq!(image.bit_depth, 16);
-    assert_eq!(image.bayer_pattern, Some(BayerPattern::Rggb));
+    assert_eq!(image.format, PixelFormat::Bayer16(BayerPattern::Rggb));
+    assert_eq!(image.expected_len(), Some(16));
     assert_eq!(&image.data[..], &pixels[..]);
     assert!(camera.is_exposing().await.expect("view state"));
 

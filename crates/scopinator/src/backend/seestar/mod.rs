@@ -283,6 +283,76 @@ impl SeestarBackend {
     }
 }
 
+/// The colour filter mosaic a Seestar names in `debayer_pattern` (`GR`,
+/// `RG`, `BG`, `GB`: the first row of the mosaic).
+pub(crate) fn bayer_pattern(name: Option<&str>) -> Option<scopinator_types::BayerPattern> {
+    use scopinator_types::BayerPattern;
+    match name? {
+        "GR" => Some(BayerPattern::Grbg),
+        "RG" => Some(BayerPattern::Rggb),
+        "BG" => Some(BayerPattern::Bggr),
+        "GB" => Some(BayerPattern::Gbrg),
+        _ => None,
+    }
+}
+
+/// An image frame from a Seestar as neutral image data.
+///
+/// The pixel layout comes from the frame header, not from constants. One
+/// sample per pixel with the header's debayer flag set is a Bayer mosaic;
+/// the header does not name the pattern, so `pattern` (from the device
+/// state) is used.
+///
+/// The bytes are passed on as the telescope sent them. That its 16-bit
+/// samples are little-endian and its three-sample pixels are in red, green,
+/// blue order, as [`PixelFormat`](scopinator_types::PixelFormat) requires,
+/// has not been checked against a telescope.
+pub(crate) fn image_from_frame(
+    frame: &scopinator_seestar::connection::imaging::ImageFrame,
+    pattern: scopinator_types::BayerPattern,
+) -> Result<scopinator_types::ImageData, ScopinatorError> {
+    use scopinator_seestar::protocol::frame::PayloadKind;
+    use scopinator_types::{ImageData, PixelFormat};
+
+    let header = &frame.header;
+    let bayer = header.can_debayer != 0;
+    let format = if header.payload_kind() == PayloadKind::Jpeg {
+        PixelFormat::Jpeg
+    } else {
+        match (header.bytes_per_pixel(), bayer) {
+            (Some(1), false) => PixelFormat::Mono8,
+            (Some(1), true) => PixelFormat::Bayer8(pattern),
+            (Some(2), false) => PixelFormat::Mono16,
+            (Some(2), true) => PixelFormat::Bayer16(pattern),
+            (Some(3), _) => PixelFormat::Rgb8,
+            (Some(6), _) => PixelFormat::Rgb16,
+            _ => {
+                return Err(ScopinatorError::Backend(format!(
+                    "unsupported image type {} in frame header",
+                    header.img_type
+                )));
+            }
+        }
+    };
+    let image = ImageData::new(
+        u32::from(header.width),
+        u32::from(header.height),
+        frame.image_bytes()?,
+        format,
+        frame.kind,
+    );
+    if !image.has_expected_len() {
+        return Err(ScopinatorError::Backend(format!(
+            "frame of {}x{} {format:?} has {} bytes, not {:?}",
+            image.width,
+            image.height,
+            image.data.len(),
+            image.expected_len()
+        )));
+    }
+    Ok(image)
+}
+
 #[async_trait::async_trait]
 impl Backend for SeestarBackend {
     fn id(&self) -> DeviceId {

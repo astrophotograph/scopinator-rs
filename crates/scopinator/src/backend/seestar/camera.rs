@@ -112,54 +112,17 @@ impl Camera for SeestarCamera {
     }
 
     async fn get_image(&self) -> Result<ImageData, ScopinatorError> {
-        use scopinator_seestar::protocol::frame::PayloadKind;
-
         // The stacked image is requested on the imaging port and matched to
         // this request, so a stream frame or heartbeat echo is never returned.
+        // With `image_transfer_mode` set to Jpg the telescope sends a JPEG,
+        // which comes back as `PixelFormat::Jpeg`.
         let frame = self.client.get_stacked_image().await?;
-        if frame.payload_kind() == PayloadKind::Jpeg {
-            return Err(ScopinatorError::Backend(
-                "the telescope sent a JPEG (image_transfer_mode is Jpg); \
-                 raw pixel data needs image_transfer_mode Raw"
-                    .into(),
-            ));
-        }
-        let data = frame.image_bytes()?;
-
-        // Pixel layout comes from the frame header, not from constants.
-        let header = &frame.header;
-        let (bit_depth, is_color) = match header.bytes_per_pixel() {
-            Some(1) => (8, false),
-            Some(2) => (16, false),
-            Some(3) => (8, true),
-            Some(6) => (16, true),
-            _ => {
-                return Err(ScopinatorError::Backend(format!(
-                    "unsupported image type {} in frame header",
-                    header.img_type
-                )));
-            }
-        };
-        // One value per pixel with the debayer flag set is a Bayer mosaic.
-        // The header does not name the pattern; the device state does
+        // The header does not name the Bayer pattern; the device state does
         // (`camera.debayer_pattern`, "GR" on the S50 and S30). GRBG is the
         // fallback until that is known.
-        let bayer = !is_color && header.can_debayer != 0;
-        let pattern = match self.client.device_info().debayer_pattern.as_deref() {
-            Some("RG") => BayerPattern::Rggb,
-            Some("BG") => BayerPattern::Bggr,
-            Some("GB") => BayerPattern::Gbrg,
-            _ => BayerPattern::Grbg,
-        };
-        Ok(ImageData {
-            width: header.width as u32,
-            height: header.height as u32,
-            data,
-            bit_depth,
-            is_color: is_color || bayer,
-            bayer_pattern: bayer.then_some(pattern),
-            frame_kind: frame.kind,
-        })
+        let pattern = super::bayer_pattern(self.client.device_info().debayer_pattern.as_deref())
+            .unwrap_or(BayerPattern::Grbg);
+        super::image_from_frame(&frame, pattern)
     }
 
     async fn is_exposing(&self) -> Result<bool, ScopinatorError> {

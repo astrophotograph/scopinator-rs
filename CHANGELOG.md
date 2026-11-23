@@ -7,6 +7,12 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Breaking
 
+- `ImageData` describes its pixels with `format: PixelFormat` (`Mono8`, `Mono16`, `Bayer8`,
+  `Bayer16`, `Rgb8`, `Rgb16`, `Jpeg`) in place of `bit_depth`, `is_color` and `bayer_pattern`,
+  which could not tell an RGB image from a Bayer mosaic. It also has `metadata: FrameMetadata`,
+  `expected_len()` and `has_expected_len()`, and is built with `ImageData::new`.
+- `SeestarCamera::get_image` returns a JPEG frame as `PixelFormat::Jpeg` instead of failing, and
+  fails on a frame whose size does not match its header.
 - `DeviceManager` holds any kind of telescope. `add_seestar` and `add_seestar_with_config`
   return the backend's id; `seestar_mount` and `seestar_camera` are gone: use
   `manager.get(&id)` and the `Backend` it returns. `list_backends` returns `DeviceId`s and is no

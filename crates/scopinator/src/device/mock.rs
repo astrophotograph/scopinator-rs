@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use scopinator_types::{
     Coordinates, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, FrameKind, ImageData,
+    PixelFormat,
 };
 
 use super::capabilities::{CameraCapabilities, MountCapabilities};
@@ -186,15 +187,13 @@ impl Camera for MockCamera {
     }
 
     async fn get_image(&self) -> Result<ImageData, ScopinatorError> {
-        Ok(ImageData {
-            width: 1,
-            height: 1,
-            data: bytes::Bytes::from_static(&[0]),
-            bit_depth: 8,
-            is_color: false,
-            bayer_pattern: None,
-            frame_kind: FrameKind::Preview,
-        })
+        Ok(ImageData::new(
+            1,
+            1,
+            bytes::Bytes::from_static(&[0]),
+            PixelFormat::Mono8,
+            FrameKind::Preview,
+        ))
     }
 
     async fn is_exposing(&self) -> Result<bool, ScopinatorError> {
