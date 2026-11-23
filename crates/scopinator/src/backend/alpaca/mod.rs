@@ -3,9 +3,13 @@
 //! (natively, or through ASCOM Remote in front of an ASCOM driver).
 
 mod camera;
+mod filter_wheel;
+mod focuser;
 mod mount;
 
 pub use camera::AlpacaCameraDevice;
+pub use filter_wheel::AlpacaFilterWheelDevice;
+pub use focuser::AlpacaFocuserDevice;
 pub use mount::AlpacaMount;
 
 use scopinator_alpaca::AlpacaError;

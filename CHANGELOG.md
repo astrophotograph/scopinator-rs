@@ -73,6 +73,11 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `scopinator::backend::alpaca::AlpacaCameraDevice`: an Alpaca camera as a neutral `Camera`,
+  taking real single exposures. It checks the settings against the ranges the camera reports,
+  applies binning, subframe, gain and offset, and returns the image as 16-bit samples in rows
+  with its `PixelFormat` and metadata. `AlpacaFocuserDevice` and `AlpacaFilterWheelDevice` are
+  the first implementations of the neutral `Focuser` and `FilterWheel`.
 - `scopinator::backend::alpaca::AlpacaMount` (feature `alpaca`): an ASCOM Alpaca telescope as a
   neutral `Mount`. It reads the mount's capabilities at connect, converts slew and sync targets
   to the equatorial system the mount works in, and maps Alpaca's error numbers onto
