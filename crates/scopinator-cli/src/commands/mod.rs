@@ -1,5 +1,6 @@
 mod discover_cmd;
 mod goto_cmd;
+pub mod neutral;
 mod park_cmd;
 mod raw_cmd;
 mod status_cmd;

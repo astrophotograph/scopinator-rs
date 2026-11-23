@@ -14,6 +14,21 @@ if let Some(mount) = observatory.mount() {
 }
 ```
 
+The command-line tool takes an Alpaca server as `--host alpaca://HOST:PORT` (or `--backend
+alpaca --port PORT` with a bare address):
+
+```
+scopinator discover
+scopinator status --host alpaca://192.168.1.50:11111
+scopinator unpark --host alpaca://192.168.1.50:11111
+scopinator goto   --host alpaca://192.168.1.50:11111 --ra 5.588 --dec -5.39
+scopinator park   --host alpaca://192.168.1.50:11111
+```
+
+`goto` takes J2000 coordinates (`--jnow` for the equinox of date), turns tracking on if it is
+off, waits for the mount to arrive and prints where it ended up. `raw` and the clock options
+of `goto` are for a Seestar only.
+
 Alpaca has no events, so the backend polls its devices (once a second by default,
 `AlpacaConfig::poll_interval`) and puts the same events on the bus that a Seestar reports by
 itself.

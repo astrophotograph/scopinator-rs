@@ -1,4 +1,3 @@
-use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,6 +6,9 @@ use clap::{Parser, Subcommand};
 use scopinator_seestar::InteropKey;
 
 mod commands;
+mod target;
+
+use target::{BackendKind, HostArg, Target};
 
 #[derive(Parser)]
 #[command(name = "scopinator", about = "Telescope control CLI")]
@@ -19,13 +21,23 @@ struct Cli {
     #[arg(long, env = "SEESTAR_INTEROP_PEM", value_name = "PATH")]
     interop_pem: Option<PathBuf>,
 
+    /// The kind of telescope at --host. A URL in --host says the same:
+    /// `alpaca://192.168.1.50:11111`, `seestar://192.168.1.100`. Without
+    /// either, a Seestar.
+    #[arg(long, global = true, env = "SCOPINATOR_BACKEND", value_enum)]
+    backend: Option<BackendKind>,
+
+    /// The Alpaca server's port, when --host has none (default 11111).
+    #[arg(long, global = true, value_name = "PORT")]
+    port: Option<u16>,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Discover Seestar telescopes on the local network
+    /// Discover telescopes on the local network (Seestars and Alpaca servers)
     Discover {
         /// Discovery timeout in seconds
         #[arg(short, long, default_value = "3")]
@@ -33,20 +45,27 @@ enum Commands {
     },
     /// Show telescope status
     Status {
-        /// Telescope IP address
+        /// Telescope address: an IPv4 address, or a URL naming the backend
+        /// (alpaca://HOST:PORT, seestar://HOST)
         #[arg(short = 'H', long)]
-        host: Ipv4Addr,
+        host: HostArg,
     },
     /// Slew to coordinates
+    ///
+    /// On an Alpaca mount the coordinates are J2000 unless --jnow is given,
+    /// tracking is turned on if it is off, and the command waits for the
+    /// mount to arrive. A Seestar is sent the coordinates as given and
+    /// reports when it starts moving.
     Goto {
-        /// Telescope IP address
+        /// Telescope address: an IPv4 address, or a URL naming the backend
+        /// (alpaca://HOST:PORT, seestar://HOST)
         #[arg(short = 'H', long)]
-        host: Ipv4Addr,
+        host: HostArg,
         /// Right ascension in hours (0-24)
         #[arg(long)]
         ra: f64,
         /// Declination in degrees (-90 to 90)
-        #[arg(long)]
+        #[arg(long, allow_negative_numbers = true)]
         dec: f64,
         /// Target name
         #[arg(short, long, default_value = "Target")]
@@ -60,21 +79,39 @@ enum Commands {
         /// Never set the telescope's clock; only warn when it looks wrong.
         #[arg(long)]
         no_sync_clock: bool,
+        /// The coordinates are in the equinox of date, not J2000 (Alpaca).
+        #[arg(long)]
+        jnow: bool,
+        /// How long to wait for the mount to arrive, in seconds (Alpaca).
+        #[arg(long, default_value = "300")]
+        timeout: u64,
     },
     /// Park the telescope
     Park {
-        /// Telescope IP address
+        /// Telescope address: an IPv4 address, or a URL naming the backend
+        /// (alpaca://HOST:PORT, seestar://HOST)
         #[arg(short = 'H', long)]
-        host: Ipv4Addr,
+        host: HostArg,
+        /// How long to wait for the mount to park, in seconds (Alpaca).
+        #[arg(long, default_value = "300")]
+        timeout: u64,
     },
-    /// Send any control method by name and print the reply as JSON.
+    /// Take the mount out of park (a Seestar opens by itself on a goto)
+    Unpark {
+        /// Telescope address: an IPv4 address, or a URL naming the backend
+        /// (alpaca://HOST:PORT, seestar://HOST)
+        #[arg(short = 'H', long)]
+        host: HostArg,
+    },
+    /// Send any Seestar control method by name and print the reply as JSON.
     ///
     /// For methods this tool has no command for. Nothing is checked: what
     /// the method does to the telescope is up to you.
     Raw {
-        /// Telescope IP address
+        /// Telescope address: an IPv4 address, or a URL naming the backend
+        /// (alpaca://HOST:PORT, seestar://HOST)
         #[arg(short = 'H', long)]
-        host: Ipv4Addr,
+        host: HostArg,
         /// Method name as the firmware spells it, e.g. iscope_get_app_state
         method: String,
         /// Params as JSON, e.g. '{"keys":["mount"]}'. Omit to send none.
@@ -114,13 +151,19 @@ async fn main() -> Result<()> {
         None
     };
 
+    let target = |host: &HostArg| Target::resolve(host, cli.backend, cli.port);
+
     match cli.command {
         Commands::Discover { timeout } => {
             commands::discover(Duration::from_secs(timeout)).await?;
         }
-        Commands::Status { host } => {
-            commands::status(host, interop_key).await?;
-        }
+        Commands::Status { host } => match target(&host)? {
+            Target::Seestar { host } => commands::status(host, interop_key).await?,
+            Target::Alpaca { host, port } => {
+                let backend = commands::neutral::connect_alpaca(host, port).await?;
+                commands::neutral::status(backend).await?;
+            }
+        },
         Commands::Goto {
             host,
             ra,
@@ -128,25 +171,59 @@ async fn main() -> Result<()> {
             name,
             sync_clock,
             no_sync_clock,
-        } => {
-            let clock = match (sync_clock, no_sync_clock) {
-                (true, _) => commands::ClockPolicy::Always,
-                (_, true) => commands::ClockPolicy::Never,
-                _ => commands::ClockPolicy::IfWrong,
-            };
-            commands::goto(host, ra, dec, &name, interop_key, clock).await?;
-        }
-        Commands::Park { host } => {
-            commands::park(host, interop_key).await?;
-        }
+            jnow,
+            timeout,
+        } => match target(&host)? {
+            Target::Seestar { host } => {
+                let clock = match (sync_clock, no_sync_clock) {
+                    (true, _) => commands::ClockPolicy::Always,
+                    (_, true) => commands::ClockPolicy::Never,
+                    _ => commands::ClockPolicy::IfWrong,
+                };
+                commands::goto(host, ra, dec, &name, interop_key, clock).await?;
+            }
+            Target::Alpaca { host, port } => {
+                if sync_clock || no_sync_clock {
+                    anyhow::bail!("--sync-clock and --no-sync-clock are for a Seestar");
+                }
+                let mut coords = scopinator_types::Coordinates::from_hours(ra, dec)
+                    .context("invalid coordinates")?;
+                if jnow {
+                    coords.epoch = scopinator_types::Epoch::JNow;
+                }
+                let backend = commands::neutral::connect_alpaca(host, port).await?;
+                commands::neutral::goto(backend, coords, Duration::from_secs(timeout)).await?;
+            }
+        },
+        Commands::Park { host, timeout } => match target(&host)? {
+            Target::Seestar { host } => commands::park(host, interop_key).await?,
+            Target::Alpaca { host, port } => {
+                let backend = commands::neutral::connect_alpaca(host, port).await?;
+                commands::neutral::park(backend, Duration::from_secs(timeout)).await?;
+            }
+        },
+        Commands::Unpark { host } => match target(&host)? {
+            Target::Seestar { .. } => anyhow::bail!(
+                "a Seestar has no unpark request: it opens its arm when it is sent a goto"
+            ),
+            Target::Alpaca { host, port } => {
+                let backend = commands::neutral::connect_alpaca(host, port).await?;
+                commands::neutral::unpark(backend).await?;
+            }
+        },
         Commands::Raw {
             host,
             method,
             params,
             object_marker,
-        } => {
-            commands::raw(host, &method, params.as_deref(), object_marker, interop_key).await?;
-        }
+        } => match target(&host)? {
+            Target::Seestar { host } => {
+                commands::raw(host, &method, params.as_deref(), object_marker, interop_key).await?;
+            }
+            Target::Alpaca { .. } => {
+                anyhow::bail!("`raw` sends Seestar control methods; it has no Alpaca form")
+            }
+        },
     }
 
     Ok(())

@@ -50,6 +50,8 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Changed
 
+- `scopinator goto --dec -5.4` works. A negative declination was taken for an option and
+  rejected unless written `--dec=-5.4`.
 - `AlpacaMount::move_axis` keeps to the rates the mount offers. A mount can list its axis rates
   as separate ranges; a speed that fell between two of them was refused by the mount.
 - `SeestarMount::slew_to_coordinates` converts its target to the equinox of date before sending
@@ -75,6 +77,12 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `scopinator` (the command-line tool) works with Alpaca mounts: `--host alpaca://HOST:PORT`,
+  or `--backend alpaca` with `--port`, on `status`, `goto`, `park` and the new `unpark`.
+  `goto` on an Alpaca mount takes J2000 coordinates (`--jnow` for the equinox of date), turns
+  tracking on if needed, waits for arrival (`--timeout`) and reports where the mount ended up.
+  `discover` lists Alpaca servers as well as Seestars, with addresses in the form `--host`
+  takes. Commands for a Seestar behave as before.
 - `tools/alpaca-sim.sh` (`just alpaca-sim-test`) runs the Alpaca backend against the ASCOM
   Alpaca Omni Simulators: it downloads a pinned release, starts it on localhost in its default
   state, runs `crates/scopinator/tests/alpaca_omnisim.rs` and stops it. It runs nightly in CI.
