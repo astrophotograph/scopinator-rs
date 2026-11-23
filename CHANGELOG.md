@@ -25,6 +25,9 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `ScopinatorError` has kinds a caller can match on for any backend: `Busy`, `Parked`,
+  `InvalidState`, `OutOfRange` and `ConnectionLost`, plus `Alpaca` and `Indi` variants behind
+  those features and `is_not_supported()`.
 - `ScopeGotoEventData` carries `error` and `code` for a failed slew.
 
 ## [0.6.0] - 2026-11-15
