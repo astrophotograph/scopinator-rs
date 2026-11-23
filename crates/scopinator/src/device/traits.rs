@@ -1,3 +1,21 @@
+//! The device traits every backend implements.
+//!
+//! # Operations that take time
+//!
+//! A slew, a park, an exposure, a focuser or filter wheel move all outlast
+//! the request that starts them. Every backend follows the same rule (see
+//! `docs/device-contract.md`):
+//!
+//! 1. The method that starts one returns `Ok(())` when the device has
+//!    **accepted** the request, not when the operation has finished.
+//! 2. A state query says whether it is still running:
+//!    [`Mount::is_slewing`], [`Mount::is_parked`], [`Camera::image_ready`],
+//!    [`Focuser::is_moving`], [`FilterWheel::is_moving`].
+//! 3. An operation that fails after it was accepted makes the next state
+//!    query return an error, once.
+//! 4. Waiting is done on top of the queries, the same way for every
+//!    backend, not by the backends themselves.
+
 use async_trait::async_trait;
 use scopinator_types::{Coordinates, DeviceId, DeviceInfo, ExposureSettings, ImageData};
 
@@ -37,13 +55,28 @@ pub trait Mount: Device {
     /// Get the current equatorial coordinates.
     async fn get_coordinates(&self) -> Result<Coordinates, ScopinatorError>;
 
-    /// Slew to equatorial coordinates.
+    /// Start a slew to equatorial coordinates. Returns when the mount has
+    /// accepted the request; [`is_slewing`](Self::is_slewing) says when it
+    /// has arrived.
     async fn slew_to_coordinates(&self, coords: &Coordinates) -> Result<(), ScopinatorError>;
 
     /// Abort any in-progress slew.
     async fn abort_slew(&self) -> Result<(), ScopinatorError>;
 
-    /// Park the mount.
+    /// True from the moment a slew is accepted until the mount has arrived
+    /// and is ready to be used, which on a telescope that centres its target
+    /// by plate solving includes the centring.
+    ///
+    /// If the slew failed after it was accepted, the first call after the
+    /// failure returns the error and later calls return `false`.
+    async fn is_slewing(&self) -> Result<bool, ScopinatorError>;
+
+    /// True when the mount is parked. False while it is on its way to the
+    /// park position.
+    async fn is_parked(&self) -> Result<bool, ScopinatorError>;
+
+    /// Start parking the mount. Returns when the mount has accepted the
+    /// request; [`is_parked`](Self::is_parked) says when it is there.
     async fn park(&self) -> Result<(), ScopinatorError>;
 
     /// Enable or disable sidereal tracking.
@@ -62,11 +95,19 @@ pub trait Mount: Device {
 /// A telescope camera.
 #[async_trait]
 pub trait Camera: Device {
-    /// Start an exposure with the given settings.
+    /// Start an exposure with the given settings. Returns when the camera
+    /// has accepted the request; [`image_ready`](Self::image_ready) says
+    /// when there is an image to fetch.
     async fn start_exposure(&self, settings: &ExposureSettings) -> Result<(), ScopinatorError>;
 
     /// Abort the current exposure.
     async fn abort_exposure(&self) -> Result<(), ScopinatorError>;
+
+    /// True when the exposure started by the last
+    /// [`start_exposure`](Self::start_exposure) has produced an image that
+    /// [`get_image`](Self::get_image) will return. On a camera that streams
+    /// or stacks, true as soon as there is a frame.
+    async fn image_ready(&self) -> Result<bool, ScopinatorError>;
 
     /// Get the latest image.
     async fn get_image(&self) -> Result<ImageData, ScopinatorError>;
@@ -87,11 +128,16 @@ pub trait Focuser: Device {
     /// Get the current focuser position.
     async fn get_position(&self) -> Result<i32, ScopinatorError>;
 
-    /// Move to an absolute position.
+    /// Start a move to an absolute position. Returns when the focuser has
+    /// accepted the request.
     async fn move_to(&self, position: i32) -> Result<(), ScopinatorError>;
 
-    /// Move by a relative amount.
+    /// Start a move by a relative amount. Returns when the focuser has
+    /// accepted the request.
     async fn move_relative(&self, offset: i32) -> Result<(), ScopinatorError>;
+
+    /// True while the focuser is moving.
+    async fn is_moving(&self) -> Result<bool, ScopinatorError>;
 
     /// Halt any in-progress movement.
     async fn halt(&self) -> Result<(), ScopinatorError>;
@@ -103,8 +149,12 @@ pub trait FilterWheel: Device {
     /// Get the current filter position.
     async fn get_position(&self) -> Result<u32, ScopinatorError>;
 
-    /// Set the filter position.
+    /// Start a move to a filter position. Returns when the wheel has
+    /// accepted the request.
     async fn set_position(&self, position: u32) -> Result<(), ScopinatorError>;
+
+    /// True while the wheel is turning.
+    async fn is_moving(&self) -> Result<bool, ScopinatorError>;
 
     /// Get the names of available filters.
     async fn get_filter_names(&self) -> Result<Vec<String>, ScopinatorError>;

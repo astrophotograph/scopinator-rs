@@ -126,6 +126,12 @@ impl Camera for SeestarWideCamera {
         Ok(())
     }
 
+    /// The wide camera streams: there is a frame to fetch whenever its view
+    /// is running.
+    async fn image_ready(&self) -> Result<bool, ScopinatorError> {
+        self.is_exposing().await
+    }
+
     /// The next frame of the stream. Fails with a timeout if no view is
     /// running.
     async fn get_image(&self) -> Result<ImageData, ScopinatorError> {

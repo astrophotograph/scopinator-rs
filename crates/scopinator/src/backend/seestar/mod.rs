@@ -47,6 +47,64 @@ impl SeestarEndpoints {
     }
 }
 
+/// What the backend remembers about the goto it last sent, shared by every
+/// mount adapter of one telescope.
+///
+/// A Seestar accepts a goto and starts moving some seconds later (6 s was
+/// seen on an S30), and reports nothing in between. The mount has to answer
+/// "slewing" in that gap, so the time of acceptance is kept here.
+#[derive(Debug, Default)]
+pub(crate) struct GotoTracker {
+    pending: std::sync::Mutex<Option<PendingGoto>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingGoto {
+    accepted_at: tokio::time::Instant,
+    /// The telescope has been seen working on it.
+    seen_running: bool,
+}
+
+impl GotoTracker {
+    /// A goto was accepted just now.
+    pub(crate) fn accepted(&self) {
+        *self.lock() = Some(PendingGoto {
+            accepted_at: tokio::time::Instant::now(),
+            seen_running: false,
+        });
+    }
+
+    /// The telescope reports that it is working on the goto.
+    pub(crate) fn running(&self) {
+        if let Some(goto) = self.lock().as_mut() {
+            goto.seen_running = true;
+        }
+    }
+
+    /// The goto is over (arrived, failed or aborted).
+    pub(crate) fn clear(&self) {
+        *self.lock() = None;
+    }
+
+    /// True if a goto has been accepted and not yet seen to end.
+    pub(crate) fn is_pending(&self) -> bool {
+        self.lock().is_some()
+    }
+
+    /// True if a goto was accepted less than `grace` ago and the telescope
+    /// has not been seen working on it yet.
+    pub(crate) fn awaiting_start(&self, grace: Duration) -> bool {
+        self.lock()
+            .is_some_and(|goto| !goto.seen_running && goto.accepted_at.elapsed() < grace)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<PendingGoto>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// A Seestar backend that wraps a `SeestarClient` and provides
 /// Mount and Camera device adapters.
 pub struct SeestarBackend {
@@ -55,6 +113,7 @@ pub struct SeestarBackend {
     event_bus: Arc<UnifiedEventBus>,
     endpoints: SeestarEndpoints,
     config: SeestarConfig,
+    goto: Arc<GotoTracker>,
     /// The wide camera's own connection, opened on first use.
     wide_client: tokio::sync::OnceCell<Arc<SeestarClient>>,
 }
@@ -111,6 +170,7 @@ impl SeestarBackend {
             event_bus,
             endpoints,
             config,
+            goto: Arc::new(GotoTracker::default()),
             wide_client: tokio::sync::OnceCell::new(),
         })
     }
@@ -175,6 +235,7 @@ impl SeestarBackend {
         SeestarMount::new(
             Arc::clone(&self.client),
             DeviceId::new(format!("{}:mount", self.device_id)),
+            Arc::clone(&self.goto),
         )
     }
 
@@ -216,5 +277,38 @@ impl SeestarBackend {
             wide.shutdown().await;
         }
         self.client.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_goto_awaits_its_start_only_for_the_grace_period() {
+        let tracker = GotoTracker::default();
+        let grace = Duration::from_secs(15);
+        assert!(!tracker.awaiting_start(grace));
+
+        tracker.accepted();
+        assert!(tracker.is_pending());
+        assert!(tracker.awaiting_start(grace));
+        tokio::time::advance(Duration::from_secs(14)).await;
+        assert!(tracker.awaiting_start(grace));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(!tracker.awaiting_start(grace));
+        // Still pending until someone sees it end.
+        assert!(tracker.is_pending());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_goto_seen_running_no_longer_awaits_its_start() {
+        let tracker = GotoTracker::default();
+        tracker.accepted();
+        tracker.running();
+        assert!(!tracker.awaiting_start(Duration::from_secs(15)));
+        assert!(tracker.is_pending());
+        tracker.clear();
+        assert!(!tracker.is_pending());
     }
 }

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use scopinator_seestar::SeestarClient;
@@ -10,16 +11,117 @@ use crate::device::status::{DeviceStatus, MountStatus};
 use crate::device::traits::{Device, Mount};
 use crate::error::ScopinatorError;
 
+use super::GotoTracker;
+
+/// How long after a goto is accepted the mount is taken to be slewing even
+/// though the telescope does not say so yet. An S30 took 6 s to start
+/// moving. A goto the telescope accepts and then silently ignores (seen with
+/// an unset clock) stops counting as a slew when this runs out.
+const GOTO_START_GRACE: Duration = Duration::from_secs(15);
+
 /// Seestar mount adapter.
 pub struct SeestarMount {
     client: Arc<SeestarClient>,
     device_id: DeviceId,
+    goto: Arc<GotoTracker>,
+}
+
+/// The `mount` section of the device state.
+struct MountState {
+    /// `move_type`: what is moving the mount (`ScopeGoto`, ...), or `none`.
+    moving: bool,
+    tracking: bool,
+    /// `close`: the arm is folded, which is the park position.
+    parked: bool,
 }
 
 impl SeestarMount {
-    pub(crate) fn new(client: Arc<SeestarClient>, device_id: DeviceId) -> Self {
-        Self { client, device_id }
+    pub(crate) fn new(
+        client: Arc<SeestarClient>,
+        device_id: DeviceId,
+        goto: Arc<GotoTracker>,
+    ) -> Self {
+        Self {
+            client,
+            device_id,
+            goto,
+        }
     }
+
+    /// Ask the telescope for the `mount` section of its state. A reply
+    /// without one of the members is an error, not "false": a mount that is
+    /// not known to be parked must not be reported as unparked.
+    async fn mount_state(&self) -> Result<MountState, ScopinatorError> {
+        let state = self
+            .client
+            .send_raw_and_validate(
+                "get_device_state",
+                Some(serde_json::json!({"keys": ["mount"]})),
+            )
+            .await?;
+        let member = |name: &str| {
+            state.pointer(&format!("/mount/{name}")).ok_or_else(|| {
+                ScopinatorError::Backend(format!(
+                    "get_device_state reply has no `mount.{name}`: {state}"
+                ))
+            })
+        };
+        let flag = |name: &str| {
+            member(name)?.as_bool().ok_or_else(|| {
+                ScopinatorError::Backend(format!("`mount.{name}` is not a boolean: {state}"))
+            })
+        };
+        Ok(MountState {
+            moving: member("move_type")?.as_str() != Some("none"),
+            tracking: flag("tracking")?,
+            parked: flag("close")?,
+        })
+    }
+
+    /// Where the goto stands according to the view state, which nests its
+    /// stages by name: `View` > `AutoGoto` > `ScopeGoto`.
+    async fn goto_stage(&self) -> Result<GotoStage, ScopinatorError> {
+        let view = self.client.send_and_validate(Command::GetViewState).await?;
+        let Some(auto_goto) = view.pointer("/View/AutoGoto") else {
+            return Ok(GotoStage::None);
+        };
+        // A failed inner stage can sit under an outer one that still says
+        // `working`, so look for a failure anywhere below first.
+        if let Some(failure) = find_failure(auto_goto, "AutoGoto") {
+            return Ok(GotoStage::Failed(failure));
+        }
+        Ok(match auto_goto.get("state").and_then(|s| s.as_str()) {
+            Some("start" | "working") => GotoStage::Running,
+            _ => GotoStage::None,
+        })
+    }
+}
+
+enum GotoStage {
+    /// No goto in the view state, or one that has ended without failing.
+    None,
+    /// Slewing, plate solving or re-centring.
+    Running,
+    Failed(String),
+}
+
+/// The first stage at or below `value` that reports `state: fail`, as
+/// "stage: error (code n)".
+fn find_failure(value: &serde_json::Value, name: &str) -> Option<String> {
+    let object = value.as_object()?;
+    if object.get("state").and_then(|s| s.as_str()) == Some("fail") {
+        let error = object
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("no reason given");
+        return Some(match object.get("code").and_then(|c| c.as_i64()) {
+            Some(code) => format!("{name}: {error} (code {code})"),
+            None => format!("{name}: {error}"),
+        });
+    }
+    object
+        .iter()
+        .find_map(|(key, child)| find_failure(child, key))
 }
 
 #[async_trait]
@@ -96,6 +198,7 @@ impl Mount for SeestarMount {
                 code: e.code,
                 message: e.message,
             })?;
+        self.goto.accepted();
         Ok(())
     }
 
@@ -111,7 +214,45 @@ impl Mount for SeestarMount {
         self.client
             .send_and_validate(Command::IscopeStopView(None))
             .await?;
+        // The cancelled goto shows as failed in the view state; it was
+        // asked for, so it is not reported as a failed slew.
+        self.goto.clear();
         Ok(())
+    }
+
+    async fn is_slewing(&self) -> Result<bool, ScopinatorError> {
+        match self.goto_stage().await? {
+            GotoStage::Running => {
+                self.goto.running();
+                return Ok(true);
+            }
+            GotoStage::Failed(failure) => {
+                // Report the failure of a goto sent through this backend
+                // once; the stage stays in the view state after that.
+                if self.goto.is_pending() {
+                    self.goto.clear();
+                    return Err(ScopinatorError::Backend(format!(
+                        "goto failed at {failure}"
+                    )));
+                }
+            }
+            GotoStage::None => {}
+        }
+        if self.mount_state().await?.moving {
+            self.goto.running();
+            return Ok(true);
+        }
+        // Accepted, and the telescope has not started on it yet. A goto
+        // stage that is already over belongs to an earlier goto.
+        if self.goto.awaiting_start(GOTO_START_GRACE) {
+            return Ok(true);
+        }
+        self.goto.clear();
+        Ok(false)
+    }
+
+    async fn is_parked(&self) -> Result<bool, ScopinatorError> {
+        Ok(self.mount_state().await?.parked)
     }
 
     async fn park(&self) -> Result<(), ScopinatorError> {
@@ -127,18 +268,7 @@ impl Mount for SeestarMount {
     }
 
     async fn is_tracking(&self) -> Result<bool, ScopinatorError> {
-        let response = self
-            .client
-            .send_and_validate(Command::GetDeviceState)
-            .await?;
-
-        let tracking = response
-            .get("mount")
-            .and_then(|m| m.get("tracking"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        Ok(tracking)
+        Ok(self.mount_state().await?.tracking)
     }
 
     fn capabilities(&self) -> MountCapabilities {
@@ -152,19 +282,26 @@ impl Mount for SeestarMount {
     }
 
     async fn get_mount_status(&self) -> Result<MountStatus, ScopinatorError> {
-        let coords = self.get_coordinates().await.ok();
-        let tracking = self.is_tracking().await.unwrap_or(false);
-
         use scopinator_types::SlewState;
+
+        let coords = self.get_coordinates().await.ok();
+        let state = self.mount_state().await?;
+        // A failed goto is reported by `is_slewing`; here it only means the
+        // mount is not slewing.
+        let slewing = state.moving || matches!(self.goto_stage().await, Ok(GotoStage::Running));
         Ok(MountStatus {
-            slew_state: if tracking {
+            slew_state: if state.parked {
+                SlewState::Parked
+            } else if slewing {
+                SlewState::Slewing
+            } else if state.tracking {
                 SlewState::Tracking
             } else {
                 SlewState::Idle
             },
             tracking_rate: None,
             coordinates: coords,
-            is_tracking: tracking,
+            is_tracking: state.tracking,
         })
     }
 }

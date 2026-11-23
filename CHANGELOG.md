@@ -7,6 +7,12 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Breaking
 
+- The device traits have required state queries for operations that take time:
+  `Mount::is_slewing`, `Mount::is_parked`, `Camera::image_ready`, `Focuser::is_moving` and
+  `FilterWheel::is_moving`. The methods that start those operations are now documented to
+  return when the device accepts the request, for every backend; see `docs/device-contract.md`.
+- `SeestarMount::is_tracking` returns an error when the device state has no `mount.tracking`
+  member, instead of `false`.
 - `Device` has two new required methods, `id()` and `info()`. A Seestar's mount and cameras now
   have their own ids under the telescope's (`seestar:<ip>:mount`, `seestar:<ip>:camera`,
   `seestar:<ip>:wide`); the mount and main camera used to report the telescope's id as their
@@ -19,6 +25,8 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Changed
 
+- `SeestarMount::get_mount_status` reports `Slewing` and `Parked`. It could only say `Tracking`
+  or `Idle` before.
 - `scopinator goto` sets the telescope's clock when it is clearly wrong, using this computer's
   local time and time zone. Some models lose their clock when powered off, and a goto does
   nothing without it. `--sync-clock` sets it regardless and no longer switches the telescope to

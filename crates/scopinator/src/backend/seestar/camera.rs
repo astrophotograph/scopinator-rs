@@ -99,6 +99,18 @@ impl Camera for SeestarCamera {
         Ok(())
     }
 
+    /// True once the running stack has at least one frame in it: the image
+    /// `get_image` returns is the stack so far.
+    async fn image_ready(&self) -> Result<bool, ScopinatorError> {
+        let view = self.client.send_and_validate(Command::GetViewState).await?;
+        // Stages nest by name in the view state; no `Stack` stage means
+        // nothing is being stacked.
+        Ok(view
+            .pointer("/View/Stack/stacked_frame")
+            .and_then(|frames| frames.as_i64())
+            .is_some_and(|frames| frames > 0))
+    }
+
     async fn get_image(&self) -> Result<ImageData, ScopinatorError> {
         use scopinator_seestar::protocol::frame::PayloadKind;
 
