@@ -5,6 +5,7 @@ pub mod event;
 pub mod manager;
 pub mod sequencer;
 
+pub use backend::Backend;
 pub use device::*;
 pub use error::ScopinatorError;
 pub use event::{EventPayload, EventType, UnifiedEvent, UnifiedEventBus, ViewCamera};

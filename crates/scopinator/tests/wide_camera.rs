@@ -216,3 +216,49 @@ async fn devices_of_one_telescope_have_distinct_ids_under_the_backend_id() {
     assert_eq!(mount.info().id, mount.id());
     backend.disconnect().await;
 }
+
+#[tokio::test]
+async fn a_seestar_is_usable_as_a_neutral_backend() {
+    use scopinator::Backend;
+
+    let main = FakeSeestar::start().await;
+    let wide = FakeSeestar::start().await;
+    main.respond("get_device_state", device_state(true));
+    let seestar: Arc<dyn Backend> = Arc::new(backend(&main, &wide).await);
+
+    assert_eq!(seestar.kind(), "seestar");
+    assert_eq!(seestar.id().as_str(), "seestar:127.0.0.1");
+    assert_eq!(
+        seestar.mount().expect("mount").id().as_str(),
+        "seestar:127.0.0.1:mount"
+    );
+    // Main camera first, then the wide camera of a two-camera model.
+    let cameras = seestar.cameras().await.expect("cameras");
+    let ids: Vec<String> = cameras.iter().map(|c| c.id().to_string()).collect();
+    assert_eq!(ids, ["seestar:127.0.0.1:camera", "seestar:127.0.0.1:wide"]);
+    assert!(seestar.focuser().is_none());
+    assert!(seestar.filter_wheel().is_none());
+
+    // What only a Seestar has is one downcast away.
+    let concrete = seestar
+        .as_any()
+        .downcast_ref::<SeestarBackend>()
+        .expect("a SeestarBackend");
+    assert_eq!(concrete.device_info().model.as_deref(), Some("Seestar S30"));
+
+    seestar.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn a_one_camera_seestar_has_one_camera_as_a_backend() {
+    use scopinator::Backend;
+
+    let main = FakeSeestar::start().await;
+    let wide = FakeSeestar::start().await;
+    main.respond("get_device_state", device_state(false));
+    let seestar: Arc<dyn Backend> = Arc::new(backend(&main, &wide).await);
+
+    assert_eq!(seestar.cameras().await.expect("cameras").len(), 1);
+    assert_eq!(wide.connection_count(), 0);
+    seestar.disconnect().await.expect("disconnect");
+}

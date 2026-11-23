@@ -7,6 +7,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Breaking
 
+- `DeviceManager` holds any kind of telescope. `add_seestar` and `add_seestar_with_config`
+  return the backend's id; `seestar_mount` and `seestar_camera` are gone: use
+  `manager.get(&id)` and the `Backend` it returns. `list_backends` returns `DeviceId`s and is no
+  longer async, and `disconnect_all` returns a `Result` and empties the manager.
 - The device traits have required state queries for operations that take time:
   `Mount::is_slewing`, `Mount::is_parked`, `Camera::image_ready`, `Focuser::is_moving` and
   `FilterWheel::is_moving`. The methods that start those operations are now documented to
@@ -41,6 +45,9 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- The `Backend` trait: one connected instrument, handing out its mount, cameras, focuser and
+  filter wheel as the neutral device traits. `SeestarBackend` implements it, and
+  `DeviceManager::add` takes any implementation.
 - `wait_for_slew`, `wait_for_park`, `wait_for_image`, `wait_for_focuser` and
   `wait_for_filter_wheel`, with `WaitOptions` (poll interval, timeout, settle time), wait for an
   operation to finish on any backend.

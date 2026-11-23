@@ -15,6 +15,9 @@ use std::time::Duration;
 use scopinator_seestar::{DeviceSummary, SeestarClient, SeestarConfig};
 use scopinator_types::DeviceId;
 
+use crate::backend::Backend;
+use crate::device::{Camera, FilterWheel, Focuser, Mount};
+use crate::error::ScopinatorError;
 use crate::event::UnifiedEventBus;
 
 /// Where a Seestar's services are. [`SeestarEndpoints::for_host`] gives the
@@ -277,6 +280,50 @@ impl SeestarBackend {
             wide.shutdown().await;
         }
         self.client.shutdown().await;
+    }
+}
+
+#[async_trait::async_trait]
+impl Backend for SeestarBackend {
+    fn id(&self) -> DeviceId {
+        self.device_id.clone()
+    }
+
+    fn kind(&self) -> &'static str {
+        "seestar"
+    }
+
+    fn mount(&self) -> Option<Arc<dyn Mount>> {
+        Some(Arc::new(SeestarBackend::mount(self)))
+    }
+
+    /// The main camera, then the wide camera on a two-camera model. Asking
+    /// opens the wide camera's connection the first time.
+    async fn cameras(&self) -> Result<Vec<Arc<dyn Camera>>, ScopinatorError> {
+        let mut cameras: Vec<Arc<dyn Camera>> = vec![Arc::new(self.camera())];
+        if let Some(wide) = self.second_camera().await? {
+            cameras.push(Arc::new(wide));
+        }
+        Ok(cameras)
+    }
+
+    // The Seestar's focuser and filter wheel are not exposed through the
+    // neutral traits yet.
+    fn focuser(&self) -> Option<Arc<dyn Focuser>> {
+        None
+    }
+
+    fn filter_wheel(&self) -> Option<Arc<dyn FilterWheel>> {
+        None
+    }
+
+    async fn disconnect(&self) -> Result<(), ScopinatorError> {
+        SeestarBackend::disconnect(self).await;
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
