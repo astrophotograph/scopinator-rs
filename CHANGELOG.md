@@ -5,6 +5,14 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+### Breaking
+
+- `MountCapabilities`, `CameraCapabilities`, `DeviceStatus`, `MountStatus`, `CameraStatus` and
+  `ScopinatorError` are `#[non_exhaustive]`, so that fields and variants can be added for other
+  telescope backends without another breaking release. Code outside the `scopinator` crate can
+  no longer build the structs with a literal: start from `Default::default()` and set fields. A
+  `match` on `ScopinatorError` needs a wildcard arm.
+
 ### Changed
 
 - `scopinator goto` sets the telescope's clock when it is clearly wrong, using this computer's

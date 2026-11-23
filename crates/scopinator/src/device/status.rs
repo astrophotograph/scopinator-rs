@@ -1,7 +1,8 @@
 use scopinator_types::{CameraState, Coordinates, SlewState, TrackingRate};
 
 /// General device status.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct DeviceStatus {
     pub connected: bool,
     pub name: Option<String>,
@@ -9,7 +10,8 @@ pub struct DeviceStatus {
 }
 
 /// Mount-specific status.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct MountStatus {
     pub slew_state: SlewState,
     pub tracking_rate: Option<TrackingRate>,
@@ -18,7 +20,8 @@ pub struct MountStatus {
 }
 
 /// Camera-specific status.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct CameraStatus {
     pub state: CameraState,
     pub temperature: Option<f64>,

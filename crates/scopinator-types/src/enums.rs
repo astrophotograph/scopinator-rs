@@ -13,9 +13,10 @@ pub enum TrackingRate {
 }
 
 /// Current slew state of a mount.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 pub enum SlewState {
+    #[default]
     Idle,
     Slewing,
     Tracking,
@@ -25,9 +26,10 @@ pub enum SlewState {
 }
 
 /// Current state of a camera.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 pub enum CameraState {
+    #[default]
     Idle,
     Waiting,
     Exposing,

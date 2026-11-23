@@ -1,4 +1,5 @@
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ScopinatorError {
     #[error("not connected")]
     NotConnected,
