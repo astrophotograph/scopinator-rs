@@ -50,6 +50,8 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Changed
 
+- `AlpacaMount::move_axis` keeps to the rates the mount offers. A mount can list its axis rates
+  as separate ranges; a speed that fell between two of them was refused by the mount.
 - `SeestarMount::slew_to_coordinates` converts its target to the equinox of date before sending
   it, and `get_coordinates` labels the position it returns `Epoch::JNow`. The epoch of a
   `Coordinates` used to be ignored, so a J2000 position was sent as it was, about 0.37 degrees
@@ -73,6 +75,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `tools/alpaca-sim.sh` (`just alpaca-sim-test`) runs the Alpaca backend against the ASCOM
+  Alpaca Omni Simulators: it downloads a pinned release, starts it on localhost in its default
+  state, runs `crates/scopinator/tests/alpaca_omnisim.rs` and stops it. It runs nightly in CI.
+  See `docs/alpaca.md`.
 - `scopinator::backend::alpaca::AlpacaBackend`: a whole Alpaca server as a `Backend`. It asks
   the server what devices it has, connects its mount, cameras, focuser and filter wheel
   (`AlpacaConfig` chooses among several), and polls them to put the same events on the bus that

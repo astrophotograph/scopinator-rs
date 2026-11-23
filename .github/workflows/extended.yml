@@ -3,6 +3,7 @@ name: Extended
 # Heavyweight tests that don't run on every commit:
 #   - Coverage report
 #   - Fuzz smoke runs (60s/target)
+#   - The Alpaca backend against the ASCOM simulators
 #   - (Future) loom/shuttle/turmoil race tests
 #
 # Schedule: nightly UTC. Also dispatchable manually.
@@ -16,6 +17,10 @@ on:
     paths:
       - '.github/workflows/extended.yml'
       - 'fuzz/**'
+      - 'tools/alpaca-sim.sh'
+      - 'crates/scopinator-alpaca/**'
+      - 'crates/scopinator/src/backend/alpaca/**'
+      - 'crates/scopinator/tests/alpaca_omnisim.rs'
 
 concurrency:
   group: extended-${{ github.ref }}
@@ -45,6 +50,20 @@ jobs:
           name: lcov
           path: lcov.info
           retention-days: 30
+
+  alpaca-sim:
+    name: alpaca backend vs ASCOM OmniSim
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Downloads the pinned simulator release, starts it on 127.0.0.1, runs
+      # crates/scopinator/tests/alpaca_omnisim.rs against it and stops it.
+      - run: tools/alpaca-sim.sh
+      - name: simulator log
+        if: failure()
+        run: tail -100 "${XDG_CACHE_HOME:-$HOME/.cache}/scopinator/omnisim/run/sim.log" || true
 
   fuzz-smoke:
     name: fuzz-smoke (${{ matrix.target }})

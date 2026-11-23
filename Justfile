@@ -27,6 +27,21 @@ doc:
 # (.github/workflows/ci.yml) runs.
 ci: fmt-check lint test doc parity-golden
 
+# --- Alpaca backend against the ASCOM simulators. ---
+
+# Download a pinned ASCOM Alpaca Omni Simulators release (checksum verified),
+# start it on 127.0.0.1 with a fresh state, run the Alpaca backend's
+# simulator tests against it, and stop it. See docs/alpaca.md.
+alpaca-sim-test:
+    tools/alpaca-sim.sh
+
+# Start the simulator and leave it running (stop with `just alpaca-sim-stop`).
+alpaca-sim-start:
+    tools/alpaca-sim.sh start
+
+alpaca-sim-stop:
+    tools/alpaca-sim.sh stop
+
 # --- Session corpus / conformance / cross-language parity. ---
 
 # Analyze the raw captures (firmware/command/event matrix + drift detection).
