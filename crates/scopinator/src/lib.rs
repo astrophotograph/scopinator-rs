@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod device;
+pub mod discovery;
 pub mod error;
 pub mod event;
 pub mod manager;

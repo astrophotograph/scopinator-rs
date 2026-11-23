@@ -353,6 +353,37 @@ pub(crate) fn image_from_frame(
     Ok(image)
 }
 
+/// Finds Seestars with their UDP broadcast (`scan_iscope`).
+pub struct SeestarDiscoverer;
+
+#[async_trait::async_trait]
+impl crate::discovery::Discoverer for SeestarDiscoverer {
+    fn kind(&self) -> &'static str {
+        "seestar"
+    }
+
+    async fn discover(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<crate::discovery::Discovered>, ScopinatorError> {
+        let devices = scopinator_seestar::protocol::discovery::discover(timeout).await?;
+        Ok(devices.into_iter().map(discovered).collect())
+    }
+}
+
+/// A Seestar's discovery answer in the neutral form. The address is its
+/// control port.
+fn discovered(
+    device: scopinator_seestar::protocol::discovery::DiscoveredDevice,
+) -> crate::discovery::Discovered {
+    use scopinator_seestar::protocol::json_rpc::CONTROL_PORT;
+    let address = SocketAddr::V4(SocketAddrV4::new(device.address, CONTROL_PORT));
+    let mut found = crate::discovery::Discovered::new("seestar", address);
+    found.model = device.product_model;
+    found.serial = device.serial_number;
+    found
+}
+
 #[async_trait::async_trait]
 impl Backend for SeestarBackend {
     fn id(&self) -> DeviceId {
@@ -400,6 +431,21 @@ impl Backend for SeestarBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_discovery_answer_keeps_model_and_serial_and_points_at_the_control_port() {
+        let found = discovered(scopinator_seestar::protocol::discovery::DiscoveredDevice {
+            address: Ipv4Addr::new(192, 168, 1, 100),
+            product_model: Some("Seestar S50".into()),
+            serial_number: Some("abc123".into()),
+            raw_response: serde_json::Value::Null,
+        });
+        assert_eq!(found.backend_kind, "seestar");
+        assert_eq!(found.address.to_string(), "192.168.1.100:4700");
+        assert_eq!(found.model.as_deref(), Some("Seestar S50"));
+        assert_eq!(found.serial.as_deref(), Some("abc123"));
+        assert_eq!(found.name, None);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_goto_awaits_its_start_only_for_the_grace_period() {

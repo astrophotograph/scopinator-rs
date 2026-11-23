@@ -135,6 +135,26 @@ impl DeviceManager {
         self.add(Arc::new(backend))
     }
 
+    /// Connect to an instrument found by [`crate::discovery`] and add it.
+    /// `NotSupported` if this build has no backend of its kind.
+    pub async fn connect(
+        &self,
+        found: &crate::discovery::Discovered,
+    ) -> Result<DeviceId, ScopinatorError> {
+        match found.backend_kind {
+            #[cfg(feature = "seestar")]
+            "seestar" => match found.address {
+                std::net::SocketAddr::V4(address) => self.add_seestar(*address.ip()).await,
+                std::net::SocketAddr::V6(address) => Err(ScopinatorError::InvalidArgument(
+                    format!("a Seestar has an IPv4 address, not {address}"),
+                )),
+            },
+            kind => Err(ScopinatorError::NotSupported(format!(
+                "no `{kind}` backend in this build"
+            ))),
+        }
+    }
+
     fn read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<DeviceId, Arc<dyn Backend>>> {
         self.backends
             .read()
@@ -305,6 +325,27 @@ mod tests {
         assert!(matches!(err, ScopinatorError::ConnectionLost(_)), "{err:?}");
         assert_eq!(fine.disconnects.load(Ordering::SeqCst), 1);
         assert!(manager.list_backends().is_empty());
+    }
+
+    #[tokio::test]
+    async fn connecting_to_an_unknown_kind_of_instrument_is_not_supported() {
+        let manager = DeviceManager::new();
+        let found = crate::discovery::Discovered::new("nexstar", "10.0.0.5:9999".parse().unwrap());
+        let err = manager.connect(&found).await.unwrap_err();
+        assert!(err.is_not_supported(), "{err:?}");
+        assert!(manager.list_backends().is_empty());
+    }
+
+    #[cfg(feature = "seestar")]
+    #[tokio::test]
+    async fn a_seestar_at_an_ipv6_address_is_an_invalid_argument() {
+        let manager = DeviceManager::new();
+        let found = crate::discovery::Discovered::new("seestar", "[::1]:4700".parse().unwrap());
+        let err = manager.connect(&found).await.unwrap_err();
+        assert!(
+            matches!(err, ScopinatorError::InvalidArgument(_)),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

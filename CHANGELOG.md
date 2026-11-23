@@ -63,6 +63,9 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `scopinator::discovery`: a `Discoverer` trait, `discover_all` to search for every kind of
+  instrument at once, and `DeviceManager::connect` to connect to what was found.
+  `SeestarDiscoverer` wraps the Seestar's UDP discovery.
 - More optional `Mount` members, answering `NotSupported` unless a backend provides them:
   `get_alt_az`, `slew_to_alt_az`, `set_tracking_rate`, `side_of_pier`, `find_home`,
   `is_at_home`, `pulse_guide` and `alignment_mode`, with matching capability flags,
