@@ -58,6 +58,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `Mount::get_site`, `set_site`, `get_utc` and `set_utc`, with `SiteLocation` and the
+  capability flags `can_set_site` and `can_set_time`. On a Seestar, `set_utc` keeps the
+  telescope's time zone: it sends local time in the zone the telescope already has. This adds
+  the `chrono-tz` dependency to the `seestar` feature.
 - `Mount::sync_to_coordinates`, `unpark`, `move_axis` and `stop_motion`, which answer
   `NotSupported` unless a backend provides them, with `MountAxis` and
   `MountCapabilities::can_unpark`. The Seestar mount provides sync (`scope_sync`) and axis

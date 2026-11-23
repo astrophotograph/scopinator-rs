@@ -5,6 +5,7 @@ pub mod error;
 pub mod exposure;
 pub mod filter;
 pub mod focuser;
+pub mod site;
 
 pub use coordinates::*;
 pub use device_info::*;
@@ -13,3 +14,4 @@ pub use error::*;
 pub use exposure::*;
 pub use filter::*;
 pub use focuser::*;
+pub use site::*;

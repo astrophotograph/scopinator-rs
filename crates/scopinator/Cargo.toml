@@ -8,7 +8,7 @@ repository.workspace = true
 
 [features]
 default = ["seestar"]
-seestar = ["dep:scopinator-seestar"]
+seestar = ["dep:scopinator-seestar", "dep:chrono-tz"]
 alpaca = ["dep:scopinator-alpaca"]
 indi = ["dep:scopinator-indi"]
 
@@ -19,6 +19,7 @@ scopinator-alpaca = { workspace = true, optional = true }
 scopinator-indi = { workspace = true, optional = true }
 async-trait.workspace = true
 chrono.workspace = true
+chrono-tz = { version = "0.10", optional = true }
 serde.workspace = true
 bytes.workspace = true
 serde_json.workspace = true

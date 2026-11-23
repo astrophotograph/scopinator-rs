@@ -16,6 +16,10 @@ pub struct MountCapabilities {
     pub can_unpark: bool,
     pub can_track: bool,
     pub can_move_axis: bool,
+    /// The observing site can be set ([`Mount::set_site`](super::traits::Mount::set_site)).
+    pub can_set_site: bool,
+    /// The clock can be set ([`Mount::set_utc`](super::traits::Mount::set_utc)).
+    pub can_set_time: bool,
     /// The equatorial system the mount itself works in: what
     /// [`Mount::get_coordinates`](super::traits::Mount::get_coordinates)
     /// returns, and what a slew target is converted to before it is sent.
@@ -51,6 +55,8 @@ mod tests {
         assert!(!caps.can_unpark);
         assert!(!caps.can_track);
         assert!(!caps.can_move_axis);
+        assert!(!caps.can_set_site);
+        assert!(!caps.can_set_time);
         assert_eq!(caps.equatorial_system, Epoch::J2000);
     }
 

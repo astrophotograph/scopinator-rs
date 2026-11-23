@@ -8,4 +8,10 @@ pub enum TypeError {
 
     #[error("invalid Dec: {0} degrees (must be -90.0..=90.0)")]
     InvalidDec(f64),
+
+    #[error("invalid latitude: {0} degrees (must be -90.0..=90.0)")]
+    InvalidLatitude(f64),
+
+    #[error("invalid longitude: {0} degrees (must be -180.0..=180.0, east positive)")]
+    InvalidLongitude(f64),
 }

@@ -17,7 +17,9 @@
 //!    backend, not by the backends themselves.
 
 use async_trait::async_trait;
-use scopinator_types::{Coordinates, DeviceId, DeviceInfo, ExposureSettings, ImageData, MountAxis};
+use scopinator_types::{
+    Coordinates, DeviceId, DeviceInfo, ExposureSettings, ImageData, MountAxis, SiteLocation,
+};
 
 use crate::device::capabilities::{CameraCapabilities, MountCapabilities};
 use crate::device::status::{CameraStatus, DeviceStatus, MountStatus};
@@ -119,6 +121,30 @@ pub trait Mount: Device {
     /// abort a slew or stop tracking.
     async fn stop_motion(&self) -> Result<(), ScopinatorError> {
         Err(ScopinatorError::NotSupported("move_axis".into()))
+    }
+
+    /// Where the mount believes it is.
+    ///
+    /// A goto mount works out where a target is in the sky from its site and
+    /// its clock. With either wrong it points wrong, and some refuse to move
+    /// without saying why.
+    async fn get_site(&self) -> Result<SiteLocation, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("site location".into()))
+    }
+
+    /// Tell the mount where it is.
+    async fn set_site(&self, _site: &SiteLocation) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("site location".into()))
+    }
+
+    /// The time on the mount's clock.
+    async fn get_utc(&self) -> Result<chrono::DateTime<chrono::Utc>, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("clock".into()))
+    }
+
+    /// Set the mount's clock. A mount that keeps a time zone keeps it.
+    async fn set_utc(&self, _time: chrono::DateTime<chrono::Utc>) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("clock".into()))
     }
 
     /// Enable or disable sidereal tracking.

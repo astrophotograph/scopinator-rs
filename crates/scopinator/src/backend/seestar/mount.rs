@@ -7,6 +7,7 @@ use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::Direction;
 use scopinator_types::{
     Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind, Epoch, MountAxis, RaDegrees,
+    SiteLocation,
 };
 
 use crate::device::capabilities::MountCapabilities;
@@ -48,6 +49,88 @@ fn command_ok(
             message: e.message,
         })?;
     Ok(())
+}
+
+/// What `pi_get_time` returns: wall-clock fields and the name of the zone
+/// they are in.
+#[derive(Debug, PartialEq)]
+struct DeviceClock {
+    local: chrono::NaiveDateTime,
+    /// `None` if the telescope names no zone or one that is not in the IANA
+    /// database.
+    zone: Option<chrono_tz::Tz>,
+    zone_name: String,
+}
+
+impl DeviceClock {
+    fn parse(reply: &serde_json::Value) -> Result<Self, ScopinatorError> {
+        let bad = || ScopinatorError::Backend(format!("pi_get_time reply is not a time: {reply}"));
+        let field = |name: &str| {
+            reply
+                .get(name)
+                .and_then(|v| v.as_i64())
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(bad)
+        };
+        let year = i32::try_from(field("year")?).map_err(|_| bad())?;
+        let local = chrono::NaiveDate::from_ymd_opt(year, field("mon")?, field("day")?)
+            .and_then(|date| {
+                date.and_hms_opt(field("hour").ok()?, field("min").ok()?, field("sec").ok()?)
+            })
+            .ok_or_else(bad)?;
+        let zone_name = reply
+            .get("time_zone")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Ok(Self {
+            local,
+            zone: zone_name.parse().ok(),
+            zone_name,
+        })
+    }
+
+    /// The instant the clock shows. Fails if the zone is unknown, or if the
+    /// local time does not exist or is ambiguous in it (the hour around a
+    /// daylight-saving change).
+    fn utc(&self) -> Result<chrono::DateTime<chrono::Utc>, ScopinatorError> {
+        use chrono::TimeZone;
+        let zone = self.zone.ok_or_else(|| {
+            ScopinatorError::Backend(format!(
+                "the telescope's time zone `{}` is not a known zone",
+                self.zone_name
+            ))
+        })?;
+        zone.from_local_datetime(&self.local)
+            .single()
+            .map(|time| time.with_timezone(&chrono::Utc))
+            .ok_or_else(|| {
+                ScopinatorError::Backend(format!(
+                    "{} is not a single instant in {}",
+                    self.local, self.zone_name
+                ))
+            })
+    }
+}
+
+/// `time` as the wall-clock fields `pi_set_time` takes, in `zone` (UTC if
+/// there is none).
+fn time_in_zone(
+    time: chrono::DateTime<chrono::Utc>,
+    zone: Option<chrono_tz::Tz>,
+) -> scopinator_seestar::command::params::SetTimeParams {
+    use chrono::{Datelike, Timelike};
+    let zone = zone.unwrap_or(chrono_tz::UTC);
+    let local = time.with_timezone(&zone);
+    scopinator_seestar::command::params::SetTimeParams {
+        year: local.year(),
+        mon: local.month() as i32,
+        day: local.day() as i32,
+        hour: local.hour() as i32,
+        min: local.minute() as i32,
+        sec: local.second() as i32,
+        time_zone: zone.name().to_string(),
+    }
 }
 
 /// Seestar mount adapter.
@@ -347,6 +430,65 @@ impl Mount for SeestarMount {
         command_ok(self.client.stop_jog().await?)
     }
 
+    /// `location_lon_lat` from the device state. The telescope does not
+    /// keep an elevation.
+    async fn get_site(&self) -> Result<SiteLocation, ScopinatorError> {
+        let state = self
+            .client
+            .send_raw_and_validate(
+                "get_device_state",
+                Some(serde_json::json!({"keys": ["location_lon_lat"]})),
+            )
+            .await?;
+        let degrees = |index: usize| {
+            state
+                .pointer(&format!("/location_lon_lat/{index}"))
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| {
+                    ScopinatorError::Backend(format!(
+                        "get_device_state reply has no `location_lon_lat`: {state}"
+                    ))
+                })
+        };
+        // Longitude first.
+        SiteLocation::new(degrees(1)?, degrees(0)?)
+            .map_err(|e| ScopinatorError::Backend(format!("the telescope reports an {e}")))
+    }
+
+    /// `set_user_location`. That the telescope counts longitude east
+    /// positive has not been checked against one.
+    async fn set_site(&self, site: &SiteLocation) -> Result<(), ScopinatorError> {
+        use scopinator_seestar::command::params::SetUserLocationParams;
+        self.client
+            .send_and_validate(Command::SetUserLocation(SetUserLocationParams {
+                lat: site.latitude_deg(),
+                lon: site.longitude_deg(),
+                force: true,
+            }))
+            .await?;
+        Ok(())
+    }
+
+    async fn get_utc(&self) -> Result<chrono::DateTime<chrono::Utc>, ScopinatorError> {
+        let reply = self.client.send_and_validate(Command::PiGetTime).await?;
+        DeviceClock::parse(&reply)?.utc()
+    }
+
+    /// Set the clock, keeping the telescope's time zone: the time is sent as
+    /// local time in the zone the telescope already has, because sending a
+    /// zone name replaces it. A telescope with no zone, or one this library
+    /// does not know, is set to UTC.
+    async fn set_utc(&self, time: chrono::DateTime<chrono::Utc>) -> Result<(), ScopinatorError> {
+        let zone = match self.client.send_and_validate(Command::PiGetTime).await {
+            Ok(reply) => DeviceClock::parse(&reply).ok().and_then(|clock| clock.zone),
+            Err(_) => None,
+        };
+        self.client
+            .send_and_validate(Command::PiSetTime(time_in_zone(time, zone)))
+            .await?;
+        Ok(())
+    }
+
     async fn set_tracking(&self, enabled: bool) -> Result<(), ScopinatorError> {
         self.client
             .send_and_validate(Command::ScopeSetTrackState(enabled))
@@ -368,6 +510,8 @@ impl Mount for SeestarMount {
             can_unpark: false,
             can_track: true,
             can_move_axis: true,
+            can_set_site: true,
+            can_set_time: true,
             equatorial_system: SEESTAR_EPOCH,
         }
     }
@@ -394,5 +538,92 @@ impl Mount for SeestarMount {
             coordinates: coords,
             is_tracking: state.tracking,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_clock_in_a_named_zone_reads_as_the_right_instant() {
+        // 11:18:54 in Chicago on 15 November is CST, six hours behind UTC.
+        let reply = json!({"year": 2026, "mon": 11, "day": 15, "hour": 11, "min": 18, "sec": 54,
+            "time_zone": "America/Chicago"});
+        let clock = DeviceClock::parse(&reply).unwrap();
+        assert_eq!(
+            clock.utc().unwrap(),
+            chrono::Utc
+                .with_ymd_and_hms(2026, 11, 15, 17, 18, 54)
+                .unwrap()
+        );
+        // In July it is CDT, five hours behind.
+        let reply = json!({"year": 2026, "mon": 7, "day": 1, "hour": 22, "min": 0, "sec": 0,
+            "time_zone": "America/Chicago"});
+        assert_eq!(
+            DeviceClock::parse(&reply).unwrap().utc().unwrap(),
+            chrono::Utc.with_ymd_and_hms(2026, 7, 2, 3, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_clock_in_utc_reads_as_itself() {
+        // As captured from an S30.
+        let reply = json!({"year": 2026, "mon": 11, "day": 15, "hour": 11, "min": 18, "sec": 54,
+            "time_zone": "UTC"});
+        assert_eq!(
+            DeviceClock::parse(&reply).unwrap().utc().unwrap(),
+            chrono::Utc
+                .with_ymd_and_hms(2026, 11, 15, 11, 18, 54)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn an_unknown_or_missing_zone_parses_but_has_no_instant() {
+        for zone in [json!("Mars/Olympus"), json!(""), serde_json::Value::Null] {
+            let reply = json!({"year": 2026, "mon": 11, "day": 15, "hour": 11, "min": 18,
+                "sec": 54, "time_zone": zone});
+            let clock = DeviceClock::parse(&reply).unwrap();
+            assert_eq!(clock.zone, None);
+            assert!(clock.utc().is_err());
+        }
+    }
+
+    #[test]
+    fn a_reply_that_is_not_a_date_is_an_error() {
+        assert!(DeviceClock::parse(&json!({})).is_err());
+        let reply = json!({"year": 2026, "mon": 13, "day": 1, "hour": 0, "min": 0, "sec": 0,
+            "time_zone": "UTC"});
+        assert!(DeviceClock::parse(&reply).is_err());
+    }
+
+    #[test]
+    fn a_time_is_sent_as_local_time_in_the_telescope_zone() {
+        let time = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 15, 17, 18, 54)
+            .unwrap();
+        let sent = time_in_zone(time, Some(chrono_tz::America::Chicago));
+        assert_eq!(
+            (sent.year, sent.mon, sent.day, sent.hour, sent.min, sent.sec),
+            (2026, 11, 15, 11, 18, 54)
+        );
+        assert_eq!(sent.time_zone, "America/Chicago");
+
+        // Without a zone, UTC.
+        let sent = time_in_zone(time, None);
+        assert_eq!((sent.day, sent.hour), (15, 17));
+        assert_eq!(sent.time_zone, "UTC");
+    }
+
+    #[test]
+    fn the_local_date_can_differ_from_the_utc_date() {
+        // 03:00 UTC on the 16th is still the 15th in Chicago.
+        let time = chrono::Utc.with_ymd_and_hms(2026, 11, 16, 3, 0, 0).unwrap();
+        let sent = time_in_zone(time, Some(chrono_tz::America::Chicago));
+        assert_eq!((sent.day, sent.hour), (15, 21));
     }
 }

@@ -19,7 +19,9 @@ use common::FakeSeestar;
 use scopinator::backend::seestar::{SeestarBackend, SeestarEndpoints};
 use scopinator::{Mount, ScopinatorError, UnifiedEventBus};
 use scopinator_seestar::SeestarConfig;
-use scopinator_types::{Coordinates, DecDegrees, Epoch, MountAxis, RaDegrees, SlewState};
+use scopinator_types::{
+    Coordinates, DecDegrees, Epoch, MountAxis, RaDegrees, SiteLocation, SlewState,
+};
 use serde_json::{Value, json};
 
 fn mount_state(move_type: &str, tracking: bool, close: bool) -> Value {
@@ -403,5 +405,137 @@ async fn a_seestar_has_no_unpark_request() {
     let mount = backend.mount();
     assert!(!mount.capabilities().can_unpark);
     assert!(mount.unpark().await.unwrap_err().is_not_supported());
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn the_site_is_read_longitude_first_and_written_by_name() {
+    let fake = FakeSeestar::start().await;
+    // The device state lists longitude before latitude.
+    fake.respond_ok(
+        "get_device_state",
+        json!({"device": {"name": "fake", "firmware_ver_int": 2975},
+            "location_lon_lat": [-87.63, 41.88]}),
+    );
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+    let caps = mount.capabilities();
+    assert!(caps.can_set_site && caps.can_set_time);
+
+    let site = mount.get_site().await.unwrap();
+    assert_eq!(site.latitude_deg(), 41.88);
+    assert_eq!(site.longitude_deg(), -87.63);
+    assert_eq!(site.elevation_m(), None);
+
+    let new_site = SiteLocation::new(-33.87, 151.21).unwrap();
+    mount.set_site(&new_site).await.unwrap();
+    let params = sent(&fake, "set_user_location");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0]["lat"], -33.87);
+    assert_eq!(params[0]["lon"], 151.21);
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_state_reply_without_a_location_is_an_error() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok(
+        "get_device_state",
+        json!({"device": {"name": "fake", "firmware_ver_int": 2975}}),
+    );
+    let backend = backend(&fake).await;
+    assert!(backend.mount().get_site().await.is_err());
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn the_clock_is_read_through_the_telescope_time_zone() {
+    use chrono::TimeZone;
+
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, true));
+    fake.respond_ok(
+        "pi_get_time",
+        json!({"year": 2026, "mon": 11, "day": 15, "hour": 11, "min": 18, "sec": 54,
+            "time_zone": "America/Chicago"}),
+    );
+    let backend = backend(&fake).await;
+    assert_eq!(
+        backend.mount().get_utc().await.unwrap(),
+        chrono::Utc
+            .with_ymd_and_hms(2026, 11, 15, 17, 18, 54)
+            .unwrap()
+    );
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn setting_the_clock_keeps_the_telescope_time_zone() {
+    use chrono::TimeZone;
+
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, true));
+    // A telescope whose clock was never set: years off, but with a zone.
+    fake.respond_ok(
+        "pi_get_time",
+        json!({"year": 2020, "mon": 10, "day": 10, "hour": 3, "min": 0, "sec": 0,
+            "time_zone": "America/Chicago"}),
+    );
+    let backend = backend(&fake).await;
+    let now = chrono::Utc.with_ymd_and_hms(2026, 11, 16, 3, 0, 0).unwrap();
+    backend.mount().set_utc(now).await.unwrap();
+
+    let params = sent(&fake, "pi_set_time");
+    assert_eq!(params.len(), 1);
+    // `pi_set_time` takes its fields in a one-element array.
+    let time = if params[0].is_array() {
+        &params[0][0]
+    } else {
+        &params[0]
+    };
+    // Local time in Chicago, the evening before, and the zone is not
+    // replaced with UTC.
+    assert_eq!(time["time_zone"], "America/Chicago");
+    assert_eq!(
+        (
+            time["year"].as_i64(),
+            time["mon"].as_i64(),
+            time["day"].as_i64()
+        ),
+        (Some(2026), Some(11), Some(15))
+    );
+    assert_eq!(
+        (
+            time["hour"].as_i64(),
+            time["min"].as_i64(),
+            time["sec"].as_i64()
+        ),
+        (Some(21), Some(0), Some(0))
+    );
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_telescope_with_no_usable_zone_is_set_to_utc() {
+    use chrono::TimeZone;
+
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, true));
+    fake.respond_ok("pi_get_time", json!({}));
+    let backend = backend(&fake).await;
+    let now = chrono::Utc.with_ymd_and_hms(2026, 11, 16, 3, 0, 0).unwrap();
+    backend.mount().set_utc(now).await.unwrap();
+
+    let params = sent(&fake, "pi_set_time");
+    let time = if params[0].is_array() {
+        &params[0][0]
+    } else {
+        &params[0]
+    };
+    assert_eq!(time["time_zone"], "UTC");
+    assert_eq!(
+        (time["day"].as_i64(), time["hour"].as_i64()),
+        (Some(16), Some(3))
+    );
     backend.disconnect().await;
 }
