@@ -37,6 +37,9 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- `wait_for_slew`, `wait_for_park`, `wait_for_image`, `wait_for_focuser` and
+  `wait_for_filter_wheel`, with `WaitOptions` (poll interval, timeout, settle time), wait for an
+  operation to finish on any backend.
 - `Coordinates::to_epoch` converts between J2000 and the equinox of date (precession only).
 - `DeviceKind` and `DeviceInfo` (id, kind, name, model, firmware, driver) in `scopinator-types`.
 - `ScopinatorError` has kinds a caller can match on for any backend: `Busy`, `Parked`,
