@@ -211,6 +211,21 @@ pub struct AltAzCoordinates {
     pub azimuth: f64,
 }
 
+impl AltAzCoordinates {
+    /// Horizontal coordinates with the altitude between -90 and 90 degrees
+    /// and the azimuth from 0 up to 360, measured from north through east.
+    /// The fields are public and can also be set unchecked.
+    pub fn new(altitude: f64, azimuth: f64) -> Result<Self, TypeError> {
+        if !(-90.0..=90.0).contains(&altitude) {
+            return Err(TypeError::InvalidAltitude(altitude));
+        }
+        if !(0.0..360.0).contains(&azimuth) {
+            return Err(TypeError::InvalidAzimuth(azimuth));
+        }
+        Ok(Self { altitude, azimuth })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +389,18 @@ mod tests {
     // AltAzCoordinates has public fields and no validating constructor, so
     // every value is accepted. Documented in docs/bugs/ra-360-divergence.md
     // (secondary section).
+    #[test]
+    fn altaz_new_is_range_checked() {
+        assert!(AltAzCoordinates::new(45.0, 180.0).is_ok());
+        assert!(AltAzCoordinates::new(-90.0, 0.0).is_ok());
+        assert!(AltAzCoordinates::new(90.0, 359.99).is_ok());
+        assert!(AltAzCoordinates::new(90.1, 0.0).is_err());
+        assert!(AltAzCoordinates::new(-90.1, 0.0).is_err());
+        assert!(AltAzCoordinates::new(0.0, 360.0).is_err());
+        assert!(AltAzCoordinates::new(0.0, -0.1).is_err());
+        assert!(AltAzCoordinates::new(f64::NAN, 0.0).is_err());
+    }
+
     #[test]
     fn py_divergence_altaz_has_no_validation() {
         for (alt, az) in [(-91.0, 0.0), (91.0, 0.0), (0.0, -1.0), (0.0, 360.0)] {

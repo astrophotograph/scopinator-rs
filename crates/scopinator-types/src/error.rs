@@ -14,4 +14,10 @@ pub enum TypeError {
 
     #[error("invalid longitude: {0} degrees (must be -180.0..=180.0, east positive)")]
     InvalidLongitude(f64),
+
+    #[error("invalid altitude: {0} degrees (must be -90.0..=90.0)")]
+    InvalidAltitude(f64),
+
+    #[error("invalid azimuth: {0} degrees (must be 0.0..360.0)")]
+    InvalidAzimuth(f64),
 }

@@ -57,6 +57,29 @@ pub enum MountAxis {
     Secondary,
 }
 
+/// A direction for a guiding pulse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum GuideDirection {
+    North,
+    South,
+    East,
+    West,
+}
+
+/// How a mount's axes are arranged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum AlignmentMode {
+    /// Altitude and azimuth axes.
+    AltAz,
+    /// A polar axis, without a meridian flip: a fork or single arm on a
+    /// wedge.
+    Polar,
+    /// A German equatorial mount, which flips at the meridian.
+    GermanPolar,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +124,30 @@ mod tests {
             Just(PierSide::West),
             Just(PierSide::Unknown),
         ]
+    }
+
+    #[test]
+    fn guide_direction_and_alignment_mode_roundtrip() {
+        for direction in [
+            GuideDirection::North,
+            GuideDirection::South,
+            GuideDirection::East,
+            GuideDirection::West,
+        ] {
+            let json = serde_json::to_string(&direction).unwrap();
+            assert_eq!(
+                serde_json::from_str::<GuideDirection>(&json).unwrap(),
+                direction
+            );
+        }
+        for mode in [
+            AlignmentMode::AltAz,
+            AlignmentMode::Polar,
+            AlignmentMode::GermanPolar,
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(serde_json::from_str::<AlignmentMode>(&json).unwrap(), mode);
+        }
     }
 
     #[test]

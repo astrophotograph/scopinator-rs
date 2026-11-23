@@ -6,8 +6,8 @@ use scopinator_seestar::SeestarClient;
 use scopinator_seestar::command::Command;
 use scopinator_seestar::command::params::Direction;
 use scopinator_types::{
-    Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind, Epoch, MountAxis, RaDegrees,
-    SiteLocation,
+    AlignmentMode, AltAzCoordinates, Coordinates, DecDegrees, DeviceId, DeviceInfo, DeviceKind,
+    Epoch, MountAxis, RaDegrees, SiteLocation,
 };
 
 use crate::device::capabilities::MountCapabilities;
@@ -430,6 +430,44 @@ impl Mount for SeestarMount {
         command_ok(self.client.stop_jog().await?)
     }
 
+    /// `scope_get_horiz_coord`, which answers with two numbers. They are
+    /// taken as altitude then azimuth: the one reply on record is
+    /// `[-29.708611, 0.0]`, and an azimuth is not negative.
+    async fn get_alt_az(&self) -> Result<AltAzCoordinates, ScopinatorError> {
+        let reply = self
+            .client
+            .send_and_validate(Command::ScopeGetHorizCoord)
+            .await?;
+        let degrees = |index: usize| {
+            reply.get(index).and_then(|v| v.as_f64()).ok_or_else(|| {
+                ScopinatorError::Backend(format!(
+                    "scope_get_horiz_coord reply is not two numbers: {reply}"
+                ))
+            })
+        };
+        AltAzCoordinates::new(degrees(0)?, degrees(1)?.rem_euclid(360.0))
+            .map_err(|e| ScopinatorError::Backend(format!("the telescope reports an {e}")))
+    }
+
+    /// `mount.equ_mode`: a Seestar is an alt-az mount unless it has been put
+    /// in equatorial mode on a wedge. It never flips at the meridian.
+    async fn alignment_mode(&self) -> Result<AlignmentMode, ScopinatorError> {
+        let state = self
+            .client
+            .send_raw_and_validate(
+                "get_device_state",
+                Some(serde_json::json!({"keys": ["mount"]})),
+            )
+            .await?;
+        match state.pointer("/mount/equ_mode").and_then(|v| v.as_bool()) {
+            Some(true) => Ok(AlignmentMode::Polar),
+            Some(false) => Ok(AlignmentMode::AltAz),
+            None => Err(ScopinatorError::Backend(format!(
+                "get_device_state reply has no `mount.equ_mode`: {state}"
+            ))),
+        }
+    }
+
     /// `location_lon_lat` from the device state. The telescope does not
     /// keep an elevation.
     async fn get_site(&self) -> Result<SiteLocation, ScopinatorError> {
@@ -513,6 +551,7 @@ impl Mount for SeestarMount {
             can_set_site: true,
             can_set_time: true,
             equatorial_system: SEESTAR_EPOCH,
+            ..MountCapabilities::default()
         }
     }
 

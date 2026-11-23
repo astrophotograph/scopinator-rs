@@ -18,8 +18,9 @@
 
 use async_trait::async_trait;
 use scopinator_types::{
-    Coordinates, DeviceId, DeviceInfo, ExposureSettings, FilterPosition, FocuserPosition,
-    ImageData, MountAxis, SiteLocation,
+    AlignmentMode, AltAzCoordinates, Coordinates, DeviceId, DeviceInfo, ExposureSettings,
+    FilterPosition, FocuserPosition, GuideDirection, ImageData, MountAxis, PierSide, SiteLocation,
+    TrackingRate,
 };
 
 use crate::device::capabilities::{
@@ -124,6 +125,57 @@ pub trait Mount: Device {
     /// abort a slew or stop tracking.
     async fn stop_motion(&self) -> Result<(), ScopinatorError> {
         Err(ScopinatorError::NotSupported("move_axis".into()))
+    }
+
+    /// Where the mount points above the horizon.
+    async fn get_alt_az(&self) -> Result<AltAzCoordinates, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("alt-az position".into()))
+    }
+
+    /// Start a slew to an altitude and azimuth. The mount does not track
+    /// afterwards. Returns on acceptance, like
+    /// [`slew_to_coordinates`](Self::slew_to_coordinates).
+    async fn slew_to_alt_az(&self, _target: &AltAzCoordinates) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("alt-az slew".into()))
+    }
+
+    /// Choose the rate the mount tracks at, from
+    /// [`MountCapabilities::tracking_rates`]. This does not turn tracking
+    /// on or off.
+    async fn set_tracking_rate(&self, _rate: TrackingRate) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("tracking rate".into()))
+    }
+
+    /// Which side of the pier a German equatorial mount is on.
+    async fn side_of_pier(&self) -> Result<PierSide, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("side of pier".into()))
+    }
+
+    /// Start a search for the home position. Returns on acceptance;
+    /// [`is_at_home`](Self::is_at_home) says when the mount is there.
+    async fn find_home(&self) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("find home".into()))
+    }
+
+    /// True when the mount is at its home position.
+    async fn is_at_home(&self) -> Result<bool, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("home position".into()))
+    }
+
+    /// Nudge the mount in one direction for `duration`, at its guide rate.
+    /// Returns when the mount has accepted the pulse.
+    async fn pulse_guide(
+        &self,
+        _direction: GuideDirection,
+        _duration: std::time::Duration,
+    ) -> Result<(), ScopinatorError> {
+        Err(ScopinatorError::NotSupported("pulse guiding".into()))
+    }
+
+    /// How the mount's axes are arranged right now. Some mounts can be used
+    /// either way.
+    async fn alignment_mode(&self) -> Result<AlignmentMode, ScopinatorError> {
+        Err(ScopinatorError::NotSupported("alignment mode".into()))
     }
 
     /// Where the mount believes it is.

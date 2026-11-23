@@ -20,7 +20,7 @@ use scopinator::backend::seestar::{SeestarBackend, SeestarEndpoints};
 use scopinator::{Mount, ScopinatorError, UnifiedEventBus};
 use scopinator_seestar::SeestarConfig;
 use scopinator_types::{
-    Coordinates, DecDegrees, Epoch, MountAxis, RaDegrees, SiteLocation, SlewState,
+    AlignmentMode, Coordinates, DecDegrees, Epoch, MountAxis, RaDegrees, SiteLocation, SlewState,
 };
 use serde_json::{Value, json};
 
@@ -536,6 +536,77 @@ async fn a_telescope_with_no_usable_zone_is_set_to_utc() {
     assert_eq!(
         (time["day"].as_i64(), time["hour"].as_i64()),
         (Some(16), Some(3))
+    );
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn the_horizontal_position_is_altitude_then_azimuth() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, true));
+    // As captured from a parked telescope.
+    fake.respond_ok("scope_get_horiz_coord", json!([-29.708611, 0.0]));
+    let backend = backend(&fake).await;
+
+    let position = backend.mount().get_alt_az().await.unwrap();
+    assert_eq!(position.altitude, -29.708611);
+    assert_eq!(position.azimuth, 0.0);
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn the_alignment_mode_follows_equ_mode() {
+    for (equ_mode, expected) in [(true, AlignmentMode::Polar), (false, AlignmentMode::AltAz)] {
+        let fake = FakeSeestar::start().await;
+        fake.respond_ok(
+            "get_device_state",
+            json!({"device": {"name": "fake", "firmware_ver_int": 2975},
+                "mount": {"move_type": "none", "tracking": false, "close": true,
+                    "equ_mode": equ_mode}}),
+        );
+        let backend = backend(&fake).await;
+        assert_eq!(backend.mount().alignment_mode().await.unwrap(), expected);
+        backend.disconnect().await;
+    }
+}
+
+#[tokio::test]
+async fn what_a_seestar_mount_does_not_have_is_not_supported() {
+    use scopinator_types::{AltAzCoordinates, GuideDirection, TrackingRate};
+
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", mount_state("none", false, true));
+    let backend = backend(&fake).await;
+    let mount = backend.mount();
+    let caps = mount.capabilities();
+    assert!(!caps.can_slew_alt_az && !caps.can_set_tracking_rate);
+    assert!(!caps.can_find_home && !caps.can_pulse_guide);
+    assert!(caps.tracking_rates.is_empty());
+
+    let up = AltAzCoordinates::new(45.0, 180.0).unwrap();
+    assert!(
+        mount
+            .slew_to_alt_az(&up)
+            .await
+            .unwrap_err()
+            .is_not_supported()
+    );
+    assert!(
+        mount
+            .set_tracking_rate(TrackingRate::Lunar)
+            .await
+            .unwrap_err()
+            .is_not_supported()
+    );
+    assert!(mount.side_of_pier().await.unwrap_err().is_not_supported());
+    assert!(mount.find_home().await.unwrap_err().is_not_supported());
+    assert!(mount.is_at_home().await.unwrap_err().is_not_supported());
+    assert!(
+        mount
+            .pulse_guide(GuideDirection::North, Duration::from_millis(200))
+            .await
+            .unwrap_err()
+            .is_not_supported()
     );
     backend.disconnect().await;
 }

@@ -1,4 +1,4 @@
-use scopinator_types::Epoch;
+use scopinator_types::{Epoch, TrackingRate};
 
 /// Describes what a mount can do.
 ///
@@ -16,6 +16,15 @@ pub struct MountCapabilities {
     pub can_unpark: bool,
     pub can_track: bool,
     pub can_move_axis: bool,
+    /// The mount can slew to an altitude and azimuth.
+    pub can_slew_alt_az: bool,
+    /// The tracking rate can be chosen; `tracking_rates` lists the choices.
+    pub can_set_tracking_rate: bool,
+    pub tracking_rates: Vec<TrackingRate>,
+    /// The mount can find its home position.
+    pub can_find_home: bool,
+    /// The mount takes guiding pulses.
+    pub can_pulse_guide: bool,
     /// The observing site can be set ([`Mount::set_site`](super::traits::Mount::set_site)).
     pub can_set_site: bool,
     /// The clock can be set ([`Mount::set_utc`](super::traits::Mount::set_utc)).
@@ -85,6 +94,11 @@ mod tests {
         assert!(!caps.can_track);
         assert!(!caps.can_move_axis);
         assert!(!caps.can_set_site);
+        assert!(!caps.can_slew_alt_az);
+        assert!(!caps.can_set_tracking_rate);
+        assert!(caps.tracking_rates.is_empty());
+        assert!(!caps.can_find_home);
+        assert!(!caps.can_pulse_guide);
         assert!(!caps.can_set_time);
         assert_eq!(caps.equatorial_system, Epoch::J2000);
     }

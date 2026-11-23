@@ -63,6 +63,11 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ### Added
 
+- More optional `Mount` members, answering `NotSupported` unless a backend provides them:
+  `get_alt_az`, `slew_to_alt_az`, `set_tracking_rate`, `side_of_pier`, `find_home`,
+  `is_at_home`, `pulse_guide` and `alignment_mode`, with matching capability flags,
+  `GuideDirection`, `AlignmentMode` and a checked `AltAzCoordinates::new`. The Seestar mount
+  provides `get_alt_az` and `alignment_mode`.
 - `Mount::get_site`, `set_site`, `get_utc` and `set_utc`, with `SiteLocation` and the
   capability flags `can_set_site` and `can_set_time`. On a Seestar, `set_utc` keeps the
   telescope's time zone: it sends local time in the zone the telescope already has. This adds
