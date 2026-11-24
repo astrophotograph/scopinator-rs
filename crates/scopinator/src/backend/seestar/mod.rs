@@ -1,11 +1,13 @@
 mod camera;
 mod event_translator;
 mod mount;
+mod stacker;
 mod wide_camera;
 
 pub use camera::SeestarCamera;
 pub use event_translator::SeestarEventTranslator;
 pub use mount::SeestarMount;
+pub use stacker::SeestarStacker;
 pub use wide_camera::SeestarWideCamera;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -117,6 +119,7 @@ pub struct SeestarBackend {
     endpoints: SeestarEndpoints,
     config: SeestarConfig,
     goto: Arc<GotoTracker>,
+    stacker: Arc<SeestarStacker>,
     /// The wide camera's own connection, opened on first use.
     wide_client: tokio::sync::OnceCell<Arc<SeestarClient>>,
 }
@@ -167,6 +170,7 @@ impl SeestarBackend {
             Arc::clone(&event_bus),
         );
 
+        let stacker = Arc::new(SeestarStacker::new(Arc::clone(&client)));
         Ok(Self {
             client,
             device_id,
@@ -174,6 +178,7 @@ impl SeestarBackend {
             endpoints,
             config,
             goto: Arc::new(GotoTracker::default()),
+            stacker,
             wide_client: tokio::sync::OnceCell::new(),
         })
     }
@@ -439,6 +444,10 @@ impl Backend for SeestarBackend {
     async fn disconnect(&self) -> Result<(), ScopinatorError> {
         SeestarBackend::disconnect(self).await;
         Ok(())
+    }
+
+    fn live_stacker(&self) -> Option<Arc<dyn crate::device::LiveStacker>> {
+        Some(Arc::clone(&self.stacker) as Arc<dyn crate::device::LiveStacker>)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

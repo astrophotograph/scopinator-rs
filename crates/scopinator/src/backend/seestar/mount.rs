@@ -21,14 +21,14 @@ use super::GotoTracker;
 /// though the telescope does not say so yet. An S30 took 6 s to start
 /// moving. A goto the telescope accepts and then silently ignores (seen with
 /// an unset clock) stops counting as a slew when this runs out.
-const GOTO_START_GRACE: Duration = Duration::from_secs(15);
+pub(super) const GOTO_START_GRACE: Duration = Duration::from_secs(15);
 
 /// The equatorial system a Seestar takes goto targets in and reports its
 /// position in: the equinox of date, according to the protocol
 /// specification. This has not been checked against a telescope; plate-solve
 /// centring hides the difference from J2000 (about 0.37 degrees in 2026) on
 /// the device itself.
-const SEESTAR_EPOCH: Epoch = Epoch::JNow;
+pub(super) const SEESTAR_EPOCH: Epoch = Epoch::JNow;
 
 /// The speed gear manual moves use. Gear 2 at 60 percent moved an S50
 /// gently; what the other gears do has not been measured.
@@ -39,7 +39,7 @@ const JOG_LEVEL: i32 = 2;
 const JOG_SECONDS: i32 = 10;
 
 /// Turn a refused command into an error.
-fn command_ok(
+pub(super) fn command_ok(
     response: scopinator_seestar::response::CommandResponse,
 ) -> Result<(), ScopinatorError> {
     response
@@ -54,16 +54,16 @@ fn command_ok(
 /// What `pi_get_time` returns: wall-clock fields and the name of the zone
 /// they are in.
 #[derive(Debug, PartialEq)]
-struct DeviceClock {
-    local: chrono::NaiveDateTime,
+pub(super) struct DeviceClock {
+    pub(super) local: chrono::NaiveDateTime,
     /// `None` if the telescope names no zone or one that is not in the IANA
     /// database.
-    zone: Option<chrono_tz::Tz>,
+    pub(super) zone: Option<chrono_tz::Tz>,
     zone_name: String,
 }
 
 impl DeviceClock {
-    fn parse(reply: &serde_json::Value) -> Result<Self, ScopinatorError> {
+    pub(super) fn parse(reply: &serde_json::Value) -> Result<Self, ScopinatorError> {
         let bad = || ScopinatorError::Backend(format!("pi_get_time reply is not a time: {reply}"));
         let field = |name: &str| {
             reply
@@ -93,7 +93,7 @@ impl DeviceClock {
     /// The instant the clock shows. Fails if the zone is unknown, or if the
     /// local time does not exist or is ambiguous in it (the hour around a
     /// daylight-saving change).
-    fn utc(&self) -> Result<chrono::DateTime<chrono::Utc>, ScopinatorError> {
+    pub(super) fn utc(&self) -> Result<chrono::DateTime<chrono::Utc>, ScopinatorError> {
         use chrono::TimeZone;
         let zone = self.zone.ok_or_else(|| {
             ScopinatorError::Backend(format!(
@@ -115,7 +115,7 @@ impl DeviceClock {
 
 /// `time` as the wall-clock fields `pi_set_time` takes, in `zone` (UTC if
 /// there is none).
-fn time_in_zone(
+pub(super) fn time_in_zone(
     time: chrono::DateTime<chrono::Utc>,
     zone: Option<chrono_tz::Tz>,
 ) -> scopinator_seestar::command::params::SetTimeParams {
@@ -221,7 +221,7 @@ enum GotoStage {
 
 /// The first stage at or below `value` that reports `state: fail`, as
 /// "stage: error (code n)".
-fn find_failure(value: &serde_json::Value, name: &str) -> Option<String> {
+pub(super) fn find_failure(value: &serde_json::Value, name: &str) -> Option<String> {
     let object = value.as_object()?;
     if object.get("state").and_then(|s| s.as_str()) == Some("fail") {
         let error = object
