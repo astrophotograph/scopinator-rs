@@ -1,12 +1,14 @@
 mod camera;
 mod event_translator;
 mod mount;
+mod observer;
 mod stacker;
 mod wide_camera;
 
 pub use camera::SeestarCamera;
 pub use event_translator::SeestarEventTranslator;
 pub use mount::SeestarMount;
+pub use observer::SeestarObserver;
 pub use stacker::SeestarStacker;
 pub use wide_camera::SeestarWideCamera;
 
@@ -444,6 +446,13 @@ impl Backend for SeestarBackend {
     async fn disconnect(&self) -> Result<(), ScopinatorError> {
         SeestarBackend::disconnect(self).await;
         Ok(())
+    }
+
+    fn observer(&self) -> Option<Arc<dyn crate::device::Observer>> {
+        Some(Arc::new(SeestarObserver::new(
+            Arc::clone(&self.client),
+            Arc::clone(&self.goto),
+        )))
     }
 
     fn live_stacker(&self) -> Option<Arc<dyn crate::device::LiveStacker>> {
