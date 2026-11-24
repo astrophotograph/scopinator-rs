@@ -257,10 +257,13 @@ async fn camera_focuser_and_filter_changes_reach_the_bus_with_their_source() {
     let ready = next(&mut events, &[EventType::ImageReady]).await;
     assert_eq!(ready.source, Some(cameras[1].id()));
 
-    // The focuser moves and stops.
+    // The focuser moves and stops. The position is in place before the
+    // focuser stops: a poll reads position and motion in two requests, and
+    // one landing between two changes made here would pair the old position
+    // with "stopped".
     fake.set("focuser/0/ismoving", json!(true));
-    tokio::time::sleep(Duration::from_millis(80)).await;
     fake.set("focuser/0/position", json!(6000));
+    tokio::time::sleep(Duration::from_millis(80)).await;
     fake.set("focuser/0/ismoving", json!(false));
     let moved = next(&mut events, &[EventType::FocuserMoveCompleted]).await;
     assert!(matches!(moved.payload, EventPayload::FocuserPosition(6000)));
