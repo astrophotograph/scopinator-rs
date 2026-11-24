@@ -34,6 +34,11 @@ pub enum ScopinatorError {
     #[error("out of range: {0}")]
     OutOfRange(String),
 
+    /// The telescope cannot do this until something else is dealt with: its
+    /// clock, its site, its calibration.
+    #[error("not ready: needs {}", list(.0))]
+    NotReady(Vec<scopinator_types::Prerequisite>),
+
     /// The connection dropped while the device was in use.
     #[error("connection lost: {0}")]
     ConnectionLost(String),
@@ -49,6 +54,15 @@ pub enum ScopinatorError {
     #[cfg(feature = "indi")]
     #[error("indi error: {0}")]
     Indi(#[from] scopinator_indi::IndiError),
+}
+
+/// "clock, site location" for an error message.
+fn list(prerequisites: &[scopinator_types::Prerequisite]) -> String {
+    prerequisites
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl ScopinatorError {
@@ -88,6 +102,13 @@ mod tests {
         for (err, text) in cases {
             assert_eq!(err.to_string(), text);
         }
+    }
+
+    #[test]
+    fn not_ready_names_what_is_needed() {
+        use scopinator_types::Prerequisite;
+        let err = ScopinatorError::NotReady(vec![Prerequisite::Clock, Prerequisite::SiteLocation]);
+        assert_eq!(err.to_string(), "not ready: needs clock, site location");
     }
 
     #[test]

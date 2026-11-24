@@ -14,7 +14,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use scopinator_types::DeviceId;
 
-use crate::device::{Camera, FilterWheel, Focuser, Mount};
+use crate::device::{
+    AutoFocus, Camera, FilterWheel, Focuser, LiveStacker, Mount, Observer, PlateSolver,
+};
 use crate::error::ScopinatorError;
 
 /// One connected instrument: a smart telescope, or a server that fronts a
@@ -46,6 +48,27 @@ pub trait Backend: Send + Sync {
 
     /// The filter wheel, if the instrument has one.
     fn filter_wheel(&self) -> Option<Arc<dyn FilterWheel>>;
+
+    /// Target finding, on a smart telescope: readiness, and pointing at a
+    /// target and centring it.
+    fn observer(&self) -> Option<Arc<dyn Observer>> {
+        None
+    }
+
+    /// Stacking on the instrument itself, on a smart telescope.
+    fn live_stacker(&self) -> Option<Arc<dyn LiveStacker>> {
+        None
+    }
+
+    /// The instrument focusing itself.
+    fn auto_focus(&self) -> Option<Arc<dyn AutoFocus>> {
+        None
+    }
+
+    /// The instrument working out where it points.
+    fn plate_solver(&self) -> Option<Arc<dyn PlateSolver>> {
+        None
+    }
 
     /// Close the connection to the instrument.
     async fn disconnect(&self) -> Result<(), ScopinatorError>;

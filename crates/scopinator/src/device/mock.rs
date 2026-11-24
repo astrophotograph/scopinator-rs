@@ -5,12 +5,16 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use scopinator_types::{
-    Coordinates, DeviceId, DeviceInfo, DeviceKind, ExposureSettings, FilterPosition,
-    FocuserPosition, FrameKind, ImageData, PixelFormat,
+    AcquisitionState, AutoFocusState, Coordinates, DeviceId, DeviceInfo, DeviceKind,
+    ExposureSettings, FilterPosition, FocuserPosition, FrameKind, ImageData, PixelFormat,
+    PlateSolution, Readiness, StackProgress, StackSettings, Target,
 };
 
 use super::capabilities::{
     CameraCapabilities, FilterWheelCapabilities, FocuserCapabilities, MountCapabilities,
+};
+use super::smart::{
+    AutoFocus, LiveStacker, Observer, ObserverCapabilities, PlateSolver, StackerCapabilities,
 };
 use super::status::{CameraStatus, DeviceStatus, MountStatus};
 use super::traits::{Camera, Device, FilterWheel, Focuser, Mount};
@@ -316,6 +320,166 @@ impl FilterWheel for MockFilterWheel {
 
     async fn get_filter_names(&self) -> Result<Vec<String>, ScopinatorError> {
         Ok(MOCK_FILTERS.iter().map(|n| n.to_string()).collect())
+    }
+}
+
+/// The answers a state query gives, in order, for a query that returns a
+/// value. The last one repeats.
+#[derive(Debug)]
+pub(crate) struct Sequence<T> {
+    answers: Mutex<VecDeque<Result<T, &'static str>>>,
+    asked: Mutex<usize>,
+}
+
+impl<T> Default for Sequence<T> {
+    fn default() -> Self {
+        Self {
+            answers: Mutex::new(VecDeque::new()),
+            asked: Mutex::new(0),
+        }
+    }
+}
+
+impl<T: Clone> Sequence<T> {
+    pub(crate) fn script(&self, answers: impl IntoIterator<Item = Result<T, &'static str>>) {
+        *self.answers.lock().unwrap() = answers.into_iter().collect();
+    }
+
+    pub(crate) fn asked(&self) -> usize {
+        *self.asked.lock().unwrap()
+    }
+
+    /// The next answer, or `fallback` if nothing was scripted. An `Err` is a
+    /// `ScopinatorError::Backend` with that text.
+    fn next(&self, fallback: T) -> Result<T, ScopinatorError> {
+        *self.asked.lock().unwrap() += 1;
+        let mut answers = self.answers.lock().unwrap();
+        let answer = if answers.len() > 1 {
+            answers.pop_front()
+        } else {
+            answers.front().cloned()
+        };
+        answer
+            .unwrap_or(Ok(fallback))
+            .map_err(|text| ScopinatorError::Backend(text.into()))
+    }
+}
+
+/// An observer that answers its state queries from scripts and records the
+/// targets it is sent.
+#[derive(Debug, Default)]
+pub(crate) struct MockObserver {
+    pub(crate) readiness: Sequence<Readiness>,
+    pub(crate) acquisition: Sequence<AcquisitionState>,
+    pub(crate) targets: Mutex<Vec<Target>>,
+}
+
+#[async_trait]
+impl Observer for MockObserver {
+    fn capabilities(&self) -> ObserverCapabilities {
+        ObserverCapabilities {
+            sky_targets: true,
+            ..ObserverCapabilities::default()
+        }
+    }
+
+    async fn readiness(&self) -> Result<Readiness, ScopinatorError> {
+        self.readiness.next(Readiness::Ready)
+    }
+
+    async fn prepare(&self) -> Result<(), ScopinatorError> {
+        Ok(())
+    }
+
+    async fn acquire(&self, target: &Target) -> Result<(), ScopinatorError> {
+        self.targets.lock().unwrap().push(target.clone());
+        Ok(())
+    }
+
+    async fn acquisition(&self) -> Result<AcquisitionState, ScopinatorError> {
+        self.acquisition.next(AcquisitionState::OnTarget)
+    }
+
+    async fn stop(&self) -> Result<(), ScopinatorError> {
+        Ok(())
+    }
+}
+
+/// A stacker that answers `progress` from a script and records how it was
+/// started.
+#[derive(Debug, Default)]
+pub(crate) struct MockStacker {
+    pub(crate) progress: Sequence<StackProgress>,
+    pub(crate) started: Mutex<Vec<StackSettings>>,
+    pub(crate) stops: Mutex<usize>,
+}
+
+#[async_trait]
+impl LiveStacker for MockStacker {
+    fn capabilities(&self) -> StackerCapabilities {
+        StackerCapabilities::default()
+    }
+
+    async fn start_stacking(&self, settings: &StackSettings) -> Result<(), ScopinatorError> {
+        self.started.lock().unwrap().push(settings.clone());
+        Ok(())
+    }
+
+    async fn stop_stacking(&self) -> Result<(), ScopinatorError> {
+        *self.stops.lock().unwrap() += 1;
+        Ok(())
+    }
+
+    async fn progress(&self) -> Result<StackProgress, ScopinatorError> {
+        self.progress.next(StackProgress::default())
+    }
+
+    async fn stacked_image(&self) -> Result<ImageData, ScopinatorError> {
+        Ok(ImageData::new(
+            1,
+            1,
+            bytes::Bytes::from_static(&[0]),
+            PixelFormat::Mono8,
+            FrameKind::Stack,
+        ))
+    }
+}
+
+/// An autofocus that answers its state from a script.
+#[derive(Debug, Default)]
+pub(crate) struct MockAutoFocus {
+    pub(crate) state: Sequence<AutoFocusState>,
+}
+
+#[async_trait]
+impl AutoFocus for MockAutoFocus {
+    async fn start_autofocus(&self) -> Result<(), ScopinatorError> {
+        Ok(())
+    }
+
+    async fn stop_autofocus(&self) -> Result<(), ScopinatorError> {
+        Ok(())
+    }
+
+    async fn autofocus_state(&self) -> Result<AutoFocusState, ScopinatorError> {
+        self.state.next(AutoFocusState::Idle)
+    }
+}
+
+/// A plate solver that answers `solution` from a script.
+#[derive(Debug, Default)]
+pub(crate) struct MockSolver {
+    pub(crate) solution: Sequence<Option<PlateSolution>>,
+}
+
+#[async_trait]
+impl PlateSolver for MockSolver {
+    async fn start_solve(&self) -> Result<(), ScopinatorError> {
+        Ok(())
+    }
+
+    async fn solution(&self) -> Result<Option<PlateSolution>, ScopinatorError> {
+        self.solution.next(None)
     }
 }
 

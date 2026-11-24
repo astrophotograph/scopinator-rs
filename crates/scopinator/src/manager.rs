@@ -407,5 +407,11 @@ mod tests {
         assert_eq!(camera.info().name, "camera");
         assert!(backend.focuser().is_none());
         assert!(backend.filter_wheel().is_none());
+        // A backend that is not a smart telescope has none of the smart
+        // traits, without having to say so.
+        assert!(backend.observer().is_none());
+        assert!(backend.live_stacker().is_none());
+        assert!(backend.auto_focus().is_none());
+        assert!(backend.plate_solver().is_none());
     }
 }

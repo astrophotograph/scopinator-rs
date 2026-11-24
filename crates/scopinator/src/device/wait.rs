@@ -11,6 +11,11 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+use scopinator_types::{
+    AcquisitionState, AutoFocusState, PlateSolution, Readiness, StackProgress, StackState,
+};
+
+use super::smart::{AutoFocus, LiveStacker, Observer, PlateSolver};
 use super::traits::{Camera, FilterWheel, Focuser, Mount};
 use crate::error::ScopinatorError;
 
@@ -113,6 +118,132 @@ pub async fn wait_for_filter_wheel(
     opts: WaitOptions,
 ) -> Result<(), ScopinatorError> {
     wait_until(opts, || async { Ok(!wheel.is_moving().await?) }).await
+}
+
+/// Poll `ready` until it has a value. Unlike [`wait_until`], one answer is
+/// enough: a value is not something a device reports by accident. An error
+/// from the query ends the wait with that error.
+async fn wait_for<T, F, Fut>(opts: WaitOptions, mut ready: F) -> Result<T, ScopinatorError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Option<T>, ScopinatorError>>,
+{
+    let deadline = Instant::now() + opts.timeout;
+    loop {
+        if let Some(value) = ready().await? {
+            tokio::time::sleep(opts.settle).await;
+            return Ok(value);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(ScopinatorError::Timeout);
+        }
+        tokio::time::sleep_until((now + opts.poll_interval).min(deadline)).await;
+    }
+}
+
+/// Wait for a telescope to be ready to find targets, for example after
+/// [`Observer::prepare`]: until [`Observer::readiness`] is `Ready`.
+pub async fn wait_for_ready(
+    observer: &dyn Observer,
+    opts: WaitOptions,
+) -> Result<(), ScopinatorError> {
+    wait_until(opts, || async {
+        Ok(observer.readiness().await? == Readiness::Ready)
+    })
+    .await
+}
+
+/// Wait for a telescope to have its target in view: until
+/// [`Observer::acquisition`] is `OnTarget`. Returns the acquisition's error
+/// if it failed, and [`InvalidState`](ScopinatorError::InvalidState) if it
+/// ended without reaching the target (it was stopped, or never started).
+pub async fn wait_for_acquisition(
+    observer: &dyn Observer,
+    opts: WaitOptions,
+) -> Result<(), ScopinatorError> {
+    // Idle ends the wait too, but has to be seen twice: a telescope can be
+    // idle for a moment between accepting a target and starting on it.
+    wait_until(opts, || async {
+        Ok(matches!(
+            observer.acquisition().await?,
+            AcquisitionState::OnTarget | AcquisitionState::Idle
+        ))
+    })
+    .await?;
+    match observer.acquisition().await? {
+        AcquisitionState::OnTarget => Ok(()),
+        state => Err(ScopinatorError::InvalidState(format!(
+            "the telescope stopped looking for the target ({state:?})"
+        ))),
+    }
+}
+
+/// Wait for an autofocus run to finish and return the focuser position it
+/// ended at, if the telescope reports one. Returns the run's error if it
+/// failed, and [`InvalidState`](ScopinatorError::InvalidState) if no run
+/// took place.
+pub async fn wait_for_autofocus(
+    focus: &dyn AutoFocus,
+    opts: WaitOptions,
+) -> Result<Option<i32>, ScopinatorError> {
+    wait_until(opts, || async {
+        Ok(focus.autofocus_state().await? != AutoFocusState::Running)
+    })
+    .await?;
+    match focus.autofocus_state().await? {
+        AutoFocusState::Done { position } => Ok(position),
+        state => Err(ScopinatorError::InvalidState(format!(
+            "no autofocus run finished ({state:?})"
+        ))),
+    }
+}
+
+/// Wait for a plate solve to finish and return its solution.
+pub async fn wait_for_solution(
+    solver: &dyn PlateSolver,
+    opts: WaitOptions,
+) -> Result<PlateSolution, ScopinatorError> {
+    wait_for(opts, || solver.solution()).await
+}
+
+/// Wait until a stack has at least `frames` frames in it and return its
+/// progress then. Returns the stack's error if it failed, and
+/// [`InvalidState`](ScopinatorError::InvalidState) if stacking ended with
+/// fewer frames.
+pub async fn wait_for_frames(
+    stacker: &dyn LiveStacker,
+    frames: u32,
+    opts: WaitOptions,
+) -> Result<StackProgress, ScopinatorError> {
+    // A stacker that is not stacking is given one more look before the wait
+    // gives up, for the moment between a start being accepted and the
+    // telescope acting on it.
+    let deadline = Instant::now() + opts.timeout;
+    let mut seen_stopped = false;
+    loop {
+        let progress = stacker.progress().await?;
+        if progress.stacked >= frames {
+            tokio::time::sleep(opts.settle).await;
+            return Ok(progress);
+        }
+        if progress.state != StackState::Stacking {
+            if seen_stopped {
+                return Err(ScopinatorError::InvalidState(format!(
+                    "stacking ended with {} of {frames} frames",
+                    progress.stacked
+                )));
+            }
+            seen_stopped = true;
+        } else {
+            seen_stopped = false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(ScopinatorError::Timeout);
+        }
+        tokio::time::sleep_until((now + opts.poll_interval).min(deadline)).await;
+    }
 }
 
 #[cfg(test)]
@@ -276,5 +407,207 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_not_supported(), "{err:?}");
+    }
+
+    // --- Smart telescopes ---
+
+    use crate::device::mock::{MockAutoFocus, MockObserver, MockSolver, MockStacker};
+    use scopinator_types::{Coordinates, Prerequisite};
+
+    fn stacking(stacked: u32) -> Result<StackProgress, &'static str> {
+        let mut progress = StackProgress::default();
+        progress.state = StackState::Stacking;
+        progress.stacked = stacked;
+        Ok(progress)
+    }
+
+    fn stopped(stacked: u32) -> Result<StackProgress, &'static str> {
+        let mut progress = StackProgress::default();
+        progress.stacked = stacked;
+        Ok(progress)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_wait_ends_when_nothing_is_needed_any_more() {
+        let observer = MockObserver::default();
+        observer.readiness.script([
+            Ok(Readiness::Needs(vec![Prerequisite::Calibration])),
+            Ok(Readiness::Needs(vec![Prerequisite::Calibration])),
+            Ok(Readiness::Ready),
+        ]);
+        wait_for_ready(&observer, WaitOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(observer.readiness.asked(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_telescope_that_never_gets_ready_times_out() {
+        let observer = MockObserver::default();
+        observer.readiness.script([Ok(Readiness::Unknown)]);
+        let err = wait_for_ready(&observer, WaitOptions::with_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ScopinatorError::Timeout), "{err:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acquisition_wait_goes_through_slewing_and_centring_to_on_target() {
+        let observer = MockObserver::default();
+        observer.acquisition.script([
+            // Accepted, not started yet.
+            Ok(AcquisitionState::Idle),
+            Ok(AcquisitionState::Slewing),
+            Ok(AcquisitionState::Centring),
+            Ok(AcquisitionState::OnTarget),
+        ]);
+        wait_for_acquisition(&observer, WaitOptions::default())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_acquisition_that_fails_ends_the_wait_with_its_error() {
+        let observer = MockObserver::default();
+        observer.acquisition.script([
+            Ok(AcquisitionState::Slewing),
+            Err("plate solve failed"),
+            Ok(AcquisitionState::Idle),
+        ]);
+        let err = wait_for_acquisition(&observer, WaitOptions::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "backend error: plate solve failed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_acquisition_that_was_stopped_is_an_invalid_state_not_a_success() {
+        let observer = MockObserver::default();
+        observer
+            .acquisition
+            .script([Ok(AcquisitionState::Slewing), Ok(AcquisitionState::Idle)]);
+        let err = wait_for_acquisition(&observer, WaitOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ScopinatorError::InvalidState(_)), "{err:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn autofocus_wait_returns_where_the_focuser_ended() {
+        let focus = MockAutoFocus::default();
+        focus.state.script([
+            Ok(AutoFocusState::Running),
+            Ok(AutoFocusState::Running),
+            Ok(AutoFocusState::Done {
+                position: Some(1580),
+            }),
+        ]);
+        let position = wait_for_autofocus(&focus, WaitOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(position, Some(1580));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waiting_for_an_autofocus_that_never_ran_is_an_invalid_state() {
+        let focus = MockAutoFocus::default();
+        focus.state.script([Ok(AutoFocusState::Idle)]);
+        let err = wait_for_autofocus(&focus, WaitOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ScopinatorError::InvalidState(_)), "{err:?}");
+
+        let failing = MockAutoFocus::default();
+        failing
+            .state
+            .script([Ok(AutoFocusState::Running), Err("no stars")]);
+        let err = wait_for_autofocus(&failing, WaitOptions::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "backend error: no stars");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn solution_wait_returns_the_solution() {
+        let solver = MockSolver::default();
+        let centre = Coordinates::from_hours(8.69, 19.5).unwrap();
+        solver
+            .solution
+            .script([Ok(None), Ok(None), Ok(Some(PlateSolution::new(centre)))]);
+        let start = Instant::now();
+        let solution = wait_for_solution(&solver, WaitOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(solution.center, centre);
+        // A value needs no second look.
+        assert_eq!(solver.solution.asked(), 3);
+        assert_eq!(elapsed_since(start), POLL * 2);
+
+        let failing = MockSolver::default();
+        failing.solution.script([Ok(None), Err("too few stars")]);
+        assert!(
+            wait_for_solution(&failing, WaitOptions::default())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn frames_wait_ends_at_the_frame_count() {
+        let stacker = MockStacker::default();
+        stacker.progress.script([
+            stacking(0),
+            stacking(3),
+            stacking(9),
+            stacking(10),
+            stacking(11),
+        ]);
+        let progress = wait_for_frames(&stacker, 10, WaitOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(progress.stacked, 10);
+        assert_eq!(stacker.progress.asked(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stack_that_ends_short_is_an_invalid_state() {
+        let stacker = MockStacker::default();
+        // Not started for one poll, stacks four frames, then stops.
+        stacker
+            .progress
+            .script([stopped(0), stacking(2), stacking(4), stopped(4)]);
+        let err = wait_for_frames(&stacker, 10, WaitOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ScopinatorError::InvalidState(_)), "{err:?}");
+        assert!(err.to_string().contains("4 of 10"), "{err}");
+        // One idle reading before stacking began did not end the wait.
+        assert_eq!(stacker.progress.asked(), 5);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stack_already_long_enough_returns_at_once_even_if_stopped() {
+        let stacker = MockStacker::default();
+        stacker.progress.script([stopped(30)]);
+        let start = Instant::now();
+        let progress = wait_for_frames(&stacker, 10, WaitOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(progress.stacked, 30);
+        assert_eq!(elapsed_since(start), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_stack_times_out() {
+        let stacker = MockStacker::default();
+        stacker.progress.script([stacking(1)]);
+        let err = wait_for_frames(
+            &stacker,
+            10,
+            WaitOptions::with_timeout(Duration::from_secs(20)),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ScopinatorError::Timeout), "{err:?}");
     }
 }

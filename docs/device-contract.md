@@ -47,6 +47,30 @@ Every device has an id (`Device::id`) that is unique among the devices a program
 devices of one instrument share its id as a prefix: `seestar:192.168.1.100:mount`,
 `seestar:192.168.1.100:camera`. Events carry the instrument's id.
 
+## Smart telescopes
+
+A smart telescope runs the observing workflow itself, so it is also asked for outcomes. These
+are optional traits a `Backend` hands out (`observer()`, `live_stacker()`, `auto_focus()`,
+`plate_solver()`); a plain mount-and-camera instrument returns `None` for all of them. They
+follow the same rule as above.
+
+| Request | Returns on acceptance | State query | Finished when |
+|---|---|---|---|
+| get ready | `Observer::prepare` | `Observer::readiness` | `Ready` |
+| find a target | `Observer::acquire` | `Observer::acquisition` | `OnTarget` |
+| stack | `LiveStacker::start_stacking` | `LiveStacker::progress` | the frame count wanted |
+| focus | `AutoFocus::start_autofocus` | `AutoFocus::autofocus_state` | `Done` |
+| plate solve | `PlateSolver::start_solve` | `PlateSolver::solution` | `Some` |
+
+- `Mount::slew_to_coordinates` points; `Observer::acquire` finds, which adds target names,
+  targets that are not coordinates (the Sun, the Moon, a planet) and the centring after the
+  slew.
+- A request the telescope refuses because something else must be done first is
+  `ScopinatorError::NotReady` with what is needed (`Clock`, `SiteLocation`, `Calibration`, ...).
+  `Observer::readiness` reports the same list without trying.
+- A stack setting the telescope cannot honour is an error before anything starts. It is never
+  ignored.
+
 ## Events
 
 Every event carries the id of the instrument it came from (`UnifiedEvent::device_id`) and,
