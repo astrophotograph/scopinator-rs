@@ -81,7 +81,12 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
   `Observer` (readiness, and finding and centring a `Target`), `LiveStacker`, `AutoFocus` and
   `PlateSolver`, with their types in `scopinator-types`, wait helpers (`wait_for_ready`,
   `wait_for_acquisition`, `wait_for_frames`, `wait_for_autofocus`, `wait_for_solution`) and
-  the `ScopinatorError::NotReady` kind. No backend implements them yet.
+  the `ScopinatorError::NotReady` kind.
+- The Seestar backend implements them: `SeestarStacker` (`LiveStacker`: sub-exposure, LP
+  filter, gain and restart applied before `iscope_start_stack`; progress from the view state;
+  the stacked image), `SeestarObserver` (`Observer`: clock and site readiness, sky,
+  solar-system and scenery targets, acquisition stages), `SeestarAutoFocus` and
+  `SeestarPlateSolver`. `SeestarCamera` is unchanged for now and still starts a stack.
 - `scopinator` (the command-line tool) works with Alpaca mounts: `--host alpaca://HOST:PORT`,
   or `--backend alpaca` with `--port`, on `status`, `goto`, `park` and the new `unpark`.
   `goto` on an Alpaca mount takes J2000 coordinates (`--jnow` for the equinox of date), turns

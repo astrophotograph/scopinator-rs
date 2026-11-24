@@ -1,3 +1,4 @@
+mod activity;
 mod camera;
 mod event_translator;
 mod mount;
@@ -5,6 +6,7 @@ mod observer;
 mod stacker;
 mod wide_camera;
 
+pub use activity::{SeestarAutoFocus, SeestarPlateSolver};
 pub use camera::SeestarCamera;
 pub use event_translator::SeestarEventTranslator;
 pub use mount::SeestarMount;
@@ -122,6 +124,7 @@ pub struct SeestarBackend {
     config: SeestarConfig,
     goto: Arc<GotoTracker>,
     stacker: Arc<SeestarStacker>,
+    activity: Arc<activity::Activity>,
     /// The wide camera's own connection, opened on first use.
     wide_client: tokio::sync::OnceCell<Arc<SeestarClient>>,
 }
@@ -173,6 +176,9 @@ impl SeestarBackend {
         );
 
         let stacker = Arc::new(SeestarStacker::new(Arc::clone(&client)));
+        // Autofocus and plate solving are only visible in events.
+        let activity = Arc::new(activity::Activity::default());
+        activity.listen(&client);
         Ok(Self {
             client,
             device_id,
@@ -181,6 +187,7 @@ impl SeestarBackend {
             config,
             goto: Arc::new(GotoTracker::default()),
             stacker,
+            activity,
             wide_client: tokio::sync::OnceCell::new(),
         })
     }
@@ -452,6 +459,20 @@ impl Backend for SeestarBackend {
         Some(Arc::new(SeestarObserver::new(
             Arc::clone(&self.client),
             Arc::clone(&self.goto),
+        )))
+    }
+
+    fn auto_focus(&self) -> Option<Arc<dyn crate::device::AutoFocus>> {
+        Some(Arc::new(SeestarAutoFocus::new(
+            Arc::clone(&self.client),
+            Arc::clone(&self.activity),
+        )))
+    }
+
+    fn plate_solver(&self) -> Option<Arc<dyn crate::device::PlateSolver>> {
+        Some(Arc::new(SeestarPlateSolver::new(
+            Arc::clone(&self.client),
+            Arc::clone(&self.activity),
         )))
     }
 
