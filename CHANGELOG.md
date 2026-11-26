@@ -5,6 +5,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-26
+
+One set of device traits for any telescope, and a second backend to prove it: an ASCOM Alpaca server is now a `Backend` beside the Seestar, with real mount, camera, focuser and filter wheel implementations, tested nightly against the ASCOM Omni Simulators. The traits for smart telescopes (`Observer`, `LiveStacker`, `AutoFocus`, `PlateSolver`) are here too, with Seestar implementations. **It has breaking changes** — see the upgrade section.
+
 ### Breaking
 
 - `ExposureSettings` has `frame_type: FrameType` (light, dark, bias, flat) in place of
@@ -156,6 +160,35 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
   those features and `is_not_supported()`.
 - `ScopeGotoEventData` carries `error` and `code` for a failed slew.
 
+### Upgrading from 0.6.0
+
+Nearly all of the breaking changes are in `scopinator` and `scopinator-types`. `scopinator-indi` is unchanged. The other two crates have one small break each:
+
+- `scopinator-alpaca`: `AlpacaError` has a new variant, `NotImplemented`, so an exhaustive `match` needs another arm. Alpaca error 0x400 now arrives as `NotImplemented` rather than `Device { code: 0x400, .. }`.
+- `scopinator-seestar`: `ScopeGotoEventData` has two new fields, `error` and `code`, which code building one with a literal must add.
+
+`scopinator` and `scopinator-types`:
+
+- **`DeviceManager`:** `seestar_mount(name)` and `seestar_camera(name)` are gone. Keep the id that `add_seestar` returns and ask for the backend: `manager.get(&id)`, then `backend.mount()`, `backend.cameras()` and so on. `list_backends()` is no longer async and returns `DeviceId`s; `disconnect_all()` returns a `Result`.
+- **Structs built with a literal:** `ExposureSettings`, `UnifiedEvent`, `ImageData`, `MountCapabilities`, `CameraCapabilities`, `DeviceStatus`, `MountStatus` and `CameraStatus` are `#[non_exhaustive]`. Use `ExposureSettings::new(seconds)` with the `with_` methods, `UnifiedEvent::new`, `ImageData::new`, and `Default::default()` plus field assignment for the rest. A `match` on `ScopinatorError`, `EventType` or `EventPayload` needs a wildcard arm.
+- **`ExposureSettings`:** `light: bool` is `frame_type: FrameType`. A Seestar camera now answers `NotSupported` to a dark, bias or flat frame or a region of interest, where it used to ignore the request.
+- **`ImageData`:** read `format: PixelFormat` in place of `bit_depth`, `is_color` and `bayer_pattern`. `SeestarCamera::get_image` can return `PixelFormat::Jpeg`; check the format before treating the bytes as samples.
+- **`CameraCapabilities`:** `pixel_size_um` is `pixel_size_x_um` and `pixel_size_y_um`.
+- **Focuser and filter wheel:** `Focuser::get_position` is `focuser_position` (a `FocuserPosition`); `FilterWheel::get_position` / `set_position` are `filter_position` / `set_filter_position`, counting from zero. Implementations must add `capabilities()`.
+- **Implementing the device traits:** `Device` needs `id()` and `info()`; `Mount` needs `is_slewing` and `is_parked`; `Camera` needs `image_ready`; `Focuser` and `FilterWheel` need `is_moving`. `docs/device-contract.md` says what each method promises.
+- **Events:** a failed Seestar goto arrives as `EventType::SlewFailed`, not `EventType::Error`. `UnifiedEvent` has a `source` field and `EventPayload::Error` a `kind` field.
+- **Device ids:** a Seestar's mount and cameras have their own ids (`seestar:<ip>:mount`, `seestar:<ip>:camera`, `seestar:<ip>:wide`). Events still carry the telescope's id.
+- **`SeestarMount::is_tracking`** returns an error, not `false`, when the device does not report tracking.
+- **Sequencer:** code that builds `GoToTarget` must add `timeout_seconds` and `settle_seconds` (both `Option`). The command now waits for the mount to arrive. Saved JSON loads unchanged.
+- **Seestar goto coordinates** through the `Mount` trait are now converted to the equinox of date: see the notes.
+
+### Notes
+
+- **Not yet confirmed on a telescope:** that a Seestar takes goto coordinates in the equinox of date (JNow) comes from the protocol specification. `SeestarMount::slew_to_coordinates` converts a J2000 target on that basis, a shift of about 0.37 degrees in 2026. If your gotos land that far off after upgrading, pass `Coordinates` already marked `Epoch::JNow` to send them unchanged, and please report it. `SeestarClient::goto` and `scopinator goto` send what they are given, as in 0.6.0.
+- Also written from the specification and recorded sessions, without a run on hardware in this release: `Slewing` and `Parked` in `SeestarMount::get_mount_status`, and `SeestarStacker`, `SeestarObserver`, `SeestarAutoFocus` and `SeestarPlateSolver`.
+- The Alpaca backend is tested against the ASCOM Alpaca Omni Simulators, not against a physical mount or camera. See `docs/alpaca.md`.
+- `SeestarCamera` still starts a stack for an exposure. That changes in 0.8.0, where stacking moves to `SeestarStacker`.
+
 ## [0.6.0] - 2026-11-15
 
 An audit of the Seestar client against the [seestar-spec](https://github.com/zmerlynn/seestar-spec) protocol specification and two real telescopes (S50 on firmware 6.70, S30 on firmware 9.75). 0.5.0 could not talk to firmware 9.75 at all and sent several requests no firmware accepts; this release fixes that. **It has breaking changes** — see the upgrade section.
@@ -294,7 +327,8 @@ Command and event modelling checked against captured sessions from a Seestar S30
 - RSA interop-key authentication for Seestar firmware 7.18 and later ([#1](https://github.com/astrophotograph/scopinator-rs/pull/1)).
 - More settings ([#2](https://github.com/astrophotograph/scopinator-rs/pull/2)).
 
-[Unreleased]: https://github.com/astrophotograph/scopinator-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/astrophotograph/scopinator-rs/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/astrophotograph/scopinator-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/astrophotograph/scopinator-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/astrophotograph/scopinator-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/astrophotograph/scopinator-rs/compare/v0.3.0...v0.4.0
