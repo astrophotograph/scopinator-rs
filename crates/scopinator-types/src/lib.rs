@@ -7,6 +7,7 @@ pub mod filter;
 pub mod focuser;
 pub mod site;
 pub mod smart;
+pub mod switch;
 
 pub use coordinates::*;
 pub use device_info::*;
@@ -17,3 +18,4 @@ pub use filter::*;
 pub use focuser::*;
 pub use site::*;
 pub use smart::*;
+pub use switch::*;

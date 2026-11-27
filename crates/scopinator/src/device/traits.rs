@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use scopinator_types::{
     AlignmentMode, AltAzCoordinates, Coordinates, DeviceId, DeviceInfo, ExposureSettings,
     FilterPosition, FocuserPosition, GuideDirection, ImageData, MountAxis, PierSide, SiteLocation,
-    TrackingRate,
+    SwitchInfo, TrackingRate,
 };
 
 use crate::device::capabilities::{
@@ -316,4 +316,63 @@ pub trait FilterWheel: Device {
     async fn get_focus_offsets(&self) -> Result<Vec<i32>, ScopinatorError> {
         Err(ScopinatorError::NotSupported("focus offsets".into()))
     }
+}
+
+/// A device with one or more outputs that can be switched or set: dew
+/// heaters, power ports, a flat panel's brightness.
+///
+/// Each output has a number from zero and a value in the range its
+/// [`SwitchInfo`] gives. An on/off output has the values 0 and 1.
+#[async_trait]
+pub trait Switch: Device {
+    /// The outputs this device has, in index order.
+    async fn switches(&self) -> Result<Vec<SwitchInfo>, ScopinatorError>;
+
+    /// The value of output `index`. `OutOfRange` if there is no such output.
+    async fn get(&self, index: u32) -> Result<f64, ScopinatorError>;
+
+    /// Set output `index` to `value`. `OutOfRange` if there is no such
+    /// output or the value is outside its range; `InvalidArgument` if the
+    /// output cannot be written.
+    async fn set(&self, index: u32, value: f64) -> Result<(), ScopinatorError>;
+
+    /// What is known about output `index`. `OutOfRange` if there is none.
+    async fn switch_info(&self, index: u32) -> Result<SwitchInfo, ScopinatorError> {
+        self.switches()
+            .await?
+            .into_iter()
+            .find(|info| info.index == index)
+            .ok_or_else(|| ScopinatorError::OutOfRange(format!("there is no switch {index}")))
+    }
+
+    /// True if output `index` is on: at or above the middle of its range.
+    async fn get_bool(&self, index: u32) -> Result<bool, ScopinatorError> {
+        let info = self.switch_info(index).await?;
+        Ok(info.is_on(self.get(index).await?))
+    }
+
+    /// Turn output `index` fully on (the top of its range) or off (the
+    /// bottom).
+    async fn set_bool(&self, index: u32, on: bool) -> Result<(), ScopinatorError> {
+        let info = self.switch_info(index).await?;
+        self.set(index, if on { info.max } else { info.min }).await
+    }
+}
+
+/// Check a value about to be written to a switch, the same way for every
+/// backend: the switch must be writable and the value within its range.
+pub fn check_switch_value(info: &SwitchInfo, value: f64) -> Result<(), ScopinatorError> {
+    if !info.writable {
+        return Err(ScopinatorError::InvalidArgument(format!(
+            "switch {} ({}) can only be read",
+            info.index, info.name
+        )));
+    }
+    if !info.accepts(value) {
+        return Err(ScopinatorError::OutOfRange(format!(
+            "switch {} ({}) takes {} to {}, not {value}",
+            info.index, info.name, info.min, info.max
+        )));
+    }
+    Ok(())
 }

@@ -40,9 +40,14 @@ upgrade notes.
   `dark`, `IRCUT` and `LP` on an S30, at positions counted from zero). Their ids end in
   `:focuser` and `:filterwheel`. `Backend::focuser()` and `filter_wheel()` returned `None` for
   a Seestar before.
+- `Switch`, a device trait for outputs that are switched or set (dew heaters, power ports, a
+  flat panel's brightness): `switches`, `get`, `set`, and `get_bool` / `set_bool` on top of
+  them, with `SwitchInfo` in `scopinator-types`. `Backend::switch()` hands one out; it is `None`
+  unless a backend provides it.
+- A Seestar's dew heater is switch 0 of `SeestarSwitch` (`seestar::DEW_HEATER`), on or off.
 - Sequencer commands `AutoFocus`, `SetFilter` (by `position` or `name`), `Park` and `Unpark`.
 - `FrameSink`, for receiving the frames of a camera imaging run in a sequence.
-- `seestar_verify` has `camera`, `focuser` and `wheel` stages.
+- `seestar_verify` has `camera`, `focuser`, `wheel` and `switch` stages.
 
 ### Upgrading from 0.7
 

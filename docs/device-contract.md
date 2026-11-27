@@ -1,7 +1,7 @@
 # The device contract
 
 What every backend promises about the vendor-neutral traits in `scopinator::device`
-(`Device`, `Mount`, `Camera`, `Focuser`, `FilterWheel`), whatever telescope is behind them.
+(`Device`, `Mount`, `Camera`, `Focuser`, `FilterWheel`, `Switch`), whatever telescope is behind them.
 
 ## Operations that take time
 

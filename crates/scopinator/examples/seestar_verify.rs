@@ -26,6 +26,7 @@
 //! - `focuser`: read the focuser, move it 20 steps, start a 600-step move and
 //!   halt it, ask for a position beyond the travel, and put it back.
 //! - `wheel`: read the filter wheel, turn it one position on and back.
+//! - `switch`: read the dew heater, switch it over for a second and back.
 //! - `preview`: fetch the current preview frame, raw, and save it.
 //! - `stop`: `Observer::stop`.
 //! - `park`: `Mount::park` and wait for it.
@@ -734,6 +735,38 @@ async fn main() -> AnyResult<()> {
                         "set_filter_position({slots}): {}",
                         show(&wheel.set_filter_position(slots).await)
                     ),
+                );
+            }
+            "switch" => {
+                let switch = Backend::switch(&backend).ok_or("no switch")?;
+                say(
+                    start,
+                    format!("switches: {}", show(&switch.switches().await)),
+                );
+                let was_on = switch.get_bool(0).await?;
+                say(start, format!("switch 0 on: {was_on}"));
+                for on in [!was_on, was_on] {
+                    say(
+                        start,
+                        format!("set_bool(0, {on}): {}", show(&switch.set_bool(0, on).await)),
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    say(
+                        start,
+                        format!(
+                            "get: {} pi_output_get2: {}",
+                            show(&switch.get(0).await),
+                            raw(&client, "pi_output_get2").await
+                        ),
+                    );
+                }
+                say(
+                    start,
+                    format!("set(0, 5.0): {}", show(&switch.set(0, 5.0).await)),
+                );
+                say(
+                    start,
+                    format!("set(1, 1.0): {}", show(&switch.set(1, 1.0).await)),
                 );
             }
             "stop" => {

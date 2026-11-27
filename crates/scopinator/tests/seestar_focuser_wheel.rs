@@ -1,4 +1,4 @@
-//! A Seestar's focuser and filter wheel through the neutral traits. The
+//! A Seestar's focuser, filter wheel and dew heater through the neutral traits. The
 //! reply shapes are from an S30 on firmware 9.75.
 #![cfg(feature = "seestar")]
 
@@ -167,5 +167,46 @@ async fn a_turning_wheel_has_no_filter_in_the_light_path() {
 
     assert!(wheel.is_moving().await.unwrap());
     assert_eq!(wheel.filter_position().await.unwrap(), None);
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn the_dew_heater_is_switch_zero_and_is_switched_with_the_output_command() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok(
+        "get_device_state",
+        json!({"setting": {"heater_enable": false, "expt_heater_enable": false}}),
+    );
+    let backend = backend(&fake).await;
+    let switch = Backend::switch(&backend).expect("a Seestar has a switch device");
+
+    assert_eq!(switch.id().as_str(), "seestar:127.0.0.1:switch");
+    assert_eq!(switch.info().kind, DeviceKind::Switch);
+    let switches = switch.switches().await.unwrap();
+    assert_eq!(switches.len(), 1);
+    assert_eq!(
+        (switches[0].index, switches[0].min, switches[0].max),
+        (0, 0.0, 1.0)
+    );
+    assert!(!switch.get_bool(0).await.unwrap());
+
+    switch.set_bool(0, true).await.unwrap();
+    switch.set(0, 0.0).await.unwrap();
+    let sent = sent(&fake, "pi_output_set2");
+    assert_eq!(sent[0]["heater"], json!({"state": true, "value": 100}));
+    assert_eq!(sent[1]["heater"], json!({"state": false, "value": 100}));
+
+    fake.respond_ok(
+        "get_device_state",
+        json!({"setting": {"heater_enable": true}}),
+    );
+    assert_eq!(switch.get(0).await.unwrap(), 1.0);
+
+    // Nothing is sent for a value or a switch the heater does not have.
+    let err = switch.set(0, 50.0).await.unwrap_err();
+    assert!(matches!(err, ScopinatorError::OutOfRange(_)), "{err:?}");
+    let err = switch.set_bool(1, true).await.unwrap_err();
+    assert!(matches!(err, ScopinatorError::OutOfRange(_)), "{err:?}");
+    assert_eq!(sent.len(), 2);
     backend.disconnect().await;
 }

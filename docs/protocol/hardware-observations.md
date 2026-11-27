@@ -313,6 +313,19 @@ a second later. `stop_streaming` and `iscope_stop_view` ended it: `View` `cancel
 - `set_wheel_position [2]`: code 0, `result: 0`, and `get_wheel_position` read 2 afterwards;
   `[1]` put it back. `set_wheel_position [7]`: code 204 "out of limit".
 
+### Dew heater (2026-11-26)
+
+- The device state has `setting.heater_enable` and `setting.expt_heater_enable`, both `false`.
+- `set_setting {"heater_enable": true}`: **code 109 "unexpected param"**. The heater is not a
+  setting that can be written.
+- `pi_output_set2 {"heater": {"state": true, "value": 50}}`: code 0, `result: 0`, and
+  `setting.heater_enable` read `true` afterwards; the same with `state: false` put it back.
+- `pi_output_get2` did not change with the heater: four entries, each
+  `{"is_pwm": false, "state": false, "type": "other", "value": 100.0}`, before and after.
+  `pi_output_get`: `[false, false, false, false]`. The power sent as `value` is not reported
+  anywhere that was found, so whether an S30 varies its heater is not known.
+- Only the flag was observed. That the lens warms was not measured.
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused

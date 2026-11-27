@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use scopinator_types::DeviceId;
 
 use crate::device::{
-    AutoFocus, Camera, FilterWheel, Focuser, LiveStacker, Mount, Observer, PlateSolver,
+    AutoFocus, Camera, FilterWheel, Focuser, LiveStacker, Mount, Observer, PlateSolver, Switch,
 };
 use crate::error::ScopinatorError;
 
@@ -67,6 +67,11 @@ pub trait Backend: Send + Sync {
 
     /// The instrument working out where it points.
     fn plate_solver(&self) -> Option<Arc<dyn PlateSolver>> {
+        None
+    }
+
+    /// The instrument's switchable outputs: a dew heater, power ports.
+    fn switch(&self) -> Option<Arc<dyn Switch>> {
         None
     }
 

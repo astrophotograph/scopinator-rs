@@ -612,3 +612,88 @@ mod tests {
         assert_eq!(both.filter_position().await.unwrap().unwrap().position, 2);
     }
 }
+
+/// A switch device with a dew heater (on/off), a dimmer (0 to 255) and a
+/// sensor that can only be read.
+#[derive(Debug, Default)]
+pub(crate) struct MockSwitch {
+    pub(crate) values: Mutex<[f64; 3]>,
+}
+
+mock_device!(MockSwitch, DeviceKind::Switch, "switch");
+
+#[async_trait]
+impl super::traits::Switch for MockSwitch {
+    async fn switches(&self) -> Result<Vec<scopinator_types::SwitchInfo>, ScopinatorError> {
+        use scopinator_types::SwitchInfo;
+        Ok(vec![
+            SwitchInfo::on_off(0, "heater"),
+            SwitchInfo::ranged(1, "dimmer", 0.0, 255.0, 1.0),
+            SwitchInfo::ranged(2, "sensor", 0.0, 100.0, 0.1).read_only(),
+        ])
+    }
+
+    async fn get(&self, index: u32) -> Result<f64, ScopinatorError> {
+        self.values
+            .lock()
+            .unwrap()
+            .get(index as usize)
+            .copied()
+            .ok_or_else(|| ScopinatorError::OutOfRange(format!("there is no switch {index}")))
+    }
+
+    async fn set(&self, index: u32, value: f64) -> Result<(), ScopinatorError> {
+        let info = self.switch_info(index).await?;
+        super::traits::check_switch_value(&info, value)?;
+        self.values.lock().unwrap()[index as usize] = value;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::super::traits::Switch;
+    use super::*;
+
+    #[tokio::test]
+    async fn a_switch_is_turned_on_and_off_at_the_ends_of_its_range() {
+        let switch = MockSwitch::default();
+        assert!(!switch.get_bool(0).await.unwrap());
+        switch.set_bool(0, true).await.unwrap();
+        assert_eq!(switch.get(0).await.unwrap(), 1.0);
+        assert!(switch.get_bool(0).await.unwrap());
+
+        switch.set_bool(1, true).await.unwrap();
+        assert_eq!(switch.get(1).await.unwrap(), 255.0);
+        switch.set_bool(1, false).await.unwrap();
+        assert_eq!(switch.get(1).await.unwrap(), 0.0);
+    }
+
+    #[tokio::test]
+    async fn a_ranged_switch_is_on_from_the_middle_of_its_range() {
+        let switch = MockSwitch::default();
+        switch.set(1, 127.0).await.unwrap();
+        assert!(!switch.get_bool(1).await.unwrap());
+        switch.set(1, 128.0).await.unwrap();
+        assert!(switch.get_bool(1).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn bad_values_read_only_switches_and_missing_switches_are_refused() {
+        let switch = MockSwitch::default();
+        let err = switch.set(1, 256.0).await.unwrap_err();
+        assert!(matches!(err, ScopinatorError::OutOfRange(_)), "{err:?}");
+        let err = switch.set(2, 50.0).await.unwrap_err();
+        assert!(
+            matches!(err, ScopinatorError::InvalidArgument(_)),
+            "{err:?}"
+        );
+        for missing in [
+            switch.get_bool(3).await.err(),
+            switch.set_bool(3, true).await.err(),
+        ] {
+            let err = missing.expect("no switch 3");
+            assert!(matches!(err, ScopinatorError::OutOfRange(_)), "{err:?}");
+        }
+    }
+}

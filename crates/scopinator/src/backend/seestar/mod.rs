@@ -6,6 +6,7 @@ mod focuser;
 mod mount;
 mod observer;
 mod stacker;
+mod switch;
 mod wide_camera;
 
 pub use activity::{SeestarAutoFocus, SeestarPlateSolver};
@@ -16,6 +17,7 @@ pub use focuser::SeestarFocuser;
 pub use mount::SeestarMount;
 pub use observer::SeestarObserver;
 pub use stacker::SeestarStacker;
+pub use switch::{DEW_HEATER, SeestarSwitch};
 pub use wide_camera::SeestarWideCamera;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -556,6 +558,14 @@ impl Backend for SeestarBackend {
 
     fn filter_wheel(&self) -> Option<Arc<dyn FilterWheel>> {
         Some(Arc::clone(&self.filter_wheel) as Arc<dyn FilterWheel>)
+    }
+
+    /// The dew heater, as switch [`DEW_HEATER`].
+    fn switch(&self) -> Option<Arc<dyn crate::device::Switch>> {
+        Some(Arc::new(SeestarSwitch::new(
+            Arc::clone(&self.client),
+            DeviceId::new(format!("{}:switch", self.device_id)),
+        )))
     }
 
     async fn disconnect(&self) -> Result<(), ScopinatorError> {
