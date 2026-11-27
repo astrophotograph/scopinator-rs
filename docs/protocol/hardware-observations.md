@@ -294,6 +294,25 @@ in star mode at once, and the mount did not move (`close` stayed `true`, altitud
 `begin_streaming` then delivered raw 1080x1920 16-bit frames, the first within 0.4 s and the next
 a second later. `stop_streaming` and `iscope_stop_view` ended it: `View` `cancel`, `mode: "none"`.
 
+### Focuser and filter wheel (2026-11-26)
+
+- `get_device_state {"keys": ["focuser"]}`: `{"focuser": {"max_step": 2600, "state": "idle",
+  "step": 1253}}`; `state` is `"moving"` during a move. `get_focuser_position` returns the step
+  as a bare number.
+- `move_focuser {"step": 1273, "ret_step": true}`: code 0, `{"step": 1273}`. The focuser covers
+  roughly 150 to 200 steps a second.
+- **A step beyond the travel is not refused.** `move_focuser {"step": 99999}` answered code 0
+  with `{"step": 2600}` and the focuser ran towards the end of its travel.
+- `stop_focuser` (no params): code 0, `result: 0`; a running move stopped where it was and the
+  state went to `idle`.
+- `get_wheel_setting`: `{"exp_sec": [2.0, 2.0, 2.0], "names": ["dark", "IRCUT", "LP"]}`.
+  `get_wheel_position`: a bare number, `1` with the IR-cut filter in (a star view with
+  `lp_filter: false`). **Positions count from zero and index `names`.**
+- `get_wheel_state`: `{"id": 0, "state": "idle", "unidirection": false}`; not `idle` for a little
+  under two seconds after a move is requested.
+- `set_wheel_position [2]`: code 0, `result: 0`, and `get_wheel_position` read 2 afterwards;
+  `[1]` put it back. `set_wheel_position [7]`: code 204 "out of limit".
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused

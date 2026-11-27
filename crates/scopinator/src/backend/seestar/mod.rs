@@ -1,6 +1,8 @@
 mod activity;
 mod camera;
 mod event_translator;
+mod filter_wheel;
+mod focuser;
 mod mount;
 mod observer;
 mod stacker;
@@ -9,6 +11,8 @@ mod wide_camera;
 pub use activity::{SeestarAutoFocus, SeestarPlateSolver};
 pub use camera::SeestarCamera;
 pub use event_translator::SeestarEventTranslator;
+pub use filter_wheel::SeestarFilterWheel;
+pub use focuser::SeestarFocuser;
 pub use mount::SeestarMount;
 pub use observer::SeestarObserver;
 pub use stacker::SeestarStacker;
@@ -219,6 +223,8 @@ pub struct SeestarBackend {
     config: SeestarConfig,
     goto: Arc<GotoTracker>,
     stacker: Arc<SeestarStacker>,
+    /// One wheel adapter, so that the filter names are asked for once.
+    filter_wheel: Arc<SeestarFilterWheel>,
     activity: Arc<activity::Activity>,
     /// The wide camera's own connection, opened on first use.
     wide_client: tokio::sync::OnceCell<Arc<SeestarClient>>,
@@ -271,6 +277,10 @@ impl SeestarBackend {
         );
 
         let stacker = Arc::new(SeestarStacker::new(Arc::clone(&client)));
+        let filter_wheel = Arc::new(SeestarFilterWheel::new(
+            Arc::clone(&client),
+            DeviceId::new(format!("{device_id}:filterwheel")),
+        ));
         // Autofocus and plate solving are only visible in events.
         let goto = Arc::new(GotoTracker::default());
         let activity = Arc::new(activity::Activity::following(Arc::clone(&goto)));
@@ -283,6 +293,7 @@ impl SeestarBackend {
             config,
             goto,
             stacker,
+            filter_wheel,
             activity,
             wide_client: tokio::sync::OnceCell::new(),
         })
@@ -536,14 +547,15 @@ impl Backend for SeestarBackend {
         Ok(cameras)
     }
 
-    // The Seestar's focuser and filter wheel are not exposed through the
-    // neutral traits yet.
     fn focuser(&self) -> Option<Arc<dyn Focuser>> {
-        None
+        Some(Arc::new(SeestarFocuser::new(
+            Arc::clone(&self.client),
+            DeviceId::new(format!("{}:focuser", self.device_id)),
+        )))
     }
 
     fn filter_wheel(&self) -> Option<Arc<dyn FilterWheel>> {
-        None
+        Some(Arc::clone(&self.filter_wheel) as Arc<dyn FilterWheel>)
     }
 
     async fn disconnect(&self) -> Result<(), ScopinatorError> {

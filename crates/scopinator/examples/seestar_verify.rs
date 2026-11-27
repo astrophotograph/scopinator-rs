@@ -23,6 +23,9 @@
 //! - `frame`: fetch the current image and save it.
 //! - `camera`: the main camera as a neutral `Camera`: start the live view,
 //!   fetch two frames, stop it. Does not move the mount.
+//! - `focuser`: read the focuser, move it 20 steps, start a 600-step move and
+//!   halt it, ask for a position beyond the travel, and put it back.
+//! - `wheel`: read the filter wheel, turn it one position on and back.
 //! - `preview`: fetch the current preview frame, raw, and save it.
 //! - `stop`: `Observer::stop`.
 //! - `park`: `Mount::park` and wait for it.
@@ -43,8 +46,8 @@ use scopinator::backend::seestar::SeestarBackend;
 use scopinator::types::{Coordinates, Epoch, ExposureSettings, ImageData, StackSettings, Target};
 use scopinator::{
     AutoFocus, Backend, Camera, LiveStacker, Mount, Observer, PlateSolver, ScopinatorError,
-    UnifiedEventBus, WaitOptions, wait_for_acquisition, wait_for_autofocus, wait_for_frames,
-    wait_for_park, wait_for_solution,
+    UnifiedEventBus, WaitOptions, wait_for_acquisition, wait_for_autofocus, wait_for_filter_wheel,
+    wait_for_focuser, wait_for_frames, wait_for_park, wait_for_solution,
 };
 use scopinator_seestar::command::ImagingCommand;
 use scopinator_seestar::{InteropKey, SeestarClient, SeestarConfig};
@@ -603,6 +606,134 @@ async fn main() -> AnyResult<()> {
                 say(
                     start,
                     format!("view: {}", raw(&client, "get_view_state").await),
+                );
+            }
+            "focuser" => {
+                let focuser = Backend::focuser(&backend).ok_or("no focuser")?;
+                let wait = || WaitOptions::with_timeout(Duration::from_secs(60));
+                let home = focuser.focuser_position().await?;
+                say(
+                    start,
+                    format!("position: {home:?}, {:?}", focuser.capabilities()),
+                );
+                say(
+                    start,
+                    format!(
+                        "move_relative(+20): {}",
+                        show(&focuser.move_relative(20).await)
+                    ),
+                );
+                say(
+                    start,
+                    format!(
+                        "wait_for_focuser: {}",
+                        show(&wait_for_focuser(focuser.as_ref(), wait()).await)
+                    ),
+                );
+                say(
+                    start,
+                    format!("position: {}", show(&focuser.focuser_position().await)),
+                );
+                // A long move, halted part of the way.
+                say(
+                    start,
+                    format!(
+                        "move_relative(+600): {}",
+                        show(&focuser.move_relative(600).await)
+                    ),
+                );
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                say(
+                    start,
+                    format!("is_moving: {}", show(&focuser.is_moving().await)),
+                );
+                say(start, format!("halt: {}", show(&focuser.halt().await)));
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                say(
+                    start,
+                    format!(
+                        "position after halt: {}",
+                        show(&focuser.focuser_position().await)
+                    ),
+                );
+                say(
+                    start,
+                    format!(
+                        "move_to(beyond the travel): {}",
+                        show(&focuser.move_to(100_000).await)
+                    ),
+                );
+                say(
+                    start,
+                    format!(
+                        "back to {}: {}",
+                        home.position,
+                        show(&focuser.move_to(home.position).await)
+                    ),
+                );
+                say(
+                    start,
+                    format!(
+                        "wait_for_focuser: {}",
+                        show(&wait_for_focuser(focuser.as_ref(), wait()).await)
+                    ),
+                );
+                say(
+                    start,
+                    format!("position: {}", show(&focuser.focuser_position().await)),
+                );
+            }
+            "wheel" => {
+                let wheel = Backend::filter_wheel(&backend).ok_or("no filter wheel")?;
+                let wait = || WaitOptions::with_timeout(Duration::from_secs(30));
+                say(
+                    start,
+                    format!("names: {}", show(&wheel.get_filter_names().await)),
+                );
+                let home = wheel.filter_position().await?;
+                say(
+                    start,
+                    format!("position: {home:?}, {:?}", wheel.capabilities()),
+                );
+                let Some(home) = home else {
+                    say(start, "the wheel is turning; not touching it");
+                    continue;
+                };
+                let slots = wheel.capabilities().slot_count;
+                for position in [(home.position + 1) % slots, home.position] {
+                    say(
+                        start,
+                        format!(
+                            "set_filter_position({position}): {}",
+                            show(&wheel.set_filter_position(position).await)
+                        ),
+                    );
+                    say(
+                        start,
+                        format!(
+                            "just after: is_moving={} position={}",
+                            show(&wheel.is_moving().await),
+                            show(&wheel.filter_position().await)
+                        ),
+                    );
+                    say(
+                        start,
+                        format!(
+                            "wait_for_filter_wheel: {}",
+                            show(&wait_for_filter_wheel(wheel.as_ref(), wait()).await)
+                        ),
+                    );
+                    say(
+                        start,
+                        format!("position: {}", show(&wheel.filter_position().await)),
+                    );
+                }
+                say(
+                    start,
+                    format!(
+                        "set_filter_position({slots}): {}",
+                        show(&wheel.set_filter_position(slots).await)
+                    ),
                 );
             }
             "stop" => {

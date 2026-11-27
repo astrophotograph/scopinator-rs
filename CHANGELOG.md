@@ -34,9 +34,15 @@ upgrade notes.
 
 ### Added
 
+- A Seestar has a focuser and a filter wheel as a `Backend`: `SeestarFocuser` (absolute, in
+  motor steps; `halt` stops a move; a position beyond the travel is `OutOfRange`, where the
+  telescope itself would run to the end) and `SeestarFilterWheel` (the telescope's own names,
+  `dark`, `IRCUT` and `LP` on an S30, at positions counted from zero). Their ids end in
+  `:focuser` and `:filterwheel`. `Backend::focuser()` and `filter_wheel()` returned `None` for
+  a Seestar before.
 - Sequencer commands `AutoFocus`, `SetFilter` (by `position` or `name`), `Park` and `Unpark`.
 - `FrameSink`, for receiving the frames of a camera imaging run in a sequence.
-- `seestar_verify` has a `camera` stage: start the live view, fetch two frames, stop it.
+- `seestar_verify` has `camera`, `focuser` and `wheel` stages.
 
 ### Upgrading from 0.7
 

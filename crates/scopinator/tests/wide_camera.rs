@@ -242,8 +242,10 @@ async fn a_seestar_is_usable_as_a_neutral_backend() {
     let cameras = seestar.cameras().await.expect("cameras");
     let ids: Vec<String> = cameras.iter().map(|c| c.id().to_string()).collect();
     assert_eq!(ids, ["seestar:127.0.0.1:camera", "seestar:127.0.0.1:wide"]);
-    assert!(seestar.focuser().is_none());
-    assert!(seestar.filter_wheel().is_none());
+    let focuser = seestar.focuser().expect("focuser");
+    assert_eq!(focuser.id().as_str(), "seestar:127.0.0.1:focuser");
+    let wheel = seestar.filter_wheel().expect("filter wheel");
+    assert_eq!(wheel.id().as_str(), "seestar:127.0.0.1:filterwheel");
 
     // What only a Seestar has is one downcast away.
     let concrete = seestar
