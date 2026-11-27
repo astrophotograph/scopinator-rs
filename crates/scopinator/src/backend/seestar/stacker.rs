@@ -66,10 +66,23 @@ impl SeestarStacker {
 }
 
 /// The stacker's progress from a `get_view_state` reply: the `Stack` stage
-/// under `View`. No such stage means nothing is being stacked.
+/// under `View`, or `Initialise` before the first sub-exposure. Neither means
+/// nothing is being stacked.
 fn progress_from(view: &Value) -> Result<StackProgress, String> {
     let mut progress = StackProgress::default();
     let Some(stack) = view.pointer("/View/Stack") else {
+        // Before the first sub-exposure the view is in `Initialise`, where
+        // the telescope focuses (with `auto_af` on) before it stacks.
+        if let Some(initialise) = view.pointer("/View/Initialise") {
+            match initialise.get("state").and_then(Value::as_str) {
+                Some("start" | "working") => progress.state = StackState::Stacking,
+                Some("fail") => {
+                    return Err(super::mount::find_failure(initialise, "Initialise")
+                        .unwrap_or_else(|| "Initialise".to_string()));
+                }
+                _ => {}
+            }
+        }
         return Ok(progress);
     };
     let count = |name: &str| {
@@ -300,5 +313,32 @@ mod tests {
         let mut view = stacking_view();
         view["View"]["Stack"]["frame_errcode"] = json!(-1);
         assert_eq!(progress_from(&view).unwrap().state, StackState::Stacking);
+    }
+    // Seen on an S30 (9.75) two seconds after `iscope_start_stack`.
+    #[test]
+    fn the_initialise_stage_before_the_first_frame_is_stacking() {
+        let view = json!({"View": {"state": "working", "mode": "star", "stage": "Initialise",
+            "Initialise": {"state": "working", "lapse_ms": 5629, "stage": "AutoFocus",
+                "AutoFocus": {"state": "working", "lapse_ms": 2184}}}});
+        let progress = progress_from(&view).unwrap();
+        assert_eq!(progress.state, StackState::Stacking);
+        assert_eq!(progress.stacked, 0);
+    }
+
+    // The same view after `iscope_stop_view`: cancelled, not failed.
+    #[test]
+    fn a_cancelled_initialise_stage_is_idle() {
+        let view = json!({"View": {"state": "cancel", "mode": "none", "stage": "Initialise",
+            "Initialise": {"state": "cancel", "stage": "AutoFocus",
+                "AutoFocus": {"state": "cancel"}}}});
+        assert_eq!(progress_from(&view).unwrap().state, StackState::Idle);
+    }
+
+    #[test]
+    fn a_failed_initialise_stage_is_an_error() {
+        let view = json!({"View": {"state": "fail", "stage": "Initialise",
+            "Initialise": {"state": "fail", "error": "no star is detected", "code": 279}}});
+        let failure = progress_from(&view).unwrap_err();
+        assert!(failure.contains("no star is detected"), "{failure}");
     }
 }

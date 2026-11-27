@@ -13,6 +13,7 @@ use scopinator_seestar::event::{EventState, SeestarEvent};
 use scopinator_types::{AutoFocusState, Coordinates, DecDegrees, PlateSolution, RaDegrees};
 use serde_json::Value;
 
+use super::GotoTracker;
 use super::mount::SEESTAR_EPOCH;
 use crate::device::smart::{AutoFocus, PlateSolver};
 use crate::error::ScopinatorError;
@@ -35,6 +36,8 @@ enum Run<T> {
 pub(crate) struct Activity {
     autofocus: Mutex<Run<()>>,
     solve: Mutex<Run<PlateSolution>>,
+    /// Told when the telescope reports that a goto failed.
+    goto: Arc<GotoTracker>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -44,6 +47,14 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Activity {
+    /// An activity record that also tells `goto` about failed gotos.
+    pub(crate) fn following(goto: Arc<GotoTracker>) -> Self {
+        Self {
+            goto,
+            ..Self::default()
+        }
+    }
+
     /// Follow `client`'s events until its event channel closes.
     pub(crate) fn listen(self: &Arc<Self>, client: &SeestarClient) {
         let mut events = client.subscribe_events();
@@ -71,6 +82,12 @@ impl Activity {
                     _ => return,
                 };
                 *lock(&self.autofocus) = next;
+            }
+            SeestarEvent::AutoGoto(data) => {
+                if matches!(data.state, Some(EventState::Fail)) {
+                    let reason = data.error.as_deref().unwrap_or("no reason given");
+                    self.goto.failed(reason, data.code);
+                }
             }
             SeestarEvent::PlateSolve(value) => {
                 if let Some(next) = solve_run(value) {

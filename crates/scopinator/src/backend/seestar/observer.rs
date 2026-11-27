@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::GotoTracker;
 use super::mount::{
-    DeviceClock, GOTO_START_GRACE, SEESTAR_EPOCH, command_ok, find_failure, time_in_zone,
+    DeviceClock, GOTO_START_GRACE, SEESTAR_EPOCH, command_ok, goto_failure, time_in_zone,
 };
 use crate::device::smart::{Observer, ObserverCapabilities};
 use crate::error::ScopinatorError;
@@ -120,7 +120,7 @@ fn stage_of(view: &Value) -> Result<Stage, String> {
     let Some(auto_goto) = view.pointer("/View/AutoGoto") else {
         return Ok(Stage::NoGoto);
     };
-    if let Some(failure) = find_failure(auto_goto, "AutoGoto") {
+    if let Some(failure) = goto_failure(auto_goto) {
         return Err(failure);
     }
     let running = |value: Option<&Value>| {
@@ -129,9 +129,13 @@ fn stage_of(view: &Value) -> Result<Stage, String> {
             Some("start" | "working")
         )
     };
+    // Before the first stage appears the telescope is opening its arm.
+    let has_stage = auto_goto
+        .as_object()
+        .is_some_and(|members| members.values().any(Value::is_object));
     Ok(if !running(Some(auto_goto)) {
         Stage::NoGoto
-    } else if running(auto_goto.get("ScopeGoto")) {
+    } else if running(auto_goto.get("ScopeGoto")) || !has_stage {
         Stage::Slewing
     } else {
         Stage::Centring
@@ -245,6 +249,11 @@ impl Observer for SeestarObserver {
     }
 
     async fn acquisition(&self) -> Result<AcquisitionState, ScopinatorError> {
+        if let Some(failure) = self.goto.take_failure() {
+            return Err(ScopinatorError::Backend(format!(
+                "goto failed at {failure}"
+            )));
+        }
         let view = self.client.send_and_validate(Command::GetViewState).await?;
         match stage_of(&view) {
             Ok(Stage::Slewing) => {
@@ -288,12 +297,14 @@ impl Observer for SeestarObserver {
         if self.goto.awaiting_start(GOTO_START_GRACE) {
             return Ok(AcquisitionState::Slewing);
         }
-        self.goto.clear();
+        self.goto.finished();
         let viewing = matches!(
             view.pointer("/View/state").and_then(Value::as_str),
             Some("start" | "working")
         );
-        Ok(if viewing {
+        // After a failed goto the telescope stays in the view it had
+        // started, pointing where the mount got to unaided.
+        Ok(if viewing && !self.goto.last_failed() {
             AcquisitionState::OnTarget
         } else {
             AcquisitionState::Idle
@@ -408,5 +419,48 @@ mod tests {
             failure.contains("ScopeGoto") && failure.contains("501"),
             "{failure}"
         );
+    }
+    // The four shapes below are from an S30 (9.75) with no stars in view,
+    // 2026-11-26: the goto went on for six minutes of failed plate solves.
+    #[test]
+    fn a_goto_with_no_stage_yet_is_slewing() {
+        let view = json!({"View": {"state": "working", "stage": "AutoGoto",
+            "AutoGoto": {"count": 0, "hint": false, "lapse_ms": 323, "state": "working"}}});
+        assert_eq!(stage_of(&view), Ok(Stage::Slewing));
+    }
+
+    #[test]
+    fn a_failed_plate_solve_under_a_working_goto_is_still_centring() {
+        let view = json!({"View": {"state": "working", "stage": "AutoGoto",
+            "AutoGoto": {"count": 3, "hint": true, "stage": "PlateSolve", "state": "working",
+                "PlateSolve": {"code": 251, "error": "solve failed", "state": "fail"}}}});
+        assert_eq!(stage_of(&view), Ok(Stage::Centring));
+    }
+
+    #[test]
+    fn a_failed_autofocus_under_a_working_goto_is_still_centring() {
+        let view = json!({"View": {"state": "working", "stage": "AutoGoto",
+            "AutoGoto": {"count": 2, "stage": "AutoFocus", "state": "working",
+                "AutoFocus": {"code": 279, "error": "no star is detected", "state": "fail",
+                    "stage": "FocuserMove",
+                    "FocuserMove": {"position": 1253, "state": "complete"}}}}});
+        assert_eq!(stage_of(&view), Ok(Stage::Centring));
+    }
+
+    #[test]
+    fn a_mount_that_could_not_move_fails_a_goto_still_marked_working() {
+        let view = json!({"View": {"state": "working", "stage": "AutoGoto",
+            "AutoGoto": {"state": "working", "stage": "ScopeGoto",
+                "ScopeGoto": {"state": "fail", "error": "mount goto failed", "code": 501}}}});
+        let failure = stage_of(&view).unwrap_err();
+        assert!(failure.contains("501"), "{failure}");
+    }
+
+    #[test]
+    fn a_goto_that_says_it_failed_has_failed() {
+        let view = json!({"View": {"state": "working", "stage": "AutoGoto",
+            "AutoGoto": {"state": "fail", "error": "aborted", "code": 253}}});
+        let failure = stage_of(&view).unwrap_err();
+        assert!(failure.contains("aborted"), "{failure}");
     }
 }

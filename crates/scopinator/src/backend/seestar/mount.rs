@@ -145,7 +145,8 @@ struct MountState {
     /// `move_type`: what is moving the mount (`ScopeGoto`, ...), or `none`.
     moving: bool,
     tracking: bool,
-    /// `close`: the arm is folded, which is the park position.
+    /// `close` with nothing moving the mount: the arm is folded and at rest,
+    /// which is the park position.
     parked: bool,
 }
 
@@ -185,10 +186,14 @@ impl SeestarMount {
                 ScopinatorError::Backend(format!("`mount.{name}` is not a boolean: {state}"))
             })
         };
+        let moving = member("move_type")?.as_str() != Some("none");
         Ok(MountState {
-            moving: member("move_type")?.as_str() != Some("none"),
+            moving,
             tracking: flag("tracking")?,
-            parked: flag("close")?,
+            // The arm reads as closed from the start of a park, while the
+            // mount is still on its way home (`move_type: ScopeHome`), and
+            // for the first seconds of a goto from the park position.
+            parked: flag("close")? && !moving,
         })
     }
 
@@ -199,9 +204,7 @@ impl SeestarMount {
         let Some(auto_goto) = view.pointer("/View/AutoGoto") else {
             return Ok(GotoStage::None);
         };
-        // A failed inner stage can sit under an outer one that still says
-        // `working`, so look for a failure anywhere below first.
-        if let Some(failure) = find_failure(auto_goto, "AutoGoto") {
+        if let Some(failure) = goto_failure(auto_goto) {
             return Ok(GotoStage::Failed(failure));
         }
         Ok(match auto_goto.get("state").and_then(|s| s.as_str()) {
@@ -217,6 +220,26 @@ enum GotoStage {
     /// Slewing, plate solving or re-centring.
     Running,
     Failed(String),
+}
+
+/// Why the goto under `View` > `AutoGoto` has failed, if it has.
+///
+/// The goto has failed when `AutoGoto` itself says so, or when the mount
+/// could not be moved (`ScopeGoto` failed under an `AutoGoto` still marked
+/// `working`, seen on firmware 9.75 with code 501). A failed plate solve or
+/// autofocus under a working `AutoGoto` is not a failure of the goto: the
+/// telescope takes a longer exposure and tries again, several times.
+pub(super) fn goto_failure(auto_goto: &serde_json::Value) -> Option<String> {
+    let failed =
+        |value: &serde_json::Value| value.get("state").and_then(|s| s.as_str()) == Some("fail");
+    if failed(auto_goto) {
+        return find_failure(auto_goto, "AutoGoto");
+    }
+    let scope_goto = auto_goto.get("ScopeGoto")?;
+    if failed(scope_goto) {
+        return find_failure(scope_goto, "ScopeGoto");
+    }
+    None
 }
 
 /// The first stage at or below `value` that reports `state: fail`, as
@@ -340,6 +363,11 @@ impl Mount for SeestarMount {
     }
 
     async fn is_slewing(&self) -> Result<bool, ScopinatorError> {
+        if let Some(failure) = self.goto.take_failure() {
+            return Err(ScopinatorError::Backend(format!(
+                "goto failed at {failure}"
+            )));
+        }
         match self.goto_stage().await? {
             GotoStage::Running => {
                 self.goto.running();
@@ -366,7 +394,7 @@ impl Mount for SeestarMount {
         if self.goto.awaiting_start(GOTO_START_GRACE) {
             return Ok(true);
         }
-        self.goto.clear();
+        self.goto.finished();
         Ok(false)
     }
 
@@ -564,10 +592,10 @@ impl Mount for SeestarMount {
         // mount is not slewing.
         let slewing = state.moving || matches!(self.goto_stage().await, Ok(GotoStage::Running));
         Ok(MountStatus {
-            slew_state: if state.parked {
-                SlewState::Parked
-            } else if slewing {
+            slew_state: if slewing {
                 SlewState::Slewing
+            } else if state.parked {
+                SlewState::Parked
             } else if state.tracking {
                 SlewState::Tracking
             } else {

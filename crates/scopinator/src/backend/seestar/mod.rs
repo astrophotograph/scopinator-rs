@@ -65,22 +65,96 @@ impl SeestarEndpoints {
 #[derive(Debug, Default)]
 pub(crate) struct GotoTracker {
     pending: std::sync::Mutex<Option<PendingGoto>>,
+    /// The last goto sent through this backend failed, so the view the
+    /// telescope is left in is not a view of the target.
+    last_failed: std::sync::atomic::AtomicBool,
+    /// When the last goto was taken to be over, and a failure the telescope
+    /// reported shortly after that.
+    ended: std::sync::Mutex<(Option<tokio::time::Instant>, Option<String>)>,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// How long after a goto looked finished a failure event still belongs to
+/// it. The event has been seen to come two seconds before the view state
+/// changes; this is for the case where it comes after.
+const LATE_FAILURE: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone)]
 struct PendingGoto {
     accepted_at: tokio::time::Instant,
     /// The telescope has been seen working on it.
     seen_running: bool,
+    /// The telescope said the goto failed, and nobody has been told yet.
+    failure: Option<String>,
 }
+
+/// `AutoGoto` fails with this code when it is stopped or replaced.
+const GOTO_ABORTED: i32 = 253;
 
 impl GotoTracker {
     /// A goto was accepted just now.
     pub(crate) fn accepted(&self) {
+        self.last_failed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        *self.ended() = (None, None);
         *self.lock() = Some(PendingGoto {
             accepted_at: tokio::time::Instant::now(),
             seen_running: false,
+            failure: None,
         });
+    }
+
+    /// The telescope reported, in an `AutoGoto` event, that a goto failed.
+    ///
+    /// This is the only place a goto that never plate-solves shows up: the
+    /// `AutoGoto` stage leaves the view state as it fails, and the view
+    /// carries on in `ContinuousExposure` as it does after a success.
+    ///
+    /// "Aborted" before the pending goto was seen running is the end of the
+    /// goto it replaced, not of this one.
+    pub(crate) fn failed(&self, reason: &str, code: Option<i32>) {
+        let failure = match code {
+            Some(code) => format!("AutoGoto: {reason} (code {code})"),
+            None => format!("AutoGoto: {reason}"),
+        };
+        if let Some(goto) = self.lock().as_mut() {
+            if code != Some(GOTO_ABORTED) || goto.seen_running {
+                goto.failure = Some(failure);
+            }
+            return;
+        }
+        // The goto already looked finished: the view had moved on before
+        // this event arrived. An abort here is the stop that ended it.
+        let mut ended = self.ended();
+        if code != Some(GOTO_ABORTED) && ended.0.is_some_and(|at| at.elapsed() < LATE_FAILURE) {
+            *ended = (None, Some(failure));
+            self.last_failed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The failure of the pending goto, if the telescope has reported one.
+    /// The goto is over once this has been taken.
+    pub(crate) fn take_failure(&self) -> Option<String> {
+        if let Some(late) = self.ended().1.take() {
+            return Some(late);
+        }
+        let mut pending = self.lock();
+        let failure = pending.as_mut()?.failure.take()?;
+        *pending = None;
+        self.last_failed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Some(failure)
+    }
+
+    fn ended(&self) -> std::sync::MutexGuard<'_, (Option<tokio::time::Instant>, Option<String>)> {
+        self.ended
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// True from a reported failure until the next goto is accepted.
+    pub(crate) fn last_failed(&self) -> bool {
+        self.last_failed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The telescope reports that it is working on the goto.
@@ -90,9 +164,29 @@ impl GotoTracker {
         }
     }
 
-    /// The goto is over (arrived, failed or aborted).
+    /// The goto is over and its outcome is known: it failed and that has
+    /// been reported, or it was stopped.
     pub(crate) fn clear(&self) {
         *self.lock() = None;
+        *self.ended() = (None, None);
+    }
+
+    /// The goto looks finished: the telescope is no longer working on it.
+    /// A failure reported while that was being found out, or shortly after,
+    /// is kept for [`take_failure`](Self::take_failure).
+    pub(crate) fn finished(&self) {
+        let Some(goto) = self.lock().take() else {
+            return;
+        };
+        let mut ended = self.ended();
+        match goto.failure {
+            Some(failure) => {
+                *ended = (None, Some(failure));
+                self.last_failed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            None => *ended = (Some(tokio::time::Instant::now()), None),
+        }
     }
 
     /// True if a goto has been accepted and not yet seen to end.
@@ -104,6 +198,7 @@ impl GotoTracker {
     /// has not been seen working on it yet.
     pub(crate) fn awaiting_start(&self, grace: Duration) -> bool {
         self.lock()
+            .as_ref()
             .is_some_and(|goto| !goto.seen_running && goto.accepted_at.elapsed() < grace)
     }
 
@@ -177,7 +272,8 @@ impl SeestarBackend {
 
         let stacker = Arc::new(SeestarStacker::new(Arc::clone(&client)));
         // Autofocus and plate solving are only visible in events.
-        let activity = Arc::new(activity::Activity::default());
+        let goto = Arc::new(GotoTracker::default());
+        let activity = Arc::new(activity::Activity::following(Arc::clone(&goto)));
         activity.listen(&client);
         Ok(Self {
             client,
@@ -185,7 +281,7 @@ impl SeestarBackend {
             event_bus,
             endpoints,
             config,
-            goto: Arc::new(GotoTracker::default()),
+            goto,
             stacker,
             activity,
             wide_client: tokio::sync::OnceCell::new(),
@@ -530,5 +626,74 @@ mod tests {
         assert!(tracker.is_pending());
         tracker.clear();
         assert!(!tracker.is_pending());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reported_failure_ends_the_goto_and_is_taken_once() {
+        let tracker = GotoTracker::default();
+        // Nothing pending: the failure belongs to someone else's goto.
+        tracker.failed("solve failed", Some(251));
+        assert_eq!(tracker.take_failure(), None);
+
+        tracker.accepted();
+        tracker.running();
+        tracker.failed("solve failed", Some(251));
+        assert_eq!(
+            tracker.take_failure().as_deref(),
+            Some("AutoGoto: solve failed (code 251)")
+        );
+        assert!(!tracker.is_pending());
+        assert_eq!(tracker.take_failure(), None);
+        assert!(tracker.last_failed());
+        tracker.accepted();
+        assert!(!tracker.last_failed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_reported_just_after_the_goto_looked_finished_still_counts() {
+        let tracker = GotoTracker::default();
+        tracker.accepted();
+        tracker.running();
+        tracker.finished();
+        // The stop that ended a goto is not a failure of it.
+        tracker.failed("aborted", Some(253));
+        assert_eq!(tracker.take_failure(), None);
+
+        tracker.failed("solve failed", Some(251));
+        assert!(tracker.last_failed());
+        assert_eq!(
+            tracker.take_failure().as_deref(),
+            Some("AutoGoto: solve failed (code 251)")
+        );
+        assert_eq!(tracker.take_failure(), None);
+
+        // Reported while the goto was being found finished.
+        tracker.accepted();
+        tracker.running();
+        tracker.failed("solve failed", Some(251));
+        tracker.finished();
+        assert!(tracker.last_failed());
+        assert!(tracker.take_failure().is_some());
+
+        // Long after, a failure is someone else's goto.
+        tracker.accepted();
+        tracker.finished();
+        tokio::time::advance(Duration::from_secs(11)).await;
+        tracker.failed("solve failed", Some(251));
+        assert_eq!(tracker.take_failure(), None);
+        assert!(!tracker.last_failed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_abort_of_the_goto_before_is_not_a_failure_of_this_one() {
+        let tracker = GotoTracker::default();
+        tracker.accepted();
+        tracker.failed("aborted", Some(253));
+        assert_eq!(tracker.take_failure(), None);
+        assert!(tracker.is_pending());
+
+        tracker.running();
+        tracker.failed("aborted", Some(253));
+        assert!(tracker.take_failure().is_some());
     }
 }

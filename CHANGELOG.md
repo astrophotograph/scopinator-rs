@@ -5,6 +5,34 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+Found by running the smart-telescope traits against a Seestar S30 (firmware 9.75) that had no
+stars in view.
+
+### Fixed
+
+- A Seestar goto that never plate-solves is reported as failed. The telescope tries for about
+  six minutes, says so in one event, and goes on showing its live view as it does after a
+  success; `Observer::acquisition` answered `OnTarget` and `wait_for_acquisition` returned `Ok`.
+  They now return the failure once ("goto failed at AutoGoto: solve failed (code 251)"), and
+  `acquisition` is `Idle` after it, not `OnTarget`. `Mount::is_slewing` reports it the same way.
+- A plate solve or autofocus that fails in the middle of a Seestar goto no longer ends it. The
+  telescope retries with a longer exposure; `acquisition` and `is_slewing` reported a failed
+  goto, or `Idle`, while it was still working.
+- `SeestarMount::is_parked` is true only when the mount has stopped. The telescope reports its
+  arm closed about 35 seconds before a park finishes, so `wait_for_park` returned early.
+  `get_mount_status` says `Slewing`, not `Parked`, while a park or a goto from the park position
+  is under way.
+- `SeestarStacker::progress` says `Stacking` while the telescope prepares a stack (it focuses
+  first, for over a minute). It said `Idle`, so `wait_for_frames` gave up after a few seconds.
+- `Observer::acquisition` says `Slewing`, not `Centring`, in the first seconds of a Seestar
+  goto, before the mount moves.
+
+### Added
+
+- `crates/scopinator/examples/seestar_verify.rs` runs the smart-telescope traits against a real
+  Seestar stage by stage (readiness, goto, plate solve, autofocus, stack, park) and prints what
+  the telescope and the traits say at each change. **It moves the telescope.**
+
 ## [0.7.0] - 2026-11-26
 
 One set of device traits for any telescope, and a second backend to prove it: an ASCOM Alpaca server is now a `Backend` beside the Seestar, with real mount, camera, focuser and filter wheel implementations, tested nightly against the ASCOM Omni Simulators. The traits for smart telescopes (`Observer`, `LiveStacker`, `AutoFocus`, `PlateSolver`) are here too, with Seestar implementations. **It has breaking changes** — see the upgrade section.

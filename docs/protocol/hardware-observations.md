@@ -239,6 +239,54 @@ During the goto, on port 4800:
 `ScopeTrack` uses the state strings `on` / `off`, which are outside the usual
 start/working/complete set.
 
+### A goto that never plate-solves (2026-11-26)
+
+Run with `crates/scopinator/examples/seestar_verify.rs`. The telescope was parked, in EQ mode
+(`mount.equ_mode: true`), with its clock at 2020 and its site set. Its frames showed no stars
+(noise only: a 1080x1920 raw stream frame, median 2016 ADU, nothing above the noise), so every
+plate solve failed. What that showed:
+
+- **Clock.** `pi_get_time` read 2020-10-22 with `time_zone: "America/Chicago"`. After
+  `pi_set_time` with local time in that zone it read the right local time and kept the zone.
+- **Parked.** `mount: {close: true, move_type: "none", tracking: false}`, `scope_get_equ_coord`
+  dec -90, `scope_get_horiz_coord` altitude -29.7.
+- **Start of a goto from park.** `iscope_start_view` (star mode, Aldebaran) answered code 0. For
+  about 7 s the view state had `AutoGoto` `working` with no stage under it and `mount.close` was
+  still `true`; then `ScopeGoto` `working` with `cur_ra_dec` and `dist_deg`, and `close: false`.
+  The slew of 102 degrees took 52 s.
+- **`target_ra_dec` is echoed as sent**: `[4.62443, 16.562553]`, the equinox-of-date position.
+  After the slew `scope_get_equ_coord` read `ra 4.624444, dec 16.5625`, the same numbers. This
+  says the mount reports in the system the goto is given in. It does not say which system that
+  is: that needs a solved frame.
+- **Retries under a working `AutoGoto`.** `AutoGoto` > `Exposure` (2 s) > `AutoFocus` failed with
+  code 279 "no star is detected" > `ScopeGoto` again (`dist_deg` 0.08) > `Exposure` >
+  `PlateSolve` failed with code 251 "solve failed", and so on with `count` rising from 1 to 7,
+  `hint: true` from the third attempt and the exposure growing (2 s, 4.5 s, 6.75 s). Through all
+  of it `AutoGoto.state` stayed `working`. **A failed stage under a working `AutoGoto` is a
+  retry, not the end of the goto.** (The `ScopeGoto` failure with code 501 above is different:
+  the mount never moved.)
+- **The end.** After 348 s (408 s in a second run) the telescope sent two `AutoGoto` events with `state: fail`,
+  `error: "solve failed"`, `code: 251` (the second with `count: 7`). About two seconds later the
+  view state had **no `AutoGoto` at all**: `stage: "ContinuousExposure"`, `state: "working"`,
+  tracking on, exactly as after a goto that succeeded. The failure of the goto as a whole is
+  visible only in the event. The first of the two events has `count: 0` and `lapse_ms: 0`.
+- **`start_solve` on its own**: `PlateSolve` failed after 31 s; `get_solve_result` gave
+  `{"duration_ms": 30998, "star_number": 723, "state": "fail"}`.
+- **`start_auto_focuse` on its own**: ran 79 s and failed; the focuser stayed at 1253.
+- **`iscope_start_stack {restart: true}`**: the view went to `stage: "Initialise"` with
+  `Initialise` > `AutoFocus` `working` (the `auto_af` setting was on), for about 85 s; then
+  `stage: "Stack"` with `Stack: {state: "working", stacked_frame: 0, dropped_frame: 0,
+  frame_errcode: -1, Exposure: {exp_ms: 20000.0}}`. Nothing was stacked; `get_stacked_img`
+  answered "there is no image now". `iscope_stop_view {stage: "Stack"}` returned the view to
+  `ContinuousExposure`.
+- **`get_current_img`** answered "there is no image now" in `ContinuousExposure`; `begin_streaming`
+  delivered a raw frame within half a second.
+- **`iscope_stop_view`** (no stage): `View` `cancel`, `mode: "none"`.
+- **Park.** `scope_park` answered code 0. `mount.close` read `true` within 20 s, while
+  `move_type` was still `"ScopeHome"` and the declination still changing (-87.8); `move_type`
+  went to `"none"` 55 s after the request, at dec -90. **`close` alone does not mean the park
+  has finished.**
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused
@@ -283,7 +331,9 @@ and `lapse_ms`; no `camera_mode`. With the owner's agreement it was replaced:
   connection.
 - Driving the wide camera through port 4700 (`selected_cam` / `wide_cam`), a wide-camera goto or
   stack, and the RTSP streams.
-- A completed goto with plate solving, on any firmware (both devices were indoors).
+- A completed goto with plate solving, on any firmware (no session so far had stars in view).
+  With it: whether the telescope takes goto coordinates in J2000 or the equinox of date, an
+  autofocus that completes, a solve result, and frames arriving in a stack.
 - A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
 - `Alert` 429 on exceeding the connection limit.
 - Plate solving, stacking and annotation results (the device was indoors).

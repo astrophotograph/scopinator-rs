@@ -319,6 +319,65 @@ async fn a_failed_acquisition_is_reported_once_and_shared_with_the_mount() {
     backend.disconnect().await;
 }
 
+// Seen on an S30 (9.75) with no stars in view: seven failed plate solves
+// under an `AutoGoto` that stayed `working`, then one `AutoGoto` event with
+// `fail`, after which the view state has no `AutoGoto` at all.
+#[tokio::test]
+async fn a_goto_that_never_solves_fails_through_its_event_and_is_not_on_target() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", state("none", CHICAGO));
+    fake.respond_ok("get_view_state", json!({}));
+    let backend = backend(&fake).await;
+    let observer = observer(&backend);
+    observer
+        .acquire(&Target::at(Coordinates::from_hours(4.6, 16.5).unwrap()))
+        .await
+        .unwrap();
+
+    // A failed solve under a working goto: the telescope is trying again.
+    fake.respond_ok(
+        "get_view_state",
+        json!({"View": {"state": "working", "mode": "star", "stage": "AutoGoto",
+            "AutoGoto": {"state": "working", "count": 3, "hint": true, "stage": "PlateSolve",
+                "PlateSolve": {"state": "fail", "code": 251, "error": "solve failed"}}}}),
+    );
+    assert_eq!(
+        observer.acquisition().await.unwrap(),
+        AcquisitionState::Centring
+    );
+    assert!(backend.mount().is_slewing().await.unwrap());
+
+    // It gives up, and the view carries on as it would after a success.
+    fake.respond_ok(
+        "get_view_state",
+        json!({"View": {"state": "working", "mode": "star", "stage": "ContinuousExposure",
+            "ContinuousExposure": {"state": "working", "fps": 0.09}}}),
+    );
+    fake.send_event(
+        json!({"Event": "AutoGoto", "Timestamp": "350.0", "state": "fail",
+        "lapse_ms": 349600, "count": 7, "hint": true, "error": "solve failed", "code": 251}),
+    );
+    let mut failure = None;
+    for _ in 0..100 {
+        match observer.acquisition().await {
+            Err(e) => {
+                failure = Some(e.to_string());
+                break;
+            }
+            Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let failure = failure.expect("the failed goto was never reported");
+    assert!(failure.contains("solve failed (code 251)"), "{failure}");
+    // Once; and the view that is left is not a view of the target.
+    assert_eq!(
+        observer.acquisition().await.unwrap(),
+        AcquisitionState::Idle
+    );
+    assert!(!backend.mount().is_slewing().await.unwrap());
+    backend.disconnect().await;
+}
+
 #[tokio::test]
 async fn stop_cancels_the_goto_and_leaves_the_view() {
     let fake = FakeSeestar::start().await;
