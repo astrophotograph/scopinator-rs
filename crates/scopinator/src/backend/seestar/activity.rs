@@ -76,7 +76,9 @@ impl Activity {
                 let next = match data.state.as_ref() {
                     Some(EventState::Start | EventState::Working) => Run::Running,
                     Some(EventState::Complete) => Run::Done(()),
-                    Some(EventState::Fail) => Run::Failed("autofocus failed".into()),
+                    Some(EventState::Fail) => {
+                        Run::Failed(autofocus_failure(data.error.as_deref(), data.code))
+                    }
                     // Cancelled: as if it had not run.
                     Some(EventState::Cancel) => Run::Idle,
                     _ => return,
@@ -96,6 +98,17 @@ impl Activity {
             }
             _ => {}
         }
+    }
+}
+
+/// The words for a failed autofocus, with the telescope's reason if it
+/// gave one.
+fn autofocus_failure(error: Option<&str>, code: Option<i32>) -> String {
+    match (error, code) {
+        (Some(error), Some(code)) => format!("autofocus failed: {error} (code {code})"),
+        (Some(error), None) => format!("autofocus failed: {error}"),
+        (None, Some(code)) => format!("autofocus failed (code {code})"),
+        (None, None) => "autofocus failed".into(),
     }
 }
 
@@ -304,6 +317,26 @@ mod tests {
         ));
         assert_eq!(*lock(&activity.solve), Run::Running);
         assert_eq!(*lock(&activity.autofocus), Run::Done(()));
+    }
+
+    #[test]
+    fn a_failed_autofocus_carries_the_reason_the_telescope_gave() {
+        let activity = Activity::default();
+        // The reason and code as an S30 (9.75) gives them in its view state.
+        activity.note(&event(json!({"Event": "AutoFocus", "Timestamp": "1.0",
+            "state": "fail", "lapse_ms": 80507, "error": "no star is detected",
+            "code": 279})));
+        assert_eq!(
+            take_failure(&activity.autofocus),
+            Some("autofocus failed: no star is detected (code 279)".into())
+        );
+        // Without one, the failure is still a failure.
+        activity.note(&event(json!({"Event": "AutoFocus", "Timestamp": "2.0",
+            "state": "fail", "lapse_ms": 4000})));
+        assert_eq!(
+            take_failure(&activity.autofocus),
+            Some("autofocus failed".into())
+        );
     }
 
     #[test]

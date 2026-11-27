@@ -369,6 +369,9 @@ impl Mount for SeestarMount {
             )));
         }
         match self.goto_stage().await? {
+            // The goto whose failure has just been reported, still in the
+            // view state: it is over.
+            GotoStage::Running if self.goto.just_failed() => {}
             GotoStage::Running => {
                 self.goto.running();
                 return Ok(true);
@@ -590,7 +593,9 @@ impl Mount for SeestarMount {
         let state = self.mount_state().await?;
         // A failed goto is reported by `is_slewing`; here it only means the
         // mount is not slewing.
-        let slewing = state.moving || matches!(self.goto_stage().await, Ok(GotoStage::Running));
+        let slewing = state.moving
+            || (matches!(self.goto_stage().await, Ok(GotoStage::Running))
+                && !self.goto.just_failed());
         Ok(MountStatus {
             slew_state: if slewing {
                 SlewState::Slewing

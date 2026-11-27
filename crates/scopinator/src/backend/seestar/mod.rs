@@ -77,6 +77,8 @@ pub(crate) struct GotoTracker {
     /// When the last goto was taken to be over, and a failure the telescope
     /// reported shortly after that.
     ended: std::sync::Mutex<(Option<tokio::time::Instant>, Option<String>)>,
+    /// When the failure of the last goto was handed out.
+    failed_at: std::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
 /// How long after a goto looked finished a failure event still belongs to
@@ -102,6 +104,7 @@ impl GotoTracker {
         self.last_failed
             .store(false, std::sync::atomic::Ordering::SeqCst);
         *self.ended() = (None, None);
+        *self.failed_at() = None;
         *self.lock() = Some(PendingGoto {
             accepted_at: tokio::time::Instant::now(),
             seen_running: false,
@@ -142,6 +145,7 @@ impl GotoTracker {
     /// The goto is over once this has been taken.
     pub(crate) fn take_failure(&self) -> Option<String> {
         if let Some(late) = self.ended().1.take() {
+            *self.failed_at() = Some(tokio::time::Instant::now());
             return Some(late);
         }
         let mut pending = self.lock();
@@ -149,7 +153,28 @@ impl GotoTracker {
         *pending = None;
         self.last_failed
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        *self.failed_at() = Some(tokio::time::Instant::now());
         Some(failure)
+    }
+
+    /// True for a short while after the failure of a goto was handed out,
+    /// unless another goto has been accepted since.
+    ///
+    /// The telescope's failure event comes about two seconds before the
+    /// failed goto leaves the view state, and for those seconds the view
+    /// state still shows it working. A goto that somebody else starts in
+    /// this window reads as not running until the window closes.
+    pub(crate) fn just_failed(&self) -> bool {
+        !self.is_pending()
+            && self
+                .failed_at()
+                .is_some_and(|at| at.elapsed() < LATE_FAILURE)
+    }
+
+    fn failed_at(&self) -> std::sync::MutexGuard<'_, Option<tokio::time::Instant>> {
+        self.failed_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn ended(&self) -> std::sync::MutexGuard<'_, (Option<tokio::time::Instant>, Option<String>)> {

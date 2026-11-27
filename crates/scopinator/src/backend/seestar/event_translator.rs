@@ -104,11 +104,19 @@ fn translate(event: &SeestarEvent, device_id: &DeviceId) -> Option<UnifiedEvent>
             )
         }),
 
-        // The wheel reports a position, but how its numbering maps onto
-        // positions counted from zero is not established, so none is passed
-        // on.
-        SeestarEvent::WheelMove(data) => (data.state == Some(EventState::Complete))
-            .then(|| event_of(EventType::FilterChanged, EventPayload::None)),
+        // The position counts from zero, as `get_wheel_position` does: a
+        // view without the light pollution filter ends a move at 1, the
+        // IR-cut filter of an S30. The names are the wheel's to ask for.
+        SeestarEvent::WheelMove(data) => (data.state == Some(EventState::Complete)).then(|| {
+            let payload = match u32::try_from(data.position) {
+                Ok(position) => EventPayload::FilterPosition {
+                    position,
+                    name: None,
+                },
+                Err(_) => EventPayload::None,
+            };
+            event_of(EventType::FilterChanged, payload).about("filterwheel")
+        }),
 
         SeestarEvent::AutoFocus(data) => data
             .state
@@ -342,8 +350,18 @@ mod tests {
             "state": "complete", "position": 1}))
         .unwrap();
         assert_eq!(changed.event_type, EventType::FilterChanged);
-        // The telescope's numbering is not passed on as a zero-based position.
-        assert!(matches!(changed.payload, EventPayload::None));
+        // Counted from zero, like the wheel's own positions.
+        assert!(matches!(
+            changed.payload,
+            EventPayload::FilterPosition {
+                position: 1,
+                name: None
+            }
+        ));
+        assert_eq!(
+            changed.source.as_ref().map(ToString::to_string),
+            Some("test:filterwheel".into())
+        );
     }
 
     #[test]

@@ -187,6 +187,10 @@ pub struct AutoFocusEventData {
     pub state: Option<EventState>,
     #[serde(default)]
     pub lapse_ms: i64,
+    /// Why it failed, when the device gives a reason (for example
+    /// `no star is detected`, code 279).
+    pub error: Option<String>,
+    pub code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

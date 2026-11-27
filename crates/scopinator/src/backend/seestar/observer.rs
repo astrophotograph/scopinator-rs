@@ -256,6 +256,11 @@ impl Observer for SeestarObserver {
         }
         let view = self.client.send_and_validate(Command::GetViewState).await?;
         match stage_of(&view) {
+            // The goto whose failure has just been reported, still in the
+            // view state: it is over.
+            Ok(Stage::Slewing | Stage::Centring) if self.goto.just_failed() => {
+                return Ok(AcquisitionState::Idle);
+            }
             Ok(Stage::Slewing) => {
                 self.goto.running();
                 return Ok(AcquisitionState::Slewing);

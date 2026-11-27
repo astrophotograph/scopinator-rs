@@ -379,6 +379,62 @@ async fn a_goto_that_never_solves_fails_through_its_event_and_is_not_on_target()
 }
 
 #[tokio::test]
+async fn a_failed_goto_still_in_the_view_state_is_not_read_as_running() {
+    // The failure event comes about two seconds before the goto leaves the
+    // view state (S30, 9.75): for those seconds it still shows as working.
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_device_state", state("none", CHICAGO));
+    fake.respond_ok(
+        "get_view_state",
+        json!({"View": {"state": "working", "mode": "star", "stage": "AutoGoto",
+            "AutoGoto": {"state": "working", "count": 7, "hint": true, "stage": "PlateSolve",
+                "PlateSolve": {"state": "fail", "code": 251, "error": "solve failed"}}}}),
+    );
+    let backend = backend(&fake).await;
+    let observer = observer(&backend);
+    observer
+        .acquire(&Target::at(Coordinates::from_hours(4.6, 16.5).unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(
+        observer.acquisition().await.unwrap(),
+        AcquisitionState::Centring
+    );
+
+    fake.send_event(
+        json!({"Event": "AutoGoto", "Timestamp": "350.0", "state": "fail",
+        "lapse_ms": 349600, "count": 7, "hint": true, "error": "solve failed", "code": 251}),
+    );
+    let mut failed = false;
+    for _ in 0..100 {
+        if observer.acquisition().await.is_err() {
+            failed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(failed, "the failed goto was never reported");
+
+    // The view state has not caught up; the goto is over all the same.
+    assert_eq!(
+        observer.acquisition().await.unwrap(),
+        AcquisitionState::Idle
+    );
+    assert!(!backend.mount().is_slewing().await.unwrap());
+
+    // A new goto is followed from the view state again.
+    observer
+        .acquire(&Target::at(Coordinates::from_hours(5.0, 10.0).unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(
+        observer.acquisition().await.unwrap(),
+        AcquisitionState::Centring
+    );
+    backend.disconnect().await;
+}
+
+#[tokio::test]
 async fn stop_cancels_the_goto_and_leaves_the_view() {
     let fake = FakeSeestar::start().await;
     fake.respond_ok("get_device_state", state("none", CHICAGO));

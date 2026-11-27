@@ -31,6 +31,8 @@ upgrade notes.
   the telescope is on target. On a Seestar that includes plate solving: a goto that cannot
   solve now fails the command, where it used to count as arrived once the mount stopped.
 - `SequencerCommand` is `#[non_exhaustive]`.
+- `scopinator_seestar::event::AutoFocusEventData` has `error` and `code` members, so code that
+  builds one by hand needs them.
 
 ### Added
 
@@ -48,6 +50,23 @@ upgrade notes.
 - Sequencer commands `AutoFocus`, `SetFilter` (by `position` or `name`), `Park` and `Unpark`.
 - `FrameSink`, for receiving the frames of a camera imaging run in a sequence.
 - `seestar_verify` has `camera`, `focuser`, `wheel` and `switch` stages.
+- A Seestar's `FilterChanged` event carries the position the wheel arrived at
+  (`EventPayload::FilterPosition`, counted from zero, no name) and comes from the
+  `:filterwheel` device. It had no payload.
+
+### Fixed
+
+- A failed Seestar autofocus says why when the telescope does: `autofocus failed: no star is
+  detected (code 279)`, where it was only `autofocus failed`.
+- After a Seestar goto failed, `Observer::acquisition` read `Centring` and `Mount::is_slewing`
+  read true for about two seconds, until the failed goto left the telescope's view state. Both
+  now read as over once the failure has been reported.
+
+### Changed
+
+- Dependencies no crate used are gone: `socket2` from the workspace, `scopinator-types` from
+  `scopinator-alpaca` and `scopinator-indi`, `serde_json`, `tokio` and `tracing` from
+  `scopinator-indi`. `serde_json` is a development dependency of `scopinator-types`.
 
 ### Upgrading from 0.7
 
