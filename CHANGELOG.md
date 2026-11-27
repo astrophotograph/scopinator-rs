@@ -5,8 +5,11 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
-Found by running the smart-telescope traits against a Seestar S30 (firmware 9.75) that had no
-stars in view.
+## [0.7.1] - 2026-11-26
+
+Fixes found by running the smart-telescope traits against a Seestar S30 (firmware 9.75) indoors,
+where every plate solve fails. Nothing breaks; all the changes are in `scopinator`. Whether a
+Seestar takes goto coordinates in the equinox of date is still unconfirmed: that needs stars.
 
 ### Fixed
 
@@ -355,7 +358,8 @@ Command and event modelling checked against captured sessions from a Seestar S30
 - RSA interop-key authentication for Seestar firmware 7.18 and later ([#1](https://github.com/astrophotograph/scopinator-rs/pull/1)).
 - More settings ([#2](https://github.com/astrophotograph/scopinator-rs/pull/2)).
 
-[Unreleased]: https://github.com/astrophotograph/scopinator-rs/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/astrophotograph/scopinator-rs/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/astrophotograph/scopinator-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/astrophotograph/scopinator-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/astrophotograph/scopinator-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/astrophotograph/scopinator-rs/compare/v0.4.0...v0.5.0

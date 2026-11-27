@@ -420,7 +420,7 @@ mod tests {
             "{failure}"
         );
     }
-    // The four shapes below are from an S30 (9.75) with no stars in view,
+    // The four shapes below are from an S30 (9.75) indoors,
     // 2026-11-26: the goto went on for six minutes of failed plate solves.
     #[test]
     fn a_goto_with_no_stage_yet_is_slewing() {

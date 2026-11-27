@@ -319,7 +319,7 @@ async fn a_failed_acquisition_is_reported_once_and_shared_with_the_mount() {
     backend.disconnect().await;
 }
 
-// Seen on an S30 (9.75) with no stars in view: seven failed plate solves
+// Seen on an S30 (9.75) indoors: seven failed plate solves
 // under an `AutoGoto` that stayed `working`, then one `AutoGoto` event with
 // `fail`, after which the view state has no `AutoGoto` at all.
 #[tokio::test]

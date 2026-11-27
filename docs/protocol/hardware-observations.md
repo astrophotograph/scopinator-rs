@@ -242,7 +242,7 @@ start/working/complete set.
 ### A goto that never plate-solves (2026-11-26)
 
 Run with `crates/scopinator/examples/seestar_verify.rs`. The telescope was parked, in EQ mode
-(`mount.equ_mode: true`), with its clock at 2020 and its site set. Its frames showed no stars
+(`mount.equ_mode: true`), with its clock at 2020 and its site set. It was indoors, so its frames showed no stars
 (noise only: a 1080x1920 raw stream frame, median 2016 ADU, nothing above the noise), so every
 plate solve failed. What that showed:
 
@@ -331,7 +331,7 @@ and `lapse_ms`; no `camera_mode`. With the owner's agreement it was replaced:
   connection.
 - Driving the wide camera through port 4700 (`selected_cam` / `wide_cam`), a wide-camera goto or
   stack, and the RTSP streams.
-- A completed goto with plate solving, on any firmware (no session so far had stars in view).
+- A completed goto with plate solving, on any firmware (every session so far was indoors).
   With it: whether the telescope takes goto coordinates in J2000 or the equinox of date, an
   autofocus that completes, a solve result, and frames arriving in a stack.
 - A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
