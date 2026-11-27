@@ -4,10 +4,19 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 
-use scopinator_types::{Coordinates, DecDegrees, ExposureSettings, RaDegrees};
+use std::sync::Arc;
 
-use super::context::ExecutionContext;
-use crate::device::wait::{WaitOptions, wait_for_slew};
+use scopinator_types::{
+    Coordinates, DecDegrees, ExposureSettings, RaDegrees, StackSettings, Target,
+};
+
+use super::context::{ExecutionContext, FrameSink};
+use crate::device::smart::LiveStacker;
+use crate::device::traits::Camera;
+use crate::device::wait::{
+    WaitOptions, wait_for_acquisition, wait_for_autofocus, wait_for_filter_wheel, wait_for_frames,
+    wait_for_image, wait_for_park, wait_for_slew,
+};
 use crate::error::ScopinatorError;
 
 /// Status of a sequencer command.
@@ -24,6 +33,7 @@ pub enum CommandStatus {
 /// A command in an observation sequence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command_type")]
+#[non_exhaustive]
 pub enum SequencerCommand {
     /// Slew to a target by RA/Dec and wait for the mount to arrive.
     GoToTarget {
@@ -40,17 +50,46 @@ pub enum SequencerCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         settle_seconds: Option<f64>,
     },
-    /// Start camera imaging/stacking.
+    /// Take frames.
+    ///
+    /// On a telescope that stacks (the context has a live stacker), start a
+    /// stack with this sub-exposure and gain. With a `count` the command
+    /// waits for that many stacked frames and stops the stack; without one
+    /// it returns once the stack has started, and `StopImaging` ends it.
+    ///
+    /// Otherwise take single exposures with the camera, handing each frame
+    /// to the context's frame sink. With a `count` the command takes that
+    /// many and returns; without one it keeps taking them in the background
+    /// until `StopImaging`.
     StartImaging {
         /// Exposure time in seconds.
         exposure_seconds: f64,
         /// Gain (camera-specific).
         gain: Option<i32>,
-        /// Number of frames (None = unlimited).
+        /// Number of frames (None = until `StopImaging`).
         count: Option<u32>,
     },
-    /// Stop camera imaging.
+    /// Stop the stack, or the camera's imaging run and its exposure.
     StopImaging,
+    /// Focus with the telescope's own autofocus and wait for it to finish.
+    AutoFocus {
+        /// How long to wait before failing the command. Defaults to 300
+        /// seconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_seconds: Option<f64>,
+    },
+    /// Turn the filter wheel to a filter, by position (from zero) or by
+    /// name, and wait for it to stop. Exactly one of the two must be given.
+    SetFilter {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// Park the mount and wait for it to finish.
+    Park,
+    /// Take the mount out of park.
+    Unpark,
     /// Wait for a fixed number of minutes.
     WaitMinutes { minutes: f64 },
     /// Wait until a specific UTC time.
@@ -145,6 +184,16 @@ async fn execute_command_inner(
             let dec = DecDegrees::new(*dec_deg)
                 .map_err(|e| ScopinatorError::InvalidArgument(e.to_string()))?;
             let coords = Coordinates::new(ra, dec);
+            // A smart telescope finds the target itself: slew, plate solve
+            // and re-centre. Arriving is being on target, not having slewed.
+            if let Some(observer) = &ctx.observer {
+                let target = Target::Sky {
+                    name: Some(name.clone()),
+                    coordinates: coords,
+                };
+                observer.acquire(&target).await?;
+                return wait_for_acquisition(observer.as_ref(), wait).await;
+            }
             // The slew is only accepted at this point; the next command
             // must not start until the mount has arrived.
             ctx.mount.slew_to_coordinates(&coords).await?;
@@ -164,27 +213,119 @@ async fn execute_command_inner(
         SequencerCommand::StartImaging {
             exposure_seconds,
             gain,
-            count: _,
+            count,
         } => {
-            let camera = ctx
-                .camera
-                .as_ref()
-                .ok_or_else(|| ScopinatorError::NotSupported("no camera in context".into()))?;
-            debug!(exposure = exposure_seconds, gain = ?gain, "start imaging");
+            let exposure = Duration::try_from_secs_f64(*exposure_seconds).map_err(|_| {
+                ScopinatorError::InvalidArgument(format!(
+                    "exposure_seconds is not a duration: {exposure_seconds}"
+                ))
+            })?;
+            debug!(exposure = exposure_seconds, gain = ?gain, count = ?count, "start imaging");
+            if let Some(stacker) = &ctx.live_stacker {
+                return stack(stacker.as_ref(), exposure, *gain, *count).await;
+            }
+            let camera = ctx.camera.clone().ok_or_else(|| {
+                ScopinatorError::NotSupported("no stacker and no camera in context".into())
+            })?;
             let mut settings = ExposureSettings::new(*exposure_seconds);
             settings.gain = *gain;
-            camera.start_exposure(&settings).await?;
-            Ok(())
+            // One imaging run at a time.
+            ctx.end_imaging();
+            let sink = ctx.frame_sink.clone();
+            match count {
+                Some(count) => take_frames(camera, sink, settings, Some(*count)).await,
+                None => {
+                    let run = tokio::spawn(async move {
+                        if let Err(e) = take_frames(camera, sink, settings, None).await {
+                            error!(error = %e, "imaging run ended");
+                        }
+                    });
+                    *ctx.imaging
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(run);
+                    Ok(())
+                }
+            }
         }
 
         SequencerCommand::StopImaging => {
-            let camera = ctx
-                .camera
-                .as_ref()
-                .ok_or_else(|| ScopinatorError::NotSupported("no camera in context".into()))?;
             debug!("stop imaging");
-            camera.abort_exposure().await?;
+            if let Some(stacker) = &ctx.live_stacker {
+                return stacker.stop_stacking().await;
+            }
+            let camera = ctx.camera.as_ref().ok_or_else(|| {
+                ScopinatorError::NotSupported("no stacker and no camera in context".into())
+            })?;
+            ctx.end_imaging();
+            camera.abort_exposure().await
+        }
+
+        SequencerCommand::AutoFocus { timeout_seconds } => {
+            let focus = ctx
+                .auto_focus
+                .as_ref()
+                .ok_or_else(|| ScopinatorError::NotSupported("no autofocus in context".into()))?;
+            let timeout = match timeout_seconds {
+                None => WaitOptions::default().timeout,
+                Some(s) => Duration::try_from_secs_f64(*s).map_err(|_| {
+                    ScopinatorError::InvalidArgument(format!(
+                        "timeout_seconds is not a duration: {s}"
+                    ))
+                })?,
+            };
+            debug!("autofocus");
+            focus.start_autofocus().await?;
+            let position =
+                wait_for_autofocus(focus.as_ref(), WaitOptions::with_timeout(timeout)).await?;
+            debug!(?position, "autofocus finished");
             Ok(())
+        }
+
+        SequencerCommand::SetFilter { position, name } => {
+            let wheel = ctx.filter_wheel.as_ref().ok_or_else(|| {
+                ScopinatorError::NotSupported("no filter wheel in context".into())
+            })?;
+            let position = match (position, name) {
+                (Some(position), None) => *position,
+                (None, Some(name)) => {
+                    let names = wheel.get_filter_names().await?;
+                    let found = names.iter().position(|n| n.eq_ignore_ascii_case(name));
+                    let found = found.ok_or_else(|| {
+                        ScopinatorError::InvalidArgument(format!(
+                            "no filter named {name:?}; the wheel has {names:?}"
+                        ))
+                    })?;
+                    found as u32
+                }
+                _ => {
+                    return Err(ScopinatorError::InvalidArgument(
+                        "SetFilter takes a position or a name, one of the two".into(),
+                    ));
+                }
+            };
+            debug!(position, "set filter");
+            wheel.set_filter_position(position).await?;
+            wait_for_filter_wheel(wheel.as_ref(), WaitOptions::default()).await
+        }
+
+        SequencerCommand::Park => {
+            debug!("park");
+            ctx.mount.park().await?;
+            match wait_for_park(ctx.mount.as_ref(), WaitOptions::default()).await {
+                Err(e) if e.is_not_supported() => {
+                    warn!(
+                        "this mount cannot say whether it is parked; \
+                         continuing without waiting for it"
+                    );
+                    Ok(())
+                }
+                outcome => outcome,
+            }
+        }
+
+        SequencerCommand::Unpark => {
+            debug!("unpark");
+            ctx.mount.unpark().await
         }
 
         SequencerCommand::WaitMinutes { minutes } => {
@@ -229,6 +370,71 @@ async fn execute_command_inner(
             Ok(())
         }
     }
+}
+
+/// Start a stack; with a `count`, see it through to that many frames.
+async fn stack(
+    stacker: &dyn LiveStacker,
+    exposure: Duration,
+    gain: Option<i32>,
+    count: Option<u32>,
+) -> Result<(), ScopinatorError> {
+    let limits_itself = stacker.capabilities().can_limit_frames;
+    let mut settings = StackSettings::default();
+    settings.exposure = Some(exposure);
+    settings.gain = gain;
+    settings.frame_limit = count.filter(|_| limits_itself);
+    match stacker.start_stacking(&settings).await {
+        // The telescope stacks with the sub-exposure it is set to: better
+        // that than no stack. Tried once.
+        Err(e) if e.is_not_supported() => {
+            warn!(
+                error = %e,
+                "the stacker refused these settings; \
+                 stacking with its own sub-exposure instead"
+            );
+            settings.exposure = None;
+            stacker.start_stacking(&settings).await?;
+        }
+        outcome => outcome?,
+    }
+    let Some(count) = count else {
+        return Ok(());
+    };
+    if limits_itself {
+        return Ok(());
+    }
+    // Frames are dropped, and the telescope may focus before the first one:
+    // allow several times the exposure time, and never less than ten minutes.
+    let timeout = (exposure * count * 4 + Duration::from_secs(300)).max(Duration::from_secs(600));
+    let waited = wait_for_frames(stacker, count, WaitOptions::with_timeout(timeout)).await;
+    // The stack is stopped whether or not it got there.
+    let stopped = stacker.stop_stacking().await;
+    waited?;
+    stopped
+}
+
+/// Take `count` single exposures (or keep going, without one), handing each
+/// frame to `sink`.
+async fn take_frames(
+    camera: Arc<dyn Camera>,
+    sink: Option<Arc<dyn FrameSink>>,
+    settings: ExposureSettings,
+    count: Option<u32>,
+) -> Result<(), ScopinatorError> {
+    let exposure = Duration::try_from_secs_f64(settings.duration_seconds).unwrap_or_default();
+    let wait = WaitOptions::with_timeout(exposure + Duration::from_secs(120));
+    let mut taken = 0u32;
+    while count.is_none_or(|count| taken < count) {
+        camera.start_exposure(&settings).await?;
+        wait_for_image(camera.as_ref(), wait).await?;
+        let image = camera.get_image().await?;
+        if let Some(sink) = &sink {
+            sink.frame(image).await?;
+        }
+        taken += 1;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -336,10 +542,8 @@ mod tests {
     }
 
     fn context(mount: &Arc<MockMount>, camera: &Arc<MockCamera>) -> ExecutionContext {
-        ExecutionContext {
-            mount: Arc::clone(mount) as Arc<dyn crate::device::Mount>,
-            camera: Some(Arc::clone(camera) as Arc<dyn crate::device::Camera>),
-        }
+        ExecutionContext::new(Arc::clone(mount) as Arc<dyn crate::device::Mount>)
+            .with_camera(Arc::clone(camera) as Arc<dyn crate::device::Camera>)
     }
 
     #[tokio::test(start_paused = true)]
@@ -357,11 +561,12 @@ mod tests {
                 SequencerCommand::StartImaging {
                     exposure_seconds: 10.0,
                     gain: None,
-                    count: None,
+                    count: Some(1),
                 },
             ],
             stop_on_error: true,
         };
+        camera.ready.script([Answer::Is(true)]);
 
         let run = tokio::spawn(async move { execute_command(&sequence, &ctx).await });
         // Four seconds in: the slew was sent, the mount is still moving, and
@@ -469,5 +674,310 @@ mod tests {
         // And the fields are left out again when unset.
         let cmd: SequencerCommand = serde_json::from_str(json).unwrap();
         assert_eq!(serde_json::to_string(&cmd).unwrap(), json);
+    }
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use scopinator_types::{
+        AcquisitionState, AutoFocusState, ImageData, StackProgress, StackState,
+    };
+
+    use crate::device::mock::{MockAutoFocus, MockFilterWheel, MockObserver, MockStacker};
+    use crate::device::traits::FilterWheel;
+
+    fn imaging(count: Option<u32>) -> SequencerCommand {
+        SequencerCommand::StartImaging {
+            exposure_seconds: 10.0,
+            gain: Some(80),
+            count,
+        }
+    }
+
+    fn stacked(state: StackState, frames: u32) -> Result<StackProgress, &'static str> {
+        let mut progress = StackProgress::default();
+        progress.state = state;
+        progress.stacked = frames;
+        Ok(progress)
+    }
+
+    #[derive(Default)]
+    struct Frames(Mutex<Vec<ImageData>>);
+
+    #[async_trait]
+    impl FrameSink for Frames {
+        async fn frame(&self, image: ImageData) -> Result<(), ScopinatorError> {
+            self.0.lock().unwrap().push(image);
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn imaging_on_a_stacker_waits_for_the_count_and_stops_the_stack() {
+        let stacker = Arc::new(MockStacker::default());
+        stacker.progress.script([
+            stacked(StackState::Stacking, 0),
+            stacked(StackState::Stacking, 1),
+            stacked(StackState::Stacking, 3),
+        ]);
+        let camera = Arc::new(MockCamera::default());
+        let ctx = ExecutionContext::new(Arc::new(MockMount::default()))
+            .with_camera(camera.clone())
+            .with_live_stacker(stacker.clone());
+
+        execute_command(&imaging(Some(3)), &ctx).await.unwrap();
+
+        let started = stacker.started.lock().unwrap().clone();
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].exposure, Some(Duration::from_secs(10)));
+        assert_eq!(started[0].gain, Some(80));
+        // This stacker cannot count for itself: the sequencer does.
+        assert_eq!(started[0].frame_limit, None);
+        assert_eq!(*stacker.stops.lock().unwrap(), 1);
+        // The camera is not involved when there is a stacker.
+        assert!(camera.exposures.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn imaging_without_a_count_starts_the_stack_and_returns() {
+        let stacker = Arc::new(MockStacker::default());
+        let ctx = ExecutionContext::new(Arc::new(MockMount::default()))
+            .with_live_stacker(stacker.clone());
+
+        execute_command(&imaging(None), &ctx).await.unwrap();
+        assert_eq!(stacker.started.lock().unwrap().len(), 1);
+        assert_eq!(*stacker.stops.lock().unwrap(), 0);
+        assert_eq!(stacker.progress.asked(), 0);
+
+        execute_command(&SequencerCommand::StopImaging, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(*stacker.stops.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stacker_that_counts_frames_is_given_the_count() {
+        let stacker = Arc::new(MockStacker::default());
+        *stacker.limits_frames.lock().unwrap() = true;
+        let ctx = ExecutionContext::new(Arc::new(MockMount::default()))
+            .with_live_stacker(stacker.clone());
+
+        execute_command(&imaging(Some(30)), &ctx).await.unwrap();
+        assert_eq!(stacker.started.lock().unwrap()[0].frame_limit, Some(30));
+        assert_eq!(*stacker.stops.lock().unwrap(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_sub_exposure_is_dropped_and_the_stack_started_without_it() {
+        let stacker = Arc::new(MockStacker::default());
+        *stacker.refuse_exposure.lock().unwrap() = true;
+        let ctx = ExecutionContext::new(Arc::new(MockMount::default()))
+            .with_live_stacker(stacker.clone());
+
+        execute_command(&imaging(None), &ctx).await.unwrap();
+        let started = stacker.started.lock().unwrap().clone();
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].exposure, None);
+        assert_eq!(started[0].gain, Some(80));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stack_that_ends_short_fails_the_command_and_is_still_stopped() {
+        let stacker = Arc::new(MockStacker::default());
+        stacker.progress.script([
+            stacked(StackState::Stacking, 1),
+            stacked(StackState::Idle, 1),
+        ]);
+        let ctx = ExecutionContext::new(Arc::new(MockMount::default()))
+            .with_live_stacker(stacker.clone());
+
+        let err = execute_command(&imaging(Some(5)), &ctx).await.unwrap_err();
+        assert!(matches!(err, ScopinatorError::InvalidState(_)), "{err:?}");
+        assert_eq!(*stacker.stops.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn imaging_on_a_camera_takes_the_count_and_hands_over_each_frame() {
+        let camera = Arc::new(MockCamera::default());
+        camera.ready.script([Answer::Is(true)]);
+        let frames = Arc::new(Frames::default());
+        let ctx = ExecutionContext::new(Arc::new(MockMount::default()))
+            .with_camera(camera.clone())
+            .with_frame_sink(frames.clone());
+
+        execute_command(&imaging(Some(4)), &ctx).await.unwrap();
+
+        let exposures = camera.exposures.lock().unwrap().clone();
+        assert_eq!(exposures.len(), 4);
+        assert_eq!(exposures[0].duration_seconds, 10.0);
+        assert_eq!(exposures[0].gain, Some(80));
+        assert_eq!(frames.0.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn imaging_on_a_camera_without_a_count_runs_until_it_is_stopped() {
+        let camera = Arc::new(MockCamera::default());
+        // Two polls per frame: an exposure takes a moment.
+        camera.ready.script([Answer::Is(true)]);
+        let frames = Arc::new(Frames::default());
+        let ctx = ExecutionContext::new(Arc::new(MockMount::default()))
+            .with_camera(camera.clone())
+            .with_frame_sink(frames.clone());
+
+        execute_command(&imaging(None), &ctx).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let before = frames.0.lock().unwrap().len();
+        assert!(before > 1, "{before} frames");
+
+        execute_command(&SequencerCommand::StopImaging, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(*camera.aborts.lock().unwrap(), 1);
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let after = frames.0.lock().unwrap().len();
+        assert!(after <= before + 1, "{before} then {after} frames");
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert_eq!(frames.0.lock().unwrap().len(), after);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_sequence_interrupts_a_wait_for_frames() {
+        use crate::sequencer::{Sequence, SequenceState};
+
+        let stacker = Arc::new(MockStacker::default());
+        // Never gets past one frame.
+        stacker.progress.script([stacked(StackState::Stacking, 1)]);
+        let ctx = Arc::new(
+            ExecutionContext::new(Arc::new(MockMount::default()))
+                .with_live_stacker(stacker.clone()),
+        );
+        let mut sequence = Sequence::new("stuck", vec![imaging(Some(50))]);
+        sequence.start(ctx);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(sequence.state(), SequenceState::Running);
+        let asked = stacker.progress.asked();
+        assert!(asked > 1);
+
+        sequence.stop();
+        assert_eq!(sequence.state(), SequenceState::Cancelled);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(stacker.progress.asked() <= asked + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_goto_with_an_observer_waits_until_the_telescope_is_on_target() {
+        let mount = Arc::new(MockMount::default());
+        let observer = Arc::new(MockObserver::default());
+        observer.acquisition.script([
+            Ok(AcquisitionState::Slewing),
+            Ok(AcquisitionState::Centring),
+            Ok(AcquisitionState::OnTarget),
+        ]);
+        let ctx = ExecutionContext::new(mount.clone()).with_observer(observer.clone());
+        let goto = SequencerCommand::GoToTarget {
+            name: "M31".into(),
+            ra_hours: 0.712,
+            dec_deg: 41.27,
+            timeout_seconds: None,
+            settle_seconds: None,
+        };
+
+        execute_command(&goto, &ctx).await.unwrap();
+        assert_eq!(observer.targets.lock().unwrap().len(), 1);
+        // The observer does the slewing.
+        assert!(mount.slews.lock().unwrap().is_empty());
+
+        observer
+            .acquisition
+            .script([Err("goto failed at AutoGoto: solve failed (code 251)")]);
+        let err = execute_command(&goto, &ctx).await.unwrap_err();
+        assert!(err.to_string().contains("solve failed"), "{err}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn autofocus_waits_for_the_run_and_fails_with_it() {
+        let focus = Arc::new(MockAutoFocus::default());
+        focus.state.script([
+            Ok(AutoFocusState::Running),
+            Ok(AutoFocusState::Done {
+                position: Some(1250),
+            }),
+        ]);
+        let ctx =
+            ExecutionContext::new(Arc::new(MockMount::default())).with_auto_focus(focus.clone());
+        let command = SequencerCommand::AutoFocus {
+            timeout_seconds: None,
+        };
+        execute_command(&command, &ctx).await.unwrap();
+
+        focus.state.script([Err("autofocus failed")]);
+        assert!(execute_command(&command, &ctx).await.is_err());
+
+        let none = ExecutionContext::new(Arc::new(MockMount::default()));
+        let err = execute_command(&command, &none).await.unwrap_err();
+        assert!(err.is_not_supported(), "{err:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_filter_is_chosen_by_position_or_by_name() {
+        let wheel = Arc::new(MockFilterWheel::default());
+        let ctx =
+            ExecutionContext::new(Arc::new(MockMount::default())).with_filter_wheel(wheel.clone());
+        let set = |position, name: Option<&str>| SequencerCommand::SetFilter {
+            position,
+            name: name.map(str::to_string),
+        };
+
+        execute_command(&set(Some(2), None), &ctx).await.unwrap();
+        assert_eq!(wheel.filter_position().await.unwrap().unwrap().position, 2);
+        execute_command(&set(None, Some("b")), &ctx).await.unwrap();
+        assert_eq!(wheel.filter_position().await.unwrap().unwrap().position, 3);
+
+        for bad in [
+            set(None, None),
+            set(Some(1), Some("R")),
+            set(None, Some("Ha")),
+        ] {
+            let err = execute_command(&bad, &ctx).await.unwrap_err();
+            assert!(
+                matches!(err, ScopinatorError::InvalidArgument(_)),
+                "{err:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn park_waits_for_the_mount_to_be_parked() {
+        let mount = Arc::new(MockMount::default());
+        mount
+            .parked
+            .script([Answer::Is(false), Answer::Is(false), Answer::Is(true)]);
+        let ctx = ExecutionContext::new(mount.clone());
+        execute_command(&SequencerCommand::Park, &ctx)
+            .await
+            .unwrap();
+        assert!(mount.parked.asked() >= 3);
+
+        // A mount that cannot say is taken at its word.
+        mount.parked.script([Answer::NotSupported]);
+        execute_command(&SequencerCommand::Park, &ctx)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn the_new_commands_have_the_json_they_are_documented_with() {
+        let json = r#"[
+            {"command_type": "AutoFocus"},
+            {"command_type": "SetFilter", "name": "LP"},
+            {"command_type": "SetFilter", "position": 1},
+            {"command_type": "Park"},
+            {"command_type": "Unpark"}
+        ]"#;
+        let commands: Vec<SequencerCommand> = serde_json::from_str(json).unwrap();
+        assert_eq!(commands.len(), 5);
+        assert_eq!(
+            serde_json::to_string(&commands[1]).unwrap(),
+            r#"{"command_type":"SetFilter","name":"LP"}"#
+        );
     }
 }

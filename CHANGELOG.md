@@ -5,6 +5,49 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+Stacking moves to where it belongs. A Seestar's camera is its live view; its stack is its
+`LiveStacker`; and the sequencer uses whichever the instrument has. **Breaking**: see the
+upgrade notes.
+
+### Breaking
+
+- `SeestarCamera` no longer stacks. `start_exposure` starts the star view (if none is running)
+  and its frame stream, and does not send `iscope_start_stack`; `get_image` returns the next
+  frame of the live view, not the stack; `image_ready` is true while a view runs;
+  `abort_exposure` stops the stream and leaves the view. Starting the view does not move the
+  mount, and a view left by a goto keeps its target.
+- `CameraStatus::stacked_frames` and `dropped_frames` are gone. `LiveStacker::progress` has
+  them.
+- `ExecutionContext` (the sequencer's devices) is `#[non_exhaustive]` and has more members:
+  observer, live stacker, autofocus, focuser, filter wheel and a frame sink. Build it with
+  `ExecutionContext::from_backend(&backend).await?`, or `ExecutionContext::new(mount)` and the
+  `with_` methods.
+- The sequencer's `StartImaging` honours `count`, which it used to ignore. With a live stacker
+  it starts a stack and, given a count, waits for that many frames and stops it. Without one it
+  takes single exposures with the camera and hands each to the context's `FrameSink`: `count`
+  of them, or in the background until `StopImaging` when there is no count. It used to start
+  one exposure and return.
+- The sequencer's `GoToTarget` uses the instrument's `Observer` when it has one, and waits until
+  the telescope is on target. On a Seestar that includes plate solving: a goto that cannot
+  solve now fails the command, where it used to count as arrived once the mount stopped.
+- `SequencerCommand` is `#[non_exhaustive]`.
+
+### Added
+
+- Sequencer commands `AutoFocus`, `SetFilter` (by `position` or `name`), `Park` and `Unpark`.
+- `FrameSink`, for receiving the frames of a camera imaging run in a sequence.
+- `seestar_verify` has a `camera` stage: start the live view, fetch two frames, stop it.
+
+### Upgrading from 0.7
+
+- To stack on a Seestar, use `backend.live_stacker()`: `start_stacking`, `progress`,
+  `stacked_image`, `stop_stacking`. Code that called `camera.start_exposure` to start a stack
+  and `camera.get_image` to fetch it now gets the live view and one raw frame of it.
+- Replace `ExecutionContext { mount, camera }` with
+  `ExecutionContext::new(mount).with_camera(camera)`, or `from_backend`.
+- A sequence that relied on `StartImaging` returning at once should leave out `count`. With a
+  count, the command now runs until the frames are in.
+
 ## [0.7.1] - 2026-11-26
 
 Fixes found by running the smart-telescope traits against a Seestar S30 (firmware 9.75) indoors,

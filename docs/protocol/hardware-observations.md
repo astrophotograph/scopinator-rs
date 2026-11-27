@@ -287,6 +287,13 @@ plate solve failed. What that showed:
   went to `"none"` 55 s after the request, at dec -90. **`close` alone does not mean the park
   has finished.**
 
+### Live view from the park position (2026-11-26)
+
+`iscope_start_view {"mode": "star"}` with no target, sent while parked: code 0, `View` `working`
+in star mode at once, and the mount did not move (`close` stayed `true`, altitude -29.7).
+`begin_streaming` then delivered raw 1080x1920 16-bit frames, the first within 0.4 s and the next
+a second later. `stop_streaming` and `iscope_stop_view` ended it: `View` `cancel`, `mode: "none"`.
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused

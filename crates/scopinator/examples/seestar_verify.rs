@@ -21,6 +21,8 @@
 //! - `focus`: `AutoFocus::start_autofocus` to its end.
 //! - `stack`: `LiveStacker` for a few frames, then the stacked image.
 //! - `frame`: fetch the current image and save it.
+//! - `camera`: the main camera as a neutral `Camera`: start the live view,
+//!   fetch two frames, stop it. Does not move the mount.
 //! - `preview`: fetch the current preview frame, raw, and save it.
 //! - `stop`: `Observer::stop`.
 //! - `park`: `Mount::park` and wait for it.
@@ -38,9 +40,9 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use scopinator::backend::seestar::SeestarBackend;
-use scopinator::types::{Coordinates, Epoch, ImageData, StackSettings, Target};
+use scopinator::types::{Coordinates, Epoch, ExposureSettings, ImageData, StackSettings, Target};
 use scopinator::{
-    AutoFocus, Backend, LiveStacker, Mount, Observer, PlateSolver, ScopinatorError,
+    AutoFocus, Backend, Camera, LiveStacker, Mount, Observer, PlateSolver, ScopinatorError,
     UnifiedEventBus, WaitOptions, wait_for_acquisition, wait_for_autofocus, wait_for_frames,
     wait_for_park, wait_for_solution,
 };
@@ -560,6 +562,47 @@ async fn main() -> AnyResult<()> {
                         "stop streaming: {:?}",
                         client.send_imaging(ImagingCommand::StopStreaming).await
                     ),
+                );
+            }
+            "camera" => {
+                let camera = backend.camera();
+                say(
+                    start,
+                    format!("image_ready before: {}", show(&camera.image_ready().await)),
+                );
+                say(
+                    start,
+                    format!(
+                        "start_exposure: {}",
+                        show(&camera.start_exposure(&ExposureSettings::new(1.0)).await)
+                    ),
+                );
+                say(
+                    start,
+                    format!("view: {}", raw(&client, "get_view_state").await),
+                );
+                say(
+                    start,
+                    format!("image_ready: {}", show(&camera.image_ready().await)),
+                );
+                for _ in 0..2 {
+                    match camera.get_image().await {
+                        Ok(image) => save(start, &out, "camera", &image)?,
+                        Err(e) => say(start, format!("get_image: ERR {e}")),
+                    }
+                }
+                say(
+                    start,
+                    format!("abort_exposure: {}", show(&camera.abort_exposure().await)),
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                say(
+                    start,
+                    format!("image_ready after: {}", show(&camera.image_ready().await)),
+                );
+                say(
+                    start,
+                    format!("view: {}", raw(&client, "get_view_state").await),
                 );
             }
             "stop" => {

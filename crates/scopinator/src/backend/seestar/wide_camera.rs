@@ -16,7 +16,7 @@ use crate::error::ScopinatorError;
 
 /// How long `get_image` waits for the next stream frame. The wide camera
 /// delivered about one frame per second in star mode on an S30.
-const FRAME_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const FRAME_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The wide camera of a two-camera Seestar, obtained from
 /// [`SeestarBackend::second_camera`](super::SeestarBackend::second_camera).

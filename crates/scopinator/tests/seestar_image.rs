@@ -1,5 +1,6 @@
 //! What `SeestarCamera::get_image` makes of the frames a telescope sends:
-//! the pixel format comes from the frame header and the device state.
+//! the pixel format comes from the frame header and the device state. And
+//! what the camera is: a live view, not a stack.
 #![cfg(feature = "seestar")]
 
 #[path = "../../scopinator-seestar/tests/common/mod.rs"]
@@ -13,10 +14,10 @@ use common::{FakeFrame, FakeSeestar};
 use scopinator::backend::seestar::{SeestarBackend, SeestarEndpoints};
 use scopinator::{Camera, ScopinatorError, UnifiedEventBus};
 use scopinator_seestar::SeestarConfig;
-use scopinator_types::{BayerPattern, FrameMetadata, PixelFormat};
+use scopinator_types::{BayerPattern, ExposureSettings, FrameMetadata, ImageData, PixelFormat};
 use serde_json::json;
 
-/// A backend whose main camera answers `get_stacked_img` with `frame`.
+/// A backend whose telescope streams `frame` when asked for its live view.
 async fn backend_serving(fake: &FakeSeestar, frame: FakeFrame) -> SeestarBackend {
     fake.respond_ok(
         "get_device_state",
@@ -25,7 +26,7 @@ async fn backend_serving(fake: &FakeSeestar, frame: FakeFrame) -> SeestarBackend
             "camera": {"chip_size": [1080, 1920], "debayer_pattern": "GR"},
         }),
     );
-    fake.respond_image("get_stacked_img", vec![frame]);
+    fake.respond_image("begin_streaming", vec![frame]);
     let endpoints = SeestarEndpoints {
         control: fake.control_addr,
         imaging: fake.imaging_addr,
@@ -55,6 +56,22 @@ async fn backend_serving(fake: &FakeSeestar, frame: FakeFrame) -> SeestarBackend
     backend
 }
 
+/// The frame `get_image` returns when the stream starts while it waits.
+async fn next_frame(backend: &SeestarBackend) -> Result<ImageData, ScopinatorError> {
+    let camera = backend.camera();
+    let waiting = tokio::spawn(async move { camera.get_image().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    backend.client().begin_streaming().await.expect("stream");
+    waiting.await.expect("get_image returned")
+}
+
+fn sent(fake: &FakeSeestar, method: &str) -> usize {
+    fake.received()
+        .into_iter()
+        .filter(|msg| msg["method"] == method)
+        .count()
+}
+
 /// A frame with the debayer flag as given (`FakeFrame::image` sets it).
 fn frame(img_type: u8, width: u16, height: u16, can_debayer: u16, payload: Vec<u8>) -> FakeFrame {
     FakeFrame {
@@ -69,7 +86,7 @@ async fn a_16_bit_frame_with_the_debayer_flag_is_a_bayer_mosaic() {
     let pixels: Vec<u8> = (0..16).collect();
     let backend = backend_serving(&fake, frame(1, 4, 2, 1, pixels.clone())).await;
 
-    let image = backend.camera().get_image().await.unwrap();
+    let image = next_frame(&backend).await.unwrap();
     // Not "colour": one sample per pixel, to be debayered, pattern from the
     // device state ("GR").
     assert_eq!(image.format, PixelFormat::Bayer16(BayerPattern::Grbg));
@@ -90,7 +107,7 @@ async fn frames_without_the_debayer_flag_are_mono_and_three_samples_are_rgb() {
         let fake = FakeSeestar::start().await;
         let payload = vec![7u8; 4 * 2 * bytes_per_pixel];
         let backend = backend_serving(&fake, frame(img_type, 4, 2, 0, payload)).await;
-        let image = backend.camera().get_image().await.unwrap();
+        let image = next_frame(&backend).await.unwrap();
         assert_eq!(image.format, expected, "imgType {img_type}");
         assert!(image.has_expected_len());
         backend.disconnect().await;
@@ -101,7 +118,7 @@ async fn frames_without_the_debayer_flag_are_mono_and_three_samples_are_rgb() {
 async fn an_8_bit_frame_with_the_debayer_flag_is_an_8_bit_mosaic() {
     let fake = FakeSeestar::start().await;
     let backend = backend_serving(&fake, frame(0, 4, 2, 1, vec![1; 8])).await;
-    let image = backend.camera().get_image().await.unwrap();
+    let image = next_frame(&backend).await.unwrap();
     assert_eq!(image.format, PixelFormat::Bayer8(BayerPattern::Grbg));
     backend.disconnect().await;
 }
@@ -113,7 +130,7 @@ async fn a_jpeg_frame_is_returned_as_a_jpeg() {
     let jpeg = vec![0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9];
     let backend = backend_serving(&fake, frame(4, 1080, 1920, 0, jpeg.clone())).await;
 
-    let image = backend.camera().get_image().await.unwrap();
+    let image = next_frame(&backend).await.unwrap();
     assert_eq!(image.format, PixelFormat::Jpeg);
     assert_eq!(&image.data[..], &jpeg[..]);
     assert_eq!(image.expected_len(), None);
@@ -125,8 +142,60 @@ async fn a_frame_whose_size_does_not_match_its_header_is_an_error() {
     let fake = FakeSeestar::start().await;
     // 4x2 at two bytes per pixel is 16 bytes; this has 15.
     let backend = backend_serving(&fake, frame(1, 4, 2, 1, vec![0; 15])).await;
-    let err = backend.camera().get_image().await.unwrap_err();
+    let err = next_frame(&backend).await.unwrap_err();
     assert!(matches!(err, ScopinatorError::Backend(_)), "{err:?}");
     assert!(err.to_string().contains("15 bytes"), "{err}");
+    backend.disconnect().await;
+}
+
+#[tokio::test]
+async fn an_exposure_starts_the_view_and_its_stream_and_never_a_stack() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("get_view_state", json!({}));
+    let backend = backend_serving(&fake, frame(1, 4, 2, 1, (0..16).collect())).await;
+    let camera = backend.camera();
+    assert!(!camera.image_ready().await.unwrap());
+
+    camera
+        .start_exposure(&ExposureSettings::new(10.0).with_gain(80))
+        .await
+        .unwrap();
+    assert_eq!(sent(&fake, "iscope_start_view"), 1);
+    assert_eq!(sent(&fake, "set_control_value"), 1);
+    assert_eq!(sent(&fake, "iscope_start_stack"), 0);
+
+    // The frames of that stream have gone by: get_image asks for the
+    // stream again when none comes.
+    fake.respond_ok(
+        "get_view_state",
+        json!({"View": {"state": "working", "mode": "star", "stage": "ContinuousExposure"}}),
+    );
+    assert!(camera.image_ready().await.unwrap());
+    let image = camera.get_image().await.unwrap();
+    assert_eq!((image.width, image.height), (4, 2));
+
+    camera.abort_exposure().await.unwrap();
+    assert_eq!(sent(&fake, "iscope_stop_view"), 1);
+    backend.disconnect().await;
+}
+
+// After a goto the view is running with a target; starting it again would
+// drop the target.
+#[tokio::test]
+async fn an_exposure_leaves_a_running_view_alone() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok(
+        "get_view_state",
+        json!({"View": {"state": "working", "mode": "star", "stage": "ContinuousExposure",
+            "target_name": "Aldebaran", "target_ra_dec": [4.62443, 16.562553]}}),
+    );
+    let backend = backend_serving(&fake, frame(1, 4, 2, 1, (0..16).collect())).await;
+    backend
+        .camera()
+        .start_exposure(&ExposureSettings::new(10.0))
+        .await
+        .unwrap();
+    assert_eq!(sent(&fake, "iscope_start_view"), 0);
+    assert_eq!(sent(&fake, "iscope_start_stack"), 0);
     backend.disconnect().await;
 }

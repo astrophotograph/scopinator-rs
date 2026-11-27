@@ -412,15 +412,25 @@ pub(crate) struct MockStacker {
     pub(crate) progress: Sequence<StackProgress>,
     pub(crate) started: Mutex<Vec<StackSettings>>,
     pub(crate) stops: Mutex<usize>,
+    /// Refuse a start that asks for a sub-exposure, as `NotSupported`.
+    pub(crate) refuse_exposure: Mutex<bool>,
+    /// Claim to stop by itself after a number of frames.
+    pub(crate) limits_frames: Mutex<bool>,
 }
 
 #[async_trait]
 impl LiveStacker for MockStacker {
     fn capabilities(&self) -> StackerCapabilities {
-        StackerCapabilities::default()
+        StackerCapabilities {
+            can_limit_frames: *self.limits_frames.lock().unwrap(),
+            ..StackerCapabilities::default()
+        }
     }
 
     async fn start_stacking(&self, settings: &StackSettings) -> Result<(), ScopinatorError> {
+        if settings.exposure.is_some() && *self.refuse_exposure.lock().unwrap() {
+            return Err(ScopinatorError::NotSupported("sub-exposure".into()));
+        }
         self.started.lock().unwrap().push(settings.clone());
         Ok(())
     }
