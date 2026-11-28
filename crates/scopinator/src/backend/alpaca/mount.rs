@@ -304,6 +304,17 @@ impl Mount for AlpacaMount {
     /// (`AxisRates`). A mount can offer its rates in separate ranges, say 0
     /// to 6.7 and 10 to 20 degrees per second; a speed that falls between
     /// two ranges is moved to the nearest rate the mount accepts.
+    ///
+    /// On an equatorial mount a positive Alpaca rate turns the primary axis
+    /// towards increasing hour angle, which is decreasing right ascension
+    /// (seen on the OmniSim simulator and on a Seestar S30). The rate is
+    /// sent with its sign reversed there, so that a positive `speed` means
+    /// increasing right ascension as it does for every backend. A mount
+    /// that does not say how it is aligned gets the rate as it is.
+    ///
+    /// The secondary axis is not corrected for the side of the pier: on a
+    /// German equatorial mount that has flipped, a positive speed may
+    /// decrease the declination.
     async fn move_axis(&self, mount_axis: MountAxis, speed: f64) -> Result<(), ScopinatorError> {
         if !(-1.0..=1.0).contains(&speed) {
             return Err(ScopinatorError::InvalidArgument(format!(
@@ -314,6 +325,14 @@ impl Mount for AlpacaMount {
         let rate = rate_for(speed, &self.profile().axis_rates[slot]).ok_or_else(|| {
             ScopinatorError::NotSupported(format!("moving the {mount_axis:?} axis"))
         })?;
+        // Asked each time: a mount can be switched between the two.
+        let equatorial = rate != 0.0
+            && alpaca_axis == TelescopeAxis::Primary
+            && matches!(
+                optional(self.scope.alignment_mode().await)?,
+                Some(AlpacaAlignment::Polar | AlpacaAlignment::GermanPolar)
+            );
+        let rate = if equatorial { -rate } else { rate };
         self.scope
             .move_axis(alpaca_axis, rate)
             .await

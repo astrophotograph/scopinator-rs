@@ -11,6 +11,15 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
   one stage at a time (slew, sync, tracking, axis moves, guide pulse, abort, camera options,
   park), with the backend's events printed. `seestar_verify` has a `view` stage.
 
+### Fixed
+
+- `Mount::move_axis` on an equatorial Alpaca mount moved the primary axis the wrong way: a
+  positive speed decreased the right ascension, where the trait says it increases it. A
+  positive Alpaca rate turns that axis towards increasing hour angle, so the rate is now sent
+  with its sign reversed on a mount aligned `Polar` or `GermanPolar`. Alt-az mounts, and mounts
+  that do not report their alignment, are driven as before. **Code that had compensated for
+  the wrong direction needs its sign turned back.**
+
 ### Verified
 
 - More of the Alpaca backend on a Seestar S30: tracking, axis moves, guide pulses, abort, gain,

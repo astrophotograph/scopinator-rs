@@ -221,6 +221,21 @@ async fn the_mount_slews_syncs_moves_and_parks() {
         after.dec.as_degrees()
     );
 
+    // A positive speed on the primary axis increases the right ascension.
+    let before = mount.get_coordinates().await.unwrap();
+    mount.move_axis(MountAxis::Primary, 0.25).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    mount.stop_motion().await.unwrap();
+    wait_for_slew(mount.as_ref(), patient()).await.unwrap();
+    let after = mount.get_coordinates().await.unwrap();
+    let change = (after.ra.as_hours() - before.ra.as_hours() + 36.0) % 24.0 - 12.0;
+    assert!(
+        change > 0.01,
+        "right ascension went from {} to {} h",
+        before.ra.as_hours(),
+        after.ra.as_hours()
+    );
+
     // Site and clock.
     let site = mount.get_site().await.unwrap();
     println!("site: {site:?}");

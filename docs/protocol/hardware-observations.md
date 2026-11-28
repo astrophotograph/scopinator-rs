@@ -456,7 +456,9 @@ frames to check the pointing, until cloud came over:
 - `MoveAxis` at a fifth of the fastest rate moved about 3.5 degrees in 3.5 s on each axis.
   While an axis moves `Slewing` is true and tracking off, so the poller reports a slew. A
   **positive rate on the primary axis decreased the right ascension** (by 0.30 h); a positive
-  rate on the secondary increased the declination.
+  rate on the secondary increased the declination. The OmniSim simulator does the same, so the
+  Alpaca adapter now reverses the primary rate on an equatorial mount; with that, a positive
+  `move_axis` speed increased the right ascension by 0.27 h on the S30.
 - `PulseGuide` north for one second: declination +80 arcseconds.
 - `AbortSlew` three seconds into a ten-degree slew: accepted, `Slewing` false at once, but the
   mount already reported the slew's destination, so whether it stopped short is not known.

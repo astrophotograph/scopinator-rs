@@ -290,13 +290,15 @@ async fn axis_speed_is_a_fraction_of_the_fastest_rate_the_axis_offers() {
     let fake = FakeAlpaca::start().await;
     let mount = connected(&fake).await;
 
-    // The fake offers up to 4 degrees per second.
+    // The fake offers up to 4 degrees per second. It is a German
+    // equatorial mount, where a positive Alpaca rate on the primary axis
+    // decreases the right ascension: the sign is turned round.
     mount.move_axis(MountAxis::Primary, 0.5).await.unwrap();
     mount.move_axis(MountAxis::Secondary, -1.0).await.unwrap();
     let moves = fake.puts(&key("moveaxis"));
     assert_eq!(
         (moves[0]["Axis"].as_str(), number(&moves[0], "Rate")),
-        ("0", 2.0)
+        ("0", -2.0)
     );
     assert_eq!(
         (moves[1]["Axis"].as_str(), number(&moves[1], "Rate")),
@@ -321,6 +323,23 @@ async fn axis_speed_is_a_fraction_of_the_fastest_rate_the_axis_offers() {
         "{err:?}"
     );
     assert_eq!(fake.puts(&key("moveaxis")).len(), 4);
+}
+
+#[tokio::test]
+async fn a_positive_primary_speed_is_sent_as_it_is_to_an_alt_az_mount() {
+    let fake = FakeAlpaca::start().await;
+    let mount = connected(&fake).await;
+
+    // Azimuth increases with the axis: nothing to turn round.
+    fake.set(&key("alignmentmode"), json!(0));
+    mount.move_axis(MountAxis::Primary, 0.5).await.unwrap();
+    // Nor for a mount that does not say how it is aligned.
+    fake.not_implemented(&key("alignmentmode"));
+    mount.move_axis(MountAxis::Primary, -0.25).await.unwrap();
+
+    let moves = fake.puts(&key("moveaxis"));
+    assert_eq!(number(&moves[0], "Rate"), 2.0);
+    assert_eq!(number(&moves[1], "Rate"), -1.0);
 }
 
 #[tokio::test]
