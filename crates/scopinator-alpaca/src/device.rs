@@ -37,6 +37,19 @@ impl Endpoint {
         Ok(serde_json::from_value(value)?)
     }
 
+    /// GET a property that takes parameters and read its `Value` as `T`.
+    pub(crate) async fn get_with<T: DeserializeOwned>(
+        &self,
+        property: &str,
+        params: &[(&str, String)],
+    ) -> Result<T, AlpacaError> {
+        let value = self
+            .client
+            .get_property_with(self.device_type, self.device_number, property, params)
+            .await?;
+        Ok(serde_json::from_value(value)?)
+    }
+
     /// PUT a property or call a method.
     pub(crate) async fn put(
         &self,

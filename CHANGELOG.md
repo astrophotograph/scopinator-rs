@@ -5,6 +5,16 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+### Added
+
+- Alpaca `switch` devices. `scopinator-alpaca` has `AlpacaSwitch` (the switches of one device
+  by id: name, description, value, range, step, whether it can be written) and
+  `AlpacaClient::get_property_with` for properties that take parameters. An `AlpacaBackend`
+  connects every switch device on the server: `Backend::switch()` is the lowest-numbered one,
+  as an `AlpacaSwitchDevice`, and `AlpacaBackend::alpaca_switches()` has them all. What each
+  switch is gets read once, on connecting; a switch that gives no range counts as on/off.
+  Tested against the OmniSim simulator.
+
 ## [0.8.1] - 2026-11-27
 
 ### Fixed

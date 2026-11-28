@@ -54,6 +54,19 @@ impl AlpacaClient {
         device_number: u32,
         property: &str,
     ) -> Result<serde_json::Value, AlpacaError> {
+        self.get_property_with(device_type, device_number, property, &[])
+            .await
+    }
+
+    /// GET a device property that takes parameters, such as the `Id` of
+    /// one switch.
+    pub async fn get_property_with(
+        &self,
+        device_type: &str,
+        device_number: u32,
+        property: &str,
+        params: &[(&str, String)],
+    ) -> Result<serde_json::Value, AlpacaError> {
         let url = format!(
             "{}/api/v1/{device_type}/{device_number}/{property}",
             self.base_url
@@ -62,13 +75,18 @@ impl AlpacaClient {
 
         trace!(url = %url, "alpaca GET");
 
+        let mut query = vec![
+            ("ClientID", CLIENT_ID.to_string()),
+            ("ClientTransactionID", tid.to_string()),
+        ];
+        for (k, v) in params {
+            query.push((k, v.clone()));
+        }
+
         let resp = self
             .http
             .get(&url)
-            .query(&[
-                ("ClientID", CLIENT_ID.to_string()),
-                ("ClientTransactionID", tid.to_string()),
-            ])
+            .query(&query)
             .send()
             .await?
             .json::<AlpacaResponse>()

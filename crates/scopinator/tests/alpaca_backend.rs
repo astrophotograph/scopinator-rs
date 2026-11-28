@@ -367,3 +367,146 @@ async fn the_device_manager_adds_and_connects_to_an_alpaca_server() {
     assert_eq!(manager.list_backends(), [id]);
     manager.disconnect_all().await.unwrap();
 }
+
+/// A power box as device 3: a dew heater (0 to 100), a 12 V port (on/off,
+/// described by neither range nor step) and a voltage sensor.
+fn power_box(fake: &FakeAlpaca) {
+    fake.set_all(
+        "switch/3",
+        json!({"connected": true, "name": "Power Box", "driverinfo": "fake", "maxswitch": 3}),
+    );
+    let one = |id: u32, values: Value| {
+        for (property, value) in values.as_object().unwrap() {
+            fake.set(&format!("switch/3/{property}?id={id}"), value.clone());
+        }
+    };
+    one(
+        0,
+        json!({"getswitchname": "Dew heater", "getswitchdescription": "Channel A",
+            "minswitchvalue": 0.0, "maxswitchvalue": 100.0, "switchstep": 1.0, "canwrite": true,
+            "getswitchvalue": 0.0}),
+    );
+    one(
+        1,
+        json!({"getswitchname": "12V out", "getswitchdescription": "", "canwrite": true,
+            "getswitch": true}),
+    );
+    for property in [
+        "minswitchvalue",
+        "maxswitchvalue",
+        "switchstep",
+        "getswitchvalue",
+    ] {
+        fake.not_implemented(&format!("switch/3/{property}?id=1"));
+    }
+    one(
+        2,
+        json!({"getswitchname": "Input voltage", "getswitchdescription": "Volts",
+            "minswitchvalue": 0.0, "maxswitchvalue": 15.0, "switchstep": 0.1, "canwrite": false,
+            "getswitchvalue": 12.3}),
+    );
+    fake.on_put("switch/3/setswitchvalue", |values, form| {
+        values.insert(
+            format!("switch/3/getswitchvalue?id={}", form["Id"]),
+            json!(form["Value"].parse::<f64>().unwrap()),
+        );
+    });
+}
+
+async fn with_power_box() -> FakeAlpaca {
+    let fake = FakeAlpaca::start().await;
+    fake.set_devices(json!([
+        {"DeviceName": "Power Box", "DeviceType": "Switch", "DeviceNumber": 3, "UniqueID": "s3"},
+    ]));
+    power_box(&fake);
+    fake
+}
+
+#[tokio::test]
+async fn a_switch_device_is_handed_out_with_what_each_switch_is() {
+    let fake = with_power_box().await;
+    let (backend, _events) = connect(&fake, fast()).await;
+    let switch = backend.switch().expect("the server has a switch device");
+    assert!(switch.id().as_str().ends_with(":switch:3"));
+    assert_eq!(switch.info().name, "Power Box");
+    assert_eq!(backend.alpaca_switches().len(), 1);
+    assert!(backend.mount().is_none());
+
+    let all = switch.switches().await.unwrap();
+    assert_eq!(all.len(), 3);
+    let heater = &all[0];
+    assert_eq!((heater.index, heater.name.as_str()), (0, "Dew heater"));
+    assert_eq!(heater.description.as_deref(), Some("Channel A"));
+    assert_eq!((heater.min, heater.max, heater.step), (0.0, 100.0, 1.0));
+    assert!(heater.writable);
+    // One that gives no range is on/off, and an empty description is none.
+    let port = &all[1];
+    assert_eq!((port.min, port.max, port.step), (0.0, 1.0, 1.0));
+    assert_eq!(port.description, None);
+    assert!(!all[2].writable);
+    // Read once, when the device was connected.
+    let reads = fake.request_count();
+    switch.switches().await.unwrap();
+    switch.switch_info(2).await.unwrap();
+    assert_eq!(fake.request_count(), reads);
+    backend.disconnect().await.unwrap();
+    assert_eq!(
+        fake.puts("switch/3/connected").last().unwrap()["Connected"],
+        "False"
+    );
+}
+
+#[tokio::test]
+async fn switches_are_read_and_set_within_their_ranges() {
+    let fake = with_power_box().await;
+    let (backend, _events) = connect(&fake, fast()).await;
+    let switch = backend.switch().unwrap();
+
+    assert_eq!(switch.get(0).await.unwrap(), 0.0);
+    assert!(!switch.get_bool(0).await.unwrap());
+    switch.set(0, 40.0).await.unwrap();
+    let sent = fake.puts("switch/3/setswitchvalue");
+    assert_eq!(
+        (sent[0]["Id"].as_str(), sent[0]["Value"].as_str()),
+        ("0", "40")
+    );
+    assert_eq!(switch.get(0).await.unwrap(), 40.0);
+    // Fully on is the top of the range.
+    switch.set_bool(0, true).await.unwrap();
+    assert_eq!(switch.get(0).await.unwrap(), 100.0);
+    assert!(switch.get_bool(0).await.unwrap());
+
+    // A switch with only the on/off call reads as the end of its range.
+    assert_eq!(switch.get(1).await.unwrap(), 1.0);
+    assert_eq!(switch.get(2).await.unwrap(), 12.3);
+
+    // Refused here, without asking the device.
+    let puts = fake.puts("switch/3/setswitchvalue").len();
+    assert!(matches!(
+        switch.set(0, 101.0).await,
+        Err(ScopinatorError::OutOfRange(_))
+    ));
+    assert!(matches!(
+        switch.set(2, 5.0).await,
+        Err(ScopinatorError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        switch.set(7, 1.0).await,
+        Err(ScopinatorError::OutOfRange(_))
+    ));
+    assert!(matches!(
+        switch.get(7).await,
+        Err(ScopinatorError::OutOfRange(_))
+    ));
+    assert_eq!(fake.puts("switch/3/setswitchvalue").len(), puts);
+    backend.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_server_without_a_switch_device_has_no_switch() {
+    let fake = observatory().await;
+    let (backend, _events) = connect(&fake, fast()).await;
+    assert!(backend.switch().is_none());
+    assert!(backend.alpaca_switches().is_empty());
+    backend.disconnect().await.unwrap();
+}

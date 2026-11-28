@@ -376,6 +376,48 @@ async fn the_focuser_and_filter_wheel_move_and_report_it() {
 
 #[tokio::test]
 #[ignore = "needs a simulator at ALPACA_SIM_URL; run tools/alpaca-sim.sh"]
+async fn the_switches_are_listed_read_and_set() {
+    let (backend, _events) = connect().await;
+    let switch = backend.switch().expect("the simulator has a switch device");
+    let all = switch.switches().await.unwrap();
+    assert!(!all.is_empty());
+    for info in &all {
+        let value = switch.get(info.index).await.unwrap();
+        println!("{info:?} = {value}");
+        assert!(info.accepts(value), "{info:?} reads {value}");
+    }
+
+    // Set the first writable switch to the other end of its range and back.
+    let info = all
+        .iter()
+        .find(|info| info.writable)
+        .expect("a writable switch");
+    let before = switch.get(info.index).await.unwrap();
+    let other = if info.is_on(before) {
+        info.min
+    } else {
+        info.max
+    };
+    switch.set(info.index, other).await.unwrap();
+    assert_eq!(switch.get(info.index).await.unwrap(), other);
+    assert_eq!(
+        switch.get_bool(info.index).await.unwrap(),
+        info.is_on(other)
+    );
+    switch.set(info.index, before).await.unwrap();
+    assert_eq!(switch.get(info.index).await.unwrap(), before);
+
+    // Outside the range, and a switch that is not there, are refused.
+    assert!(switch.set(info.index, info.max + 1.0).await.is_err());
+    assert!(switch.get(all.len() as u32).await.is_err());
+    if let Some(sensor) = all.iter().find(|info| !info.writable) {
+        assert!(switch.set(sensor.index, sensor.min).await.is_err());
+    }
+    backend.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a simulator at ALPACA_SIM_URL; run tools/alpaca-sim.sh"]
 async fn connecting_by_address_through_the_device_manager_works() {
     let address = simulator();
     let manager = scopinator::DeviceManager::new();

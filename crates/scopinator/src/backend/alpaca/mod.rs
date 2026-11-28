@@ -1,4 +1,4 @@
-//! ASCOM Alpaca: any mount, camera, focuser or filter wheel behind an
+//! ASCOM Alpaca: any mount, camera, focuser, filter wheel or switch behind an
 //! Alpaca server, which covers most computer-controlled astronomy gear
 //! (natively, or through ASCOM Remote in front of an ASCOM driver).
 
@@ -7,23 +7,25 @@ mod filter_wheel;
 mod focuser;
 mod mount;
 mod poller;
+mod switch;
 
 pub use camera::AlpacaCameraDevice;
 pub use filter_wheel::AlpacaFilterWheelDevice;
 pub use focuser::AlpacaFocuserDevice;
 pub use mount::AlpacaMount;
+pub use switch::AlpacaSwitchDevice;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
 use scopinator_alpaca::{
-    AlpacaCamera, AlpacaClient, AlpacaFilterWheel, AlpacaFocuser, AlpacaTelescope,
+    AlpacaCamera, AlpacaClient, AlpacaFilterWheel, AlpacaFocuser, AlpacaSwitch, AlpacaTelescope,
 };
 use scopinator_types::DeviceId;
 
 use crate::backend::Backend;
-use crate::device::{Camera, Device, FilterWheel, Focuser, Mount};
+use crate::device::{Camera, Device, FilterWheel, Focuser, Mount, Switch};
 use crate::event::UnifiedEventBus;
 
 /// How to use an Alpaca server.
@@ -57,8 +59,9 @@ impl Default for AlpacaConfig {
     }
 }
 
-/// One Alpaca server as an instrument: its mount, cameras, focuser and
-/// filter wheel. Other kinds of Alpaca device on the server are left alone.
+/// One Alpaca server as an instrument: its mount, cameras, focuser, filter
+/// wheel and switch devices. Other kinds of Alpaca device on the server are
+/// left alone.
 pub struct AlpacaBackend {
     id: DeviceId,
     client: Arc<AlpacaClient>,
@@ -67,6 +70,8 @@ pub struct AlpacaBackend {
     cameras: Vec<Arc<AlpacaCameraDevice>>,
     focuser: Option<Arc<AlpacaFocuserDevice>>,
     filter_wheel: Option<Arc<AlpacaFilterWheelDevice>>,
+    /// Every `switch` device on the server, by device number.
+    switches: Vec<Arc<AlpacaSwitchDevice>>,
     poller: tokio::task::JoinHandle<()>,
 }
 
@@ -117,7 +122,7 @@ impl AlpacaBackend {
         let client = Arc::new(AlpacaClient::new(host, port));
         let devices = client.get_configured_devices().await.map_err(neutral)?;
         for device in &devices {
-            if !["telescope", "camera", "focuser", "filterwheel"]
+            if !["telescope", "camera", "focuser", "filterwheel", "switch"]
                 .iter()
                 .any(|kind| device.device_type.eq_ignore_ascii_case(kind))
             {
@@ -189,6 +194,14 @@ impl AlpacaBackend {
             None => None,
         };
 
+        let mut switches = Vec::new();
+        for number in numbers_of(&devices, "switch") {
+            let switch =
+                AlpacaSwitchDevice::new(AlpacaSwitch::new(Arc::clone(&client), number), &id);
+            switch.connect().await?;
+            switches.push(Arc::new(switch));
+        }
+
         let poller = tokio::spawn(poller::run(
             poller::Watched {
                 backend_id: id.clone(),
@@ -209,6 +222,7 @@ impl AlpacaBackend {
             cameras,
             focuser,
             filter_wheel,
+            switches,
             poller,
         })
     }
@@ -232,6 +246,12 @@ impl AlpacaBackend {
     /// The cameras with their Alpaca-specific side.
     pub fn alpaca_cameras(&self) -> &[Arc<AlpacaCameraDevice>] {
         &self.cameras
+    }
+
+    /// Every `switch` device on the server, lowest device number first.
+    /// [`Backend::switch`] hands out the first.
+    pub fn alpaca_switches(&self) -> &[Arc<AlpacaSwitchDevice>] {
+        &self.switches
     }
 }
 
@@ -275,6 +295,15 @@ impl Backend for AlpacaBackend {
             .map(|wheel| wheel as Arc<dyn FilterWheel>)
     }
 
+    /// The lowest-numbered `switch` device. A server with several has the
+    /// rest in [`AlpacaBackend::alpaca_switches`]. Alpaca has no events, and
+    /// switches are not polled for any.
+    fn switch(&self) -> Option<Arc<dyn Switch>> {
+        self.switches
+            .first()
+            .map(|switch| Arc::clone(switch) as Arc<dyn Switch>)
+    }
+
     /// Stop reporting events and clear `Connected` on every device. All of
     /// them are attempted; the first error, if any, is returned.
     async fn disconnect(&self) -> Result<(), ScopinatorError> {
@@ -296,6 +325,9 @@ impl Backend for AlpacaBackend {
         }
         if let Some(wheel) = &self.filter_wheel {
             note(wheel.disconnect().await);
+        }
+        for switch in &self.switches {
+            note(switch.disconnect().await);
         }
         first_error.map_or(Ok(()), Err)
     }

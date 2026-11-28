@@ -229,8 +229,22 @@ fn respond(request: &Request, state: &Arc<Mutex<State>>) -> (&'static str, &'sta
     let Some(key) = request.path.strip_prefix("/api/v1/") else {
         return ("404 Not Found", "text/plain", b"no such path".to_vec());
     };
-    let key = key.to_ascii_lowercase();
+    let mut key = key.to_ascii_lowercase();
     let is_put = request.method == "PUT";
+    // A property of one switch: `switch/0/getswitchvalue?id=1`, when the
+    // test has set that.
+    if !is_put
+        && let Some(id) = request
+            .query
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("id"))
+            .map(|(_, id)| id)
+    {
+        let of_one = format!("{key}?id={id}");
+        if state.values.contains_key(&of_one) || state.errors.contains_key(&of_one) {
+            key = of_one;
+        }
+    }
     if is_put {
         state.puts.push((key.clone(), request.form.clone()));
     } else {
