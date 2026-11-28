@@ -25,6 +25,39 @@ pub enum IndiError {
     #[error("BLOB error: {0}")]
     Blob(String),
 
+    /// The property has no member of that name.
+    #[error("{device}.{name} has no member {member}")]
+    MemberNotFound {
+        device: String,
+        name: String,
+        member: String,
+    },
+
+    /// The property can only be read.
+    #[error("{device}.{name} is read-only")]
+    ReadOnly { device: String, name: String },
+
+    /// The property is not of the kind the request is for (a number written
+    /// to a switch, say).
+    #[error("{device}.{name} is a {actual} property, not a {wanted} one")]
+    WrongKind {
+        device: String,
+        name: String,
+        actual: &'static str,
+        wanted: &'static str,
+    },
+
+    /// A number outside the limits its member was defined with.
+    #[error("{device}.{name}.{member} takes {min} to {max}, not {value}")]
+    OutOfRange {
+        device: String,
+        name: String,
+        member: String,
+        value: f64,
+        min: f64,
+        max: f64,
+    },
+
     /// Something the server sent is not the INDI it should be.
     #[error("malformed INDI message: {0}")]
     Malformed(String),
