@@ -391,6 +391,33 @@ known). The sky was mostly clear.
 - `get_solve_result` returns the same `result` object with `"state": "complete"`.
 - Park from the target: 52 s.
 
+### The Seestar's own Alpaca server (2026-11-27)
+
+The S30 (9.75) has an ASCOM Alpaca server, off until it is switched on in the app (said to send
+`set_setting {"alpaca_enable": true}`; that was not sent from here). With it off, TCP 32323 was
+closed and an `alpacadiscovery1` datagram to UDP 32227 got no answer. Switched on, port 32323
+answered: `ManufacturerVersion` `1.3.1-1`, API version 1, and five devices, each number 0:
+Camera ("Telephoto Camera"), Focuser, FilterWheel, Telescope and Switch.
+
+Read through `AlpacaBackend` (`examples/alpaca_info.rs`), with the telescope parked:
+
+- **Telescope**: can slew, sync, park, unpark, track, move an axis, find home, pulse guide, set
+  site and time; cannot slew in alt-az. `EquatorialSystem` is topocentric (the equinox of date,
+  as the native protocol works). `AlignmentMode` polar (it was in equatorial mode). `AtPark`
+  **false** and `AtHome` true while the native state said `mount.close: true`. `SideOfPier` is
+  not implemented.
+- **Camera**: 1080x1920, 2.9 micron pixels, GRBG, gain 0 to 400, exposures 0.00003 to 2000 s,
+  no binning, no cooler, a sensor temperature. A one-second exposure came back in 5.6 s as
+  1080x1920 16-bit Bayer.
+- **Focuser**: absolute, 0 to 2600, with a temperature. A 20-step move and back: 1.6 s and
+  0.8 s.
+- **FilterWheel**: names `Dark`, `IR`, `LP` (the native names are `dark`, `IRCUT`, `LP`),
+  focus offsets, position 1. One position on and back: about 2 s each.
+- **Switch**: named "Alpaca Switch Simulator" by its driver, with one switch, `Dew heater`, on
+  or off. Set to 1 and back to 0, reading back each time.
+
+The mount was not moved through Alpaca.
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused

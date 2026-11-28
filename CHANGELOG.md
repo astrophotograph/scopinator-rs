@@ -14,6 +14,14 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
   as an `AlpacaSwitchDevice`, and `AlpacaBackend::alpaca_switches()` has them all. What each
   switch is gets read once, on connecting; a switch that gives no range counts as on/off.
   Tested against the OmniSim simulator.
+- `examples/alpaca_info.rs` prints what an Alpaca server has through the neutral traits, and
+  with `--exercise` uses everything but the mount.
+
+### Verified
+
+- The Alpaca backend against real hardware for the first time: a Seestar S30's built-in Alpaca
+  server (1.3.1-1). Camera, focuser, filter wheel and switch were read and used; the mount was
+  read only. See `docs/protocol/hardware-observations.md`.
 
 ## [0.8.1] - 2026-11-27
 
