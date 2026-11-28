@@ -250,11 +250,9 @@ async fn seestar_only_requests_say_so_on_alpaca() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_that_is_not_there_is_a_clear_failure() {
-    // A port nothing listens on.
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
+    // A port nothing listens on. Not one the system has just handed out
+    // and taken back: a test running beside this one can be given it.
+    let port = 1;
     let output = scopinator(&["status", "--host", &format!("alpaca://127.0.0.1:{port}")]).await;
     assert!(!output.status.success());
     assert!(
