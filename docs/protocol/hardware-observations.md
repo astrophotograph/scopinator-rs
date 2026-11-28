@@ -416,7 +416,21 @@ Read through `AlpacaBackend` (`examples/alpaca_info.rs`), with the telescope par
 - **Switch**: named "Alpaca Switch Simulator" by its driver, with one switch, `Dew heater`, on
   or off. Set to 1 and back to 0, reading back each time.
 
-The mount was not moved through Alpaca.
+Then the mount, through `AlpacaBackend` (`alpaca_info --mount`), in equatorial mode:
+
+- `Unpark`: accepted, and the mount read idle at once, still folded.
+- `Tracking = true` straight after: **error 1279 (0x4FF), "SET_SCOPE_SET_TRACK_STATE fail: below
+  horizon"**. Tracking cannot be switched on from the park position.
+- `SlewToCoordinatesAsync` to Alpheratz (sent in the equinox of date, which is what the device
+  says it works in): `Slewing` true for 46 s, tracking came on by itself just before the end,
+  then `Slewing` false and the mount tracking. It reported 0h 10m 31.0s +29d 14' 23.0", 0.16
+  degrees from where it was sent.
+- **An Alpaca slew is not centred by plate solving.** A one-second frame there showed a star
+  field without Alpheratz in it: the pointing was off by more than the half-degree or so that
+  would keep the star in the 1.2 by 2.1 degree frame. The native goto, which solves and
+  re-centres, had put the same star 25 pixels from the centre an hour earlier.
+- `Park`: 50 s, then `AtPark` true and `AtHome` true. (`AtPark` had read false before this,
+  with the telescope folded by the native park.)
 
 ### Wide camera
 

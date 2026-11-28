@@ -10,6 +10,10 @@
 //! steps and back, and takes one one-second exposure. The mount is not
 //! moved.
 //!
+//! With `--mount RA_HOURS DEC_DEGREES` (J2000) it **moves the telescope**:
+//! unpark, tracking on, slew there, one exposure written to
+//! `alpaca-frame.bin` in the current directory, then park.
+//!
 //! The port defaults to 11111. A Seestar's own Alpaca server, once switched
 //! on in the app, is on 32323.
 
@@ -18,9 +22,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use scopinator::backend::alpaca::{AlpacaBackend, AlpacaConfig};
-use scopinator::types::ExposureSettings;
+use scopinator::types::{Coordinates, Epoch, ExposureSettings};
 use scopinator::{
-    Backend, UnifiedEventBus, WaitOptions, wait_for_filter_wheel, wait_for_focuser, wait_for_image,
+    Backend, Mount, UnifiedEventBus, WaitOptions, wait_for_filter_wheel, wait_for_focuser,
+    wait_for_image, wait_for_park, wait_for_slew,
 };
 
 fn show<T: std::fmt::Debug, E: std::fmt::Display>(result: Result<T, E>) -> String {
@@ -32,6 +37,134 @@ fn show<T: std::fmt::Debug, E: std::fmt::Display>(result: Result<T, E>) -> Strin
 
 fn patient() -> WaitOptions {
     WaitOptions::with_timeout(Duration::from_secs(60))
+}
+
+fn separation_deg(a: &Coordinates, b: &Coordinates) -> f64 {
+    let (ra1, dec1) = (
+        a.ra.as_degrees().to_radians(),
+        a.dec.as_degrees().to_radians(),
+    );
+    let (ra2, dec2) = (
+        b.ra.as_degrees().to_radians(),
+        b.dec.as_degrees().to_radians(),
+    );
+    let cos = dec1.sin() * dec2.sin() + dec1.cos() * dec2.cos() * (ra1 - ra2).cos();
+    cos.clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+/// Print the mount's state whenever it changes, until `done` or `seconds`
+/// have passed.
+async fn watch(mount: &dyn Mount, began: Instant, seconds: u64, done: impl Fn(&str) -> bool) {
+    let mut last = String::new();
+    while began.elapsed() < Duration::from_secs(seconds) {
+        let line = format!(
+            "slewing={} parked={} tracking={} state={}",
+            show(mount.is_slewing().await),
+            show(mount.is_parked().await),
+            show(mount.is_tracking().await),
+            show(mount.get_mount_status().await.map(|s| s.slew_state)),
+        );
+        if line != last {
+            println!("  [{:6.1}s] {line}", began.elapsed().as_secs_f64());
+            last.clone_from(&line);
+        }
+        if done(&line) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    println!("  watch: timed out after {seconds}s");
+}
+
+/// Unpark, slew to `target` (J2000), take a frame there, and park.
+async fn move_mount(backend: &AlpacaBackend, target: Coordinates) {
+    let Some(mount) = backend.mount() else {
+        println!("mount: none to move");
+        return;
+    };
+    let began = Instant::now();
+    let jnow = target.to_epoch(Epoch::JNow, chrono::Utc::now());
+    println!("target: {target} (J2000), {jnow} (JNow)");
+    println!("unpark: {}", show(mount.unpark().await));
+    watch(mount.as_ref(), began, 60, |line| {
+        line.contains("slewing=false")
+    })
+    .await;
+    println!(
+        "set_tracking(true): {}",
+        show(mount.set_tracking(true).await)
+    );
+    println!(
+        "slew_to_coordinates: {}",
+        show(mount.slew_to_coordinates(&target).await)
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    watch(mount.as_ref(), began, 240, |line| {
+        line.contains("slewing=false")
+    })
+    .await;
+    println!(
+        "wait_for_slew: {}",
+        show(
+            wait_for_slew(
+                mount.as_ref(),
+                WaitOptions::with_timeout(Duration::from_secs(60))
+            )
+            .await
+        )
+    );
+    match mount.get_coordinates().await {
+        Ok(at) => println!(
+            "[{:6.1}s] mount reports {at} ({:?}): {:.4} deg from the JNow position, {:.4} from the J2000 numbers",
+            began.elapsed().as_secs_f64(),
+            at.epoch,
+            separation_deg(&at, &jnow),
+            separation_deg(&at, &target),
+        ),
+        Err(e) => println!("get_coordinates: ERR {e}"),
+    }
+    println!("alt/az: {}", show(mount.get_alt_az().await));
+    println!("tracking: {}", show(mount.is_tracking().await));
+
+    for camera in backend.cameras().await.unwrap_or_default() {
+        let image = async {
+            camera.start_exposure(&ExposureSettings::default()).await?;
+            wait_for_image(camera.as_ref(), patient()).await?;
+            camera.get_image().await
+        }
+        .await;
+        match image {
+            Ok(image) => {
+                let written = std::fs::write("alpaca-frame.bin", &image.data);
+                println!(
+                    "frame: {}x{} {:?}, {} bytes, written: {written:?}",
+                    image.width,
+                    image.height,
+                    image.format,
+                    image.data.len()
+                );
+            }
+            Err(e) => println!("frame: ERR {e}"),
+        }
+    }
+
+    println!("park: {}", show(mount.park().await));
+    watch(mount.as_ref(), began, 150, |line| {
+        line.contains("slewing=false") && line.contains("parked=true")
+    })
+    .await;
+    println!(
+        "wait_for_park: {}",
+        show(
+            wait_for_park(
+                mount.as_ref(),
+                WaitOptions::with_timeout(Duration::from_secs(30))
+            )
+            .await
+        )
+    );
+    println!("at home: {}", show(mount.is_at_home().await));
+    println!("coordinates after: {}", show(mount.get_coordinates().await));
 }
 
 /// Use everything but the mount, and put it back.
@@ -139,9 +272,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rest: Vec<String> = args.collect();
     let exercise = rest.iter().any(|arg| arg == "--exercise");
     let port: u16 = rest
-        .iter()
-        .find(|arg| !arg.starts_with("--"))
+        .first()
+        .filter(|arg| !arg.starts_with("--"))
         .map_or(Ok(11111), |port| port.parse())?;
+    let target = match rest.iter().position(|arg| arg == "--mount") {
+        Some(at) => {
+            let number = |offset: usize| -> Result<f64, Box<dyn std::error::Error>> {
+                Ok(rest
+                    .get(at + offset)
+                    .ok_or("--mount RA_HOURS DEC_DEGREES")?
+                    .parse()?)
+            };
+            Some(Coordinates::from_hours(number(1)?, number(2)?)?)
+        }
+        None => None,
+    };
 
     let bus = Arc::new(UnifiedEventBus::new(64));
     let backend = AlpacaBackend::connect(host, port, AlpacaConfig::default(), bus).await?;
@@ -203,6 +348,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if exercise {
         exercise_devices(&backend).await;
+    }
+
+    if let Some(target) = target {
+        move_mount(&backend, target).await;
     }
 
     backend.disconnect().await?;

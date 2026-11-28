@@ -15,13 +15,16 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
   switch is gets read once, on connecting; a switch that gives no range counts as on/off.
   Tested against the OmniSim simulator.
 - `examples/alpaca_info.rs` prints what an Alpaca server has through the neutral traits, and
-  with `--exercise` uses everything but the mount.
+  with `--exercise` uses everything but the mount; `--mount RA DEC` unparks, slews, takes a
+  frame and parks.
 
 ### Verified
 
 - The Alpaca backend against real hardware for the first time: a Seestar S30's built-in Alpaca
-  server (1.3.1-1). Camera, focuser, filter wheel and switch were read and used; the mount was
-  read only. See `docs/protocol/hardware-observations.md`.
+  server (1.3.1-1). Camera, focuser, filter wheel and switch were read and used, and the mount
+  unparked, slewed and parked. A slew through Alpaca is not centred by plate solving, so it
+  lands less exactly than a goto through the Seestar backend. See
+  `docs/protocol/hardware-observations.md`.
 
 ## [0.8.1] - 2026-11-27
 
