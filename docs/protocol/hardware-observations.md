@@ -441,12 +441,24 @@ frames to check the pointing, until cloud came over:
   +44.113783 against a target of 2.2786 h +44.1242: 0.011 degrees off.
 - **An open-loop slew from park is about two degrees off.** The native goto's first solve after
   slewing from park was 2.4 degrees from its target, and after a 30 degree slew 2.2 degrees;
-  it then re-centres. An Alpaca slew stops at that first position, and a `start_solve` by hand
-  there failed (code 251) three times.
-- Returning to Almach by Alpaca after short slews away left it 50 to 420 pixels (0.06 to 0.47
-  degrees) from the centre, almost all of it in right ascension and more when arriving from
-  the east; the mount reported itself within 0.004 degrees each time. Three frames, then cloud:
-  enough to say a slew back is not exact, not enough to say why.
+  it then re-centres. An Alpaca slew stops at that first position. A `start_solve` by hand
+  there failed (code 251) three times with the target behind a building, and worked two
+  degrees off the mount's believed position once the sky was clear.
+- **Sync works, and makes Alpaca slews accurate.** Later the same night, from park: an Alpaca
+  slew to Almach, solved natively at 1.912320 h +42.083875, 2.03 degrees from the target
+  (-2.00 in right ascension, -0.37 in declination). `SyncToCoordinates` with that position
+  (the mount then reported it), the same slew again, and the solve was 2.090490 h +42.470632:
+  0.028 degrees from the target.
+- **Returns after a sync**: away two to three degrees east, west, south, north, east, west and
+  back each time, solved after each return: 0.014, 0.022, 0.022, 0.042, 0.038 and 0.036
+  degrees from the target. Arriving from the east the right ascension was 0.009 and 0.016
+  degrees high, from the west 0.018 and 0.007 low; the declination error grew steadily from
+  0.010 to 0.036 degrees over the four minutes. The mount reported itself within 0.004
+  degrees throughout.
+- An earlier attempt at the same measurement, from frames, had Almach 50 to 420 pixels (0.06
+  to 0.47 degrees) from the centre after such returns. That was without a sync, cloud was
+  arriving, and the solver was by then returning a stale result, so it is not to be relied
+  on; the solved returns above are.
 - `Slewing` is true in the first read after `SlewToCoordinatesAsync` returns (0.3 s), and false
   about 3 s later for a two-degree slew. Each request takes about 0.3 to 0.5 s.
 - The poller's events arrived for all of it: `Unparked`, `SlewStarted`, `TrackingChanged`,
@@ -469,6 +481,20 @@ frames to check the pointing, until cloud came over:
 - The native solver went on returning one earlier result (`image_id` and `ra_dec` unchanged
   through six slews) once Alpaca exposures had been taken; the native live view was not giving
   it new frames. The two interfaces share one camera.
+
+### Client identity (2026-11-27)
+
+On the S30 (9.75), on a verified socket, with `guest_mode` false:
+
+- `set_setting {"cli_name": ...}`, `{"cli_uuid": ...}` and both together: each code 0,
+  `result: 0`. No `Client` event followed any of them.
+- `get_device_state {"keys": ["client"]}` returned `{}` before and after.
+- `get_phone_list` returned one entry per connected address, each
+  `{"ip": "...", "support_socks5": false}`, with no name or id in it.
+
+So the identity is accepted and, outside guest mode, visible nowhere. What it does in guest mode
+(the `Client` event, the master role) has not been tried: it needs the setting switched on and a
+second client address.
 
 ### Wide camera
 

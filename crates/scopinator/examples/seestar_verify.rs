@@ -32,6 +32,8 @@
 //! - `park`: `Mount::park` and wait for it.
 //! - `view`: start the live view where the telescope points and leave it
 //!   running. Does not move the mount.
+//! - `identity`: send a client name and id with `set_setting` and print what
+//!   comes back, with any `Client` events.
 //! - `park-eq`: park and switch the mount to equatorial mode
 //!   (`scope_park {"equ_mode": true}`), for a telescope on a wedge. On an
 //!   S30 (9.75) under cloud this parked and left the mode as it was.
@@ -228,7 +230,10 @@ async fn main() -> AnyResult<()> {
     tokio::spawn(async move {
         while let Ok(event) = events.recv().await {
             let text = format!("{event:?}");
-            if text.starts_with("AutoGoto") || text.starts_with("PlateSolve") {
+            if text.starts_with("AutoGoto")
+                || text.starts_with("PlateSolve")
+                || text.starts_with("Client")
+            {
                 let short: String = text.chars().take(400).collect();
                 say(start, format!("  event: {short}"));
             }
@@ -833,6 +838,68 @@ async fn main() -> AnyResult<()> {
                     start,
                     format!("view: {}", raw(&client, "get_view_state").await),
                 );
+            }
+            "identity" => {
+                // What the telescope does with a client's name and id.
+                let ask = |method: &'static str, params: serde_json::Value| {
+                    let client = Arc::clone(&client);
+                    async move {
+                        match client.send_raw(method, Some(params)).await {
+                            Ok(reply) => format!(
+                                "code {} {}",
+                                reply.code,
+                                serde_json::to_string(&reply.result).unwrap_or_default()
+                            ),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                };
+                use serde_json::json;
+                say(
+                    start,
+                    format!(
+                        "client before: {}",
+                        ask("get_device_state", json!({"keys": ["client"]})).await
+                    ),
+                );
+                for params in [
+                    json!({"cli_name": "scopinator-probe"}),
+                    json!({"cli_uuid": "5c0b1a7e-0000-4000-8000-000000000001"}),
+                    json!({"cli_uuid": "5c0b1a7e-0000-4000-8000-000000000001",
+                        "cli_name": "scopinator-probe"}),
+                ] {
+                    say(
+                        start,
+                        format!(
+                            "set_setting {params}: {}",
+                            ask("set_setting", params.clone()).await
+                        ),
+                    );
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                say(
+                    start,
+                    format!(
+                        "client after: {}",
+                        ask("get_device_state", json!({"keys": ["client"]})).await
+                    ),
+                );
+                say(
+                    start,
+                    format!("get_phone_list: {}", raw(&client, "get_phone_list").await),
+                );
+                let identity = scopinator_seestar::ClientIdentity::named("scopinator-probe")
+                    .with_uuid("5c0b1a7e-0000-4000-8000-000000000002");
+                let outcome = match client.set_identity(identity).await {
+                    Ok(()) => "accepted".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                };
+                say(start, format!("set_identity: {outcome}"));
+                let setting = raw(&client, "get_setting").await;
+                let guest = serde_json::from_str::<serde_json::Value>(&setting)
+                    .ok()
+                    .and_then(|v| v.get("guest_mode").cloned());
+                say(start, format!("get_setting guest_mode: {guest:?}"));
             }
             "park-eq" => {
                 // Park and put the mount in equatorial mode in one command.

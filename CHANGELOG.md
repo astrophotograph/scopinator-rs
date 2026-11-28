@@ -5,6 +5,21 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+### Added
+
+- `SeestarClient::set_identity` and `ClientIdentity`: tell the telescope this client's name and
+  id (`cli_name`, `cli_uuid`). It is sent at once and again whenever the control connection is
+  re-established, and `identity()` reads it back. A Seestar S30 on firmware 9.75 accepts it;
+  the 6.70 and 7.06 captures show it refused, which `set_identity` reports as an error. Guest
+  mode and the master role are not covered.
+- `seestar_verify` has an `identity` stage.
+
+### Verified
+
+- `sync_to_coordinates` over Alpaca on a Seestar S30: an Alpaca slew from park was 2.03 degrees
+  off; after a sync to the plate-solved position the same slew was 0.028 degrees off, and six
+  returns from a few degrees away stayed within 0.042 degrees.
+
 ## [0.8.3] - 2026-11-27
 
 ### Added

@@ -101,6 +101,14 @@ async fn watch(mount: &dyn Mount, start: Instant, seconds: u64, done: impl Fn(&s
 
 async fn position(mount: &dyn Mount, start: Instant, target: &Coordinates) {
     let jnow = target.to_epoch(Epoch::JNow, chrono::Utc::now());
+    say(
+        start,
+        format!(
+            "target of date: {:.6} h {:+.6}",
+            jnow.ra.as_hours(),
+            jnow.dec.as_degrees()
+        ),
+    );
     match mount.get_coordinates().await {
         Ok(at) => say(
             start,

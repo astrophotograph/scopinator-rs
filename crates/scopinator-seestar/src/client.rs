@@ -39,6 +39,47 @@ pub struct SeestarConfig {
     pub clock_sync: ClockSync,
 }
 
+/// What a client calls itself to the telescope: `cli_name` and `cli_uuid`,
+/// sent with `set_setting`.
+///
+/// The telescope lists the clients connected to it by these when it is in
+/// guest mode. Outside guest mode a Seestar S30 (firmware 9.75) accepts them
+/// and shows nothing for it. The id should be different for each
+/// connection; this library does not make one up.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ClientIdentity {
+    pub name: Option<String>,
+    pub uuid: Option<String>,
+}
+
+impl ClientIdentity {
+    /// An identity with a name and no id.
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            uuid: None,
+        }
+    }
+
+    pub fn with_uuid(mut self, uuid: impl Into<String>) -> Self {
+        self.uuid = Some(uuid.into());
+        self
+    }
+
+    /// The `set_setting` parameters, or `None` if there is nothing to say.
+    pub(crate) fn params(&self) -> Option<serde_json::Value> {
+        let mut members = serde_json::Map::new();
+        if let Some(uuid) = &self.uuid {
+            members.insert("cli_uuid".into(), uuid.clone().into());
+        }
+        if let Some(name) = &self.name {
+            members.insert("cli_name".into(), name.clone().into());
+        }
+        (!members.is_empty()).then_some(serde_json::Value::Object(members))
+    }
+}
+
 /// Setting the telescope's clock at connect.
 ///
 /// The telescope works out where targets are from its own clock. One that
@@ -483,6 +524,31 @@ impl SeestarClient {
             marker: RawMarker::Auto,
         })
         .await
+    }
+
+    /// Tell the telescope who this client is, now and again each time the
+    /// control connection is re-established.
+    ///
+    /// With the connection up, the identity is sent and the telescope's
+    /// answer returned: older firmware has been seen to refuse these
+    /// settings. Before the connection is up it is only remembered, and
+    /// goes out at connect without its reply being checked, as it does at
+    /// every reconnect.
+    pub async fn set_identity(&self, identity: ClientIdentity) -> Result<(), SeestarError> {
+        let params = identity.params();
+        self.link.set_identity(identity);
+        match params {
+            Some(params) if self.is_control_connected() => self
+                .send_raw_and_validate("set_setting", Some(params))
+                .await
+                .map(|_| ()),
+            _ => Ok(()),
+        }
+    }
+
+    /// The identity given to [`set_identity`](Self::set_identity), if any.
+    pub fn identity(&self) -> Option<ClientIdentity> {
+        self.link.identity()
     }
 
     /// Subscribe to telescope events.

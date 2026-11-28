@@ -68,6 +68,8 @@ struct LinkInfo {
     state: LinkState,
     /// Identity, optics and sensor, from `get_device_state` replies.
     device: DeviceSummary,
+    /// What this client calls itself, sent at each connect once set.
+    identity: Option<crate::client::ClientIdentity>,
 }
 
 /// Link state and device identity, shared between the control loop and the
@@ -97,6 +99,14 @@ impl Link {
     /// Everything learned about the device so far.
     pub(crate) fn device(&self) -> DeviceSummary {
         self.lock().device.clone()
+    }
+
+    pub(crate) fn identity(&self) -> Option<crate::client::ClientIdentity> {
+        self.lock().identity.clone()
+    }
+
+    pub(crate) fn set_identity(&self, identity: crate::client::ClientIdentity) {
+        self.lock().identity = Some(identity);
     }
 
     /// The device's product model (e.g. `Seestar S50`), once known.
@@ -155,6 +165,11 @@ pub(crate) struct Options {
 /// JSON-RPC id of the `pi_set_time` the control loop sends at connect when
 /// clock sync is on. Its reply is not awaited.
 const ID_CONNECT_SET_TIME: u64 = 1005;
+
+/// JSON-RPC id of the `set_setting` the control loop sends at connect to say
+/// who this client is, once an identity has been set. Its reply is not
+/// awaited.
+const ID_CONNECT_IDENTITY: u64 = 1006;
 
 /// Run the control connection loop (reconnecting on failure).
 ///
@@ -225,6 +240,22 @@ pub(crate) async fn run(
                                 .line(&Command::PiSetTime(time), ID_CONNECT_SET_TIME);
                             if let Err(e) = write_half.write_all(line.as_bytes()).await {
                                 warn!("failed to set the telescope clock at connect: {e}");
+                            }
+                        }
+
+                        // Say who this is again: the telescope knows a
+                        // client by its connection.
+                        if let Some(params) = link.identity().and_then(|id| id.params()) {
+                            let line = state.profile(negotiated.mode).line(
+                                &Command::Raw {
+                                    method: "set_setting".to_string(),
+                                    params: Some(params),
+                                    marker: crate::command::RawMarker::Auto,
+                                },
+                                ID_CONNECT_IDENTITY,
+                            );
+                            if let Err(e) = write_half.write_all(line.as_bytes()).await {
+                                warn!("failed to send the client identity at connect: {e}");
                             }
                         }
 

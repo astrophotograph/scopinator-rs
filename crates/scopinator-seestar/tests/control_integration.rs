@@ -144,7 +144,8 @@ use scopinator_seestar::error::SeestarError;
 use scopinator_seestar::event::SeestarEvent;
 use scopinator_seestar::protocol::json_rpc;
 use scopinator_seestar::{
-    ClockSync, InteropKey, SeestarClient, SeestarConfig, SettingOutcome, Verification,
+    ClientIdentity, ClockSync, InteropKey, SeestarClient, SeestarConfig, SettingOutcome,
+    Verification,
 };
 use serde_json::{Value, json};
 
@@ -2227,5 +2228,100 @@ async fn send_raw_on_a_verified_socket_adds_nothing() {
     assert_eq!(received[n - 2]["method"], "iscope_get_app_state");
     assert!(received[n - 2].get("params").is_none());
     assert_eq!(received[n - 1]["params"], json!({"zeta": 1}));
+    client.shutdown().await;
+}
+
+// ============================================================================
+// Client identity: `set_setting {"cli_uuid", "cli_name"}`, sent when asked
+// and again at every reconnect. A Seestar S30 (firmware 9.75) answers code 0
+// on a verified socket; the 6.70 and 7.06 captures show it refused.
+// ============================================================================
+
+fn identity_requests(fake: &FakeSeestar) -> Vec<Value> {
+    fake.received_all()
+        .into_iter()
+        .filter(|m| m["method"] == "set_setting" && m["params"].get("cli_name").is_some())
+        .collect()
+}
+
+#[tokio::test]
+async fn no_identity_is_sent_unless_one_is_set() {
+    let fake = FakeSeestar::start().await;
+    let client = connect(&fake).await;
+    client
+        .send_command(Command::TestConnection)
+        .await
+        .expect("command");
+    assert!(identity_requests(&fake).is_empty());
+    assert_eq!(client.identity(), None);
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_identity_is_sent_when_set_and_again_at_each_reconnect() {
+    let fake = FakeSeestar::start().await;
+    fake.respond_ok("set_setting", json!(0));
+    let client = connect(&fake).await;
+    let identity = ClientIdentity::named("observatory").with_uuid("0d5c7c1e-1");
+    client
+        .set_identity(identity.clone())
+        .await
+        .expect("accepted");
+    assert_eq!(client.identity(), Some(identity));
+
+    let sent = identity_requests(&fake);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["params"]["cli_name"], "observatory");
+    assert_eq!(sent[0]["params"]["cli_uuid"], "0d5c7c1e-1");
+
+    // A new connection is a new client to the telescope: say it again,
+    // before anything the caller sends.
+    fake.drop_connection();
+    let mut again = Vec::new();
+    for _ in 0..100 {
+        again = identity_requests(&fake);
+        if again.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        again.len(),
+        2,
+        "the identity was not sent after reconnecting"
+    );
+    assert_eq!(again[1]["id"], 1006);
+    assert_eq!(again[1]["params"]["cli_name"], "observatory");
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_telescope_that_refuses_the_identity_says_so() {
+    let fake = FakeSeestar::start().await;
+    // As firmware 6.70 answered in the captures.
+    fake.respond_error("set_setting", 109, "unexpected param");
+    let client = connect(&fake).await;
+    let refused = client
+        .set_identity(ClientIdentity::named("observatory"))
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    // It is still remembered, for a telescope that takes it next time.
+    assert!(client.identity().is_some());
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_identity_with_nothing_in_it_sends_nothing() {
+    let fake = FakeSeestar::start().await;
+    let client = connect(&fake).await;
+    client
+        .set_identity(ClientIdentity::default())
+        .await
+        .expect("nothing to refuse");
+    assert!(
+        fake.received_all()
+            .iter()
+            .all(|m| m["method"] != "set_setting")
+    );
     client.shutdown().await;
 }
