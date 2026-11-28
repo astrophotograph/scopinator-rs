@@ -5,6 +5,19 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+### Added
+
+- `scopinator-indi` can read what an INDI server sends: `protocol::message` (property
+  definitions, updates, deletions, text messages) and `protocol::parse::StreamParser`, which
+  takes the byte stream in pieces of any size and returns each message as it completes, with
+  BLOBs decoded and a limit on how large one element may grow. `protocol::number` reads INDI's
+  numbers, sexagesimal included. There is no client or backend yet.
+
+### Fixed
+
+- `scopinator_indi::protocol::xml::serialize_command` escapes names and values, so a device
+  name or text value with `"`, `<` or `&` in it no longer produces broken XML.
+
 ## [0.8.4] - 2026-11-27
 
 ### Added

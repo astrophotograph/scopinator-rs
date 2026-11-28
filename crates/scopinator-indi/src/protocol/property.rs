@@ -10,6 +10,17 @@ pub enum PropertyState {
 }
 
 impl PropertyState {
+    /// The state `s` names, or `None` if it names none.
+    pub fn try_parse(s: &str) -> Option<Self> {
+        match s {
+            "Idle" => Some(Self::Idle),
+            "Ok" => Some(Self::Ok),
+            "Busy" => Some(Self::Busy),
+            "Alert" => Some(Self::Alert),
+            _ => None,
+        }
+    }
+
     pub fn parse(s: &str) -> Self {
         match s {
             "Idle" => Self::Idle,
@@ -29,6 +40,15 @@ pub enum SwitchState {
 }
 
 impl SwitchState {
+    /// `On` or `Off`, or `None` for anything else.
+    pub fn try_parse(s: &str) -> Option<Self> {
+        match s {
+            "On" => Some(Self::On),
+            "Off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
     pub fn parse(s: &str) -> Self {
         match s {
             "On" => Self::On,

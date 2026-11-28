@@ -24,4 +24,12 @@ pub enum IndiError {
 
     #[error("BLOB error: {0}")]
     Blob(String),
+
+    /// Something the server sent is not the INDI it should be.
+    #[error("malformed INDI message: {0}")]
+    Malformed(String),
+
+    /// One element grew past the size this client will hold.
+    #[error("an INDI element is larger than {limit} bytes")]
+    TooLarge { limit: usize },
 }

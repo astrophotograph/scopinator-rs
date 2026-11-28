@@ -1539,6 +1539,7 @@ dependencies = [
 name = "scopinator-indi"
 version = "0.8.4"
 dependencies = [
+ "base64",
  "proptest",
  "quick-xml",
  "serde",

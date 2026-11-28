@@ -57,16 +57,29 @@ impl BlobMode {
     }
 }
 
-/// Serialize an INDI command to XML.
+/// A value inside a double-quoted attribute.
+fn attr(value: &str) -> std::borrow::Cow<'_, str> {
+    quick_xml::escape::escape(value)
+}
+
+/// Text between an element's tags.
+fn text(value: &str) -> std::borrow::Cow<'_, str> {
+    quick_xml::escape::partial_escape(value)
+}
+
+/// Serialize an INDI command to XML. Names and values are escaped, so no
+/// device, property or text value can break out of its place.
 pub fn serialize_command(cmd: &IndiCommand) -> String {
+    use crate::protocol::number::format_number;
+
     match cmd {
         IndiCommand::GetProperties { device, name } => {
             let mut xml = String::from("<getProperties version=\"1.7\"");
             if let Some(d) = device {
-                xml.push_str(&format!(" device=\"{d}\""));
+                xml.push_str(&format!(" device=\"{}\"", attr(d)));
             }
             if let Some(n) = name {
-                xml.push_str(&format!(" name=\"{n}\""));
+                xml.push_str(&format!(" name=\"{}\"", attr(n)));
             }
             xml.push_str("/>\n");
             xml
@@ -77,10 +90,16 @@ pub fn serialize_command(cmd: &IndiCommand) -> String {
             name,
             values,
         } => {
-            let mut xml = format!("<newNumberVector device=\"{device}\" name=\"{name}\">\n");
+            let mut xml = format!(
+                "<newNumberVector device=\"{}\" name=\"{}\">\n",
+                attr(device),
+                attr(name)
+            );
             for (vname, value) in values {
                 xml.push_str(&format!(
-                    "  <oneNumber name=\"{vname}\">{value}</oneNumber>\n"
+                    "  <oneNumber name=\"{}\">{}</oneNumber>\n",
+                    attr(vname),
+                    format_number(*value)
                 ));
             }
             xml.push_str("</newNumberVector>\n");
@@ -92,13 +111,20 @@ pub fn serialize_command(cmd: &IndiCommand) -> String {
             name,
             values,
         } => {
-            let mut xml = format!("<newSwitchVector device=\"{device}\" name=\"{name}\">\n");
+            let mut xml = format!(
+                "<newSwitchVector device=\"{}\" name=\"{}\">\n",
+                attr(device),
+                attr(name)
+            );
             for (vname, state) in values {
                 let s = match state {
                     SwitchState::On => "On",
                     SwitchState::Off => "Off",
                 };
-                xml.push_str(&format!("  <oneSwitch name=\"{vname}\">{s}</oneSwitch>\n"));
+                xml.push_str(&format!(
+                    "  <oneSwitch name=\"{}\">{s}</oneSwitch>\n",
+                    attr(vname)
+                ));
             }
             xml.push_str("</newSwitchVector>\n");
             xml
@@ -109,18 +135,26 @@ pub fn serialize_command(cmd: &IndiCommand) -> String {
             name,
             values,
         } => {
-            let mut xml = format!("<newTextVector device=\"{device}\" name=\"{name}\">\n");
+            let mut xml = format!(
+                "<newTextVector device=\"{}\" name=\"{}\">\n",
+                attr(device),
+                attr(name)
+            );
             for (vname, value) in values {
-                xml.push_str(&format!("  <oneText name=\"{vname}\">{value}</oneText>\n"));
+                xml.push_str(&format!(
+                    "  <oneText name=\"{}\">{}</oneText>\n",
+                    attr(vname),
+                    text(value)
+                ));
             }
             xml.push_str("</newTextVector>\n");
             xml
         }
 
         IndiCommand::EnableBlob { device, name, mode } => {
-            let mut xml = format!("<enableBLOB device=\"{device}\"");
+            let mut xml = format!("<enableBLOB device=\"{}\"", attr(device));
             if let Some(n) = name {
-                xml.push_str(&format!(" name=\"{n}\""));
+                xml.push_str(&format!(" name=\"{}\"", attr(n)));
             }
             xml.push_str(&format!(">{}</enableBLOB>\n", mode.as_str()));
             xml
@@ -287,11 +321,9 @@ mod tests {
         }
     }
 
-    // Regression test for the (currently broken) XML escape behavior.
-    // Unignore once xml::serialize_command escapes XML special chars in
-    // attributes (`"`, `<`, `&`) and text content (`<`, `&`).
+    // Special characters in names and values are escaped: attributes
+    // (`"`, `<`, `&`) and text content (`<`, `&`).
     #[test]
-    #[ignore = "serialize_command does not yet escape XML special chars"]
     fn special_chars_must_not_break_xml() {
         let cmd = IndiCommand::NewText {
             device: r#"Device "with" quotes & < > chars"#.into(),
@@ -307,5 +339,36 @@ mod tests {
                 Err(e) => panic!("XML parse error on adversarial input: {e}\n{xml}"),
             }
         }
+    }
+
+    #[test]
+    fn special_chars_read_back_as_they_were_given() {
+        use quick_xml::events::Event;
+
+        let device = r#"Dev "A" & <B>"#;
+        let value = "a < b && c > \"d\"";
+        let xml = serialize_command(&IndiCommand::NewText {
+            device: device.into(),
+            name: "N".into(),
+            values: vec![("k".into(), value.into())],
+        });
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        let (mut read_device, mut read_value) = (None, String::new());
+        let mut in_member = false;
+        loop {
+            match reader.read_event().unwrap() {
+                Event::Start(start) if start.name().as_ref() == b"newTextVector" => {
+                    let attribute = start.try_get_attribute("device").unwrap().unwrap();
+                    read_device = Some(attribute.unescape_value().unwrap().into_owned());
+                }
+                Event::Start(start) if start.name().as_ref() == b"oneText" => in_member = true,
+                Event::Text(text) if in_member => read_value.push_str(&text.unescape().unwrap()),
+                Event::End(end) if end.name().as_ref() == b"oneText" => in_member = false,
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+        assert_eq!(read_device.as_deref(), Some(device));
+        assert_eq!(read_value, value);
     }
 }
