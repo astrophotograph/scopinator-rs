@@ -226,7 +226,7 @@ async fn main() -> AnyResult<()> {
     tokio::spawn(async move {
         while let Ok(event) = events.recv().await {
             let text = format!("{event:?}");
-            if text.starts_with("AutoGoto") {
+            if text.starts_with("AutoGoto") || text.starts_with("PlateSolve") {
                 let short: String = text.chars().take(400).collect();
                 say(start, format!("  event: {short}"));
             }

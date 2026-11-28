@@ -379,7 +379,16 @@ known). The sky was mostly clear.
   `get_stack_info` `{"height": 1920, "width": 1080}`, and the stacked image came back as
   1080x1920 RGB16. `View.Stack.Annotate.result.annotations` named the star with
   `ra_dec_j2000: [2.096909, 29.090435]` (degrees, J2000) and a pixel position.
-- `start_solve` by hand after a solved goto again ended without a position, both times.
+- **A solve completes twice.** Every solve ends with two `PlateSolve` `complete` events a
+  millisecond apart. The first has a `result`: `{"angle": 0.779999, "duration_ms": 2768,
+  "focal_len": 149.809067, "fov": [1.1987, 2.12953], "image_id": 65535,
+  "ra_dec": [0.164201, 29.244796], "star_number": 817}` (hours and degrees of date; `fov` in
+  degrees, the short side first), with `page` `focus` for `start_solve` and `preview`, plus
+  `tag: "Exposure-AutoGoto"` and `ac_count`, for a goto's. The second has `lapse_ms` and
+  `route`; it repeats `ra_dec` at the top level when a goto asked (`route: ["View",
+  "AutoGoto"]`) and has no position when `start_solve` did (`route: []`). Reading only the
+  second made every `start_solve` look like a solve without a position.
+- `get_solve_result` returns the same `result` object with `"state": "complete"`.
 - Park from the target: 52 s.
 
 ### Wide camera
@@ -427,8 +436,6 @@ and `lapse_ms`; no `camera_mode`. With the owner's agreement it was replaced:
 - Driving the wide camera through port 4700 (`selected_cam` / `wide_cam`), a wide-camera goto or
   stack, and the RTSP streams.
 - A completed goto, autofocus and stack on an S50 (seen on an S30, 9.75, on 2026-11-27).
-- A `start_solve` that returns a position: twice it completed without one straight after a
-  goto that had solved.
 - A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
 - `Alert` 429 on exceeding the connection limit.
 - A plan running to completion, and a restart of a held plan that exists.

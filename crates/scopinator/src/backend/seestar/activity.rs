@@ -92,9 +92,19 @@ impl Activity {
                 }
             }
             SeestarEvent::PlateSolve(value) => {
-                if let Some(next) = solve_run(value) {
-                    *lock(&self.solve) = next;
-                }
+                let Some(next) = solve_run(value) else {
+                    return;
+                };
+                let mut solve = lock(&self.solve);
+                *solve = match next {
+                    Solve::Now(run) => run,
+                    // The second of the two `complete` events: the first
+                    // had the position.
+                    Solve::CompleteWithoutPosition if matches!(*solve, Run::Done(_)) => return,
+                    Solve::CompleteWithoutPosition => {
+                        Run::Failed("the solve finished without a position".into())
+                    }
+                };
             }
             _ => {}
         }
@@ -112,26 +122,46 @@ fn autofocus_failure(error: Option<&str>, code: Option<i32>) -> String {
     }
 }
 
+/// What one `PlateSolve` event says.
+#[derive(Debug, PartialEq)]
+enum Solve {
+    /// The solve is now in this state.
+    Now(Run<PlateSolution>),
+    /// `complete`, with no position in the event.
+    CompleteWithoutPosition,
+}
+
 /// What a `PlateSolve` event says about the solve. The telescope reports
-/// `start`, `solving` and `working` while it runs, `complete` with the
-/// centre in `ra_dec` (hours, degrees), and `fail`.
-fn solve_run(event: &Value) -> Option<Run<PlateSolution>> {
+/// `start`, `solving` and `working` while it runs, `fail`, and `complete`
+/// twice: first with a `result` holding the centre in `ra_dec` (hours,
+/// degrees) and the field in `fov` (degrees), then once more from the
+/// function that asked for the solve. That second event repeats `ra_dec`
+/// when a goto asked, and has no position when `start_solve` did (S30,
+/// firmware 9.75).
+fn solve_run(event: &Value) -> Option<Solve> {
     match event.get("state").and_then(Value::as_str)? {
-        "start" | "solving" | "working" => Some(Run::Running),
+        "start" | "solving" | "working" => Some(Solve::Now(Run::Running)),
         "complete" => {
-            let number = |index: usize| event.pointer(&format!("/ra_dec/{index}"))?.as_f64();
-            let centre = number(0)
-                .zip(number(1))
-                .and_then(|(ra_hours, dec_degrees)| {
+            let pair = |path: &str| {
+                let number = |index: usize| event.pointer(&format!("{path}/{index}"))?.as_f64();
+                number(0).zip(number(1))
+            };
+            let centre = pair("/result/ra_dec").or_else(|| pair("/ra_dec")).and_then(
+                |(ra_hours, dec_degrees)| {
                     Some(Coordinates::with_epoch(
                         RaDegrees::from_hours(ra_hours.rem_euclid(24.0)).ok()?,
                         DecDegrees::new(dec_degrees).ok()?,
                         SEESTAR_EPOCH,
                     ))
-                });
+                },
+            );
             Some(match centre {
-                Some(centre) => Run::Done(PlateSolution::new(centre)),
-                None => Run::Failed("the solve finished without a position".into()),
+                Some(centre) => {
+                    let mut solution = PlateSolution::new(centre);
+                    solution.field_of_view_deg = pair("/result/fov");
+                    Solve::Now(Run::Done(solution))
+                }
+                None => Solve::CompleteWithoutPosition,
             })
         }
         "fail" => {
@@ -139,14 +169,14 @@ fn solve_run(event: &Value) -> Option<Run<PlateSolution>> {
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("no reason given");
-            Some(Run::Failed(
+            Some(Solve::Now(Run::Failed(
                 match event.get("code").and_then(Value::as_i64) {
                     Some(code) => format!("{error} (code {code})"),
                     None => error.to_string(),
                 },
-            ))
+            )))
         }
-        "cancel" => Some(Run::Idle),
+        "cancel" => Some(Solve::Now(Run::Idle)),
         _ => None,
     }
 }
@@ -266,7 +296,7 @@ mod tests {
             "lapse_ms": 2733, "ra_dec": [8.69067, 19.502521], "route": ["View", "AutoGoto"]}))
         .unwrap();
         match run {
-            Run::Done(solution) => {
+            Solve::Now(Run::Done(solution)) => {
                 assert!((solution.center.ra.as_hours() - 8.69067).abs() < 1e-9);
                 assert!((solution.center.dec.as_degrees() - 19.502521).abs() < 1e-9);
                 assert_eq!(solution.center.epoch, SEESTAR_EPOCH);
@@ -280,18 +310,21 @@ mod tests {
     fn solve_states_follow_the_telescope() {
         for state in ["start", "solving", "working"] {
             let run = solve_run(&json!({"state": state, "star_number": 711}));
-            assert_eq!(run, Some(Run::Running), "{state}");
+            assert_eq!(run, Some(Solve::Now(Run::Running)), "{state}");
         }
         assert_eq!(
             solve_run(&json!({"state": "fail", "error": "solve failed", "code": 251})),
-            Some(Run::Failed("solve failed (code 251)".into()))
+            Some(Solve::Now(Run::Failed("solve failed (code 251)".into())))
         );
-        assert_eq!(solve_run(&json!({"state": "cancel"})), Some(Run::Idle));
+        assert_eq!(
+            solve_run(&json!({"state": "cancel"})),
+            Some(Solve::Now(Run::Idle))
+        );
         // Complete without a position is not a solution.
-        assert!(matches!(
+        assert_eq!(
             solve_run(&json!({"state": "complete"})),
-            Some(Run::Failed(_))
-        ));
+            Some(Solve::CompleteWithoutPosition)
+        );
         // Not a state this library knows: ignored.
         assert_eq!(solve_run(&json!({"state": "idle"})), None);
         assert_eq!(solve_run(&json!({})), None);
@@ -337,6 +370,47 @@ mod tests {
             take_failure(&activity.autofocus),
             Some("autofocus failed".into())
         );
+    }
+
+    // The events of one `start_solve` on an S30 (9.75), 2026-11-27.
+    #[test]
+    fn a_solve_asked_for_by_hand_keeps_the_position_of_its_first_complete_event() {
+        let activity = Activity::default();
+        *lock(&activity.solve) = Run::Running;
+        for value in [
+            json!({"Event": "PlateSolve", "Timestamp": "1291.06", "lapse_ms": 0,
+                "route": [], "state": "working"}),
+            json!({"Event": "PlateSolve", "Timestamp": "1291.07", "page": "focus",
+                "state": "start"}),
+            json!({"Event": "PlateSolve", "Timestamp": "1293.17", "page": "focus",
+                "star_number": 817, "state": "solving"}),
+            json!({"Event": "PlateSolve", "Timestamp": "1293.83", "page": "focus",
+                "result": {"angle": 0.779999, "duration_ms": 2768, "focal_len": 149.809067,
+                    "fov": [1.1987, 2.12953], "image_id": 65535,
+                    "ra_dec": [0.164201, 29.244796], "star_number": 817},
+                "state": "complete"}),
+            json!({"Event": "PlateSolve", "Timestamp": "1293.84", "lapse_ms": 2771,
+                "route": [], "state": "complete"}),
+        ] {
+            activity.note(&event(value));
+        }
+        match &*lock(&activity.solve) {
+            Run::Done(solution) => {
+                assert!((solution.center.ra.as_hours() - 0.164201).abs() < 1e-9);
+                assert!((solution.center.dec.as_degrees() - 29.244796).abs() < 1e-9);
+                assert_eq!(solution.field_of_view_deg, Some((1.1987, 2.12953)));
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_solve_that_completes_with_no_position_at_all_has_failed() {
+        let activity = Activity::default();
+        *lock(&activity.solve) = Run::Running;
+        activity.note(&event(json!({"Event": "PlateSolve", "Timestamp": "1.0",
+            "lapse_ms": 2771, "route": [], "state": "complete"})));
+        assert!(matches!(*lock(&activity.solve), Run::Failed(_)));
     }
 
     #[test]

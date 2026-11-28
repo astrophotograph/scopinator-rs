@@ -5,6 +5,17 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+### Fixed
+
+- `PlateSolver::start_solve` on a Seestar always ended in "the solve finished without a
+  position". The telescope reports a finished solve twice, and for a solve asked for by hand
+  only the first report has the position; the second replaced it with a failure. The first is
+  now kept. Solves the telescope ran itself during a goto were not affected.
+
+### Added
+
+- A Seestar's `PlateSolution` has `field_of_view_deg`, from the telescope's solve result.
+
 ## [0.8.0] - 2026-11-27
 
 Stacking moves to where it belongs. A Seestar's camera is its live view; its stack is its
