@@ -17,10 +17,10 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, info, warn};
 
 use crate::error::IndiError;
-use crate::protocol::message::{IndiMessage, VectorKind};
+use crate::protocol::message::{Blob, IndiMessage, MemberValue, VectorKind};
 use crate::protocol::parse::StreamParser;
 use crate::protocol::property::SwitchState;
-use crate::protocol::xml::{IndiCommand, serialize_command};
+use crate::protocol::xml::{BlobMode, IndiCommand, serialize_command};
 use crate::store::{Property, Store};
 
 /// The port `indiserver` listens on unless told otherwise.
@@ -61,6 +61,56 @@ impl IndiClientConfig {
     }
 }
 
+/// A BLOB as it arrived: which member of which property it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobArrival {
+    pub device: String,
+    pub property: String,
+    pub member: String,
+    pub blob: Blob,
+}
+
+/// Which devices BLOBs have been asked of, and how.
+type BlobModes = Arc<std::sync::Mutex<std::collections::BTreeMap<String, BlobMode>>>;
+
+/// Waits for BLOBs. Made before the request that will produce one, so that
+/// a fast device cannot deliver before anyone is listening.
+pub struct BlobListener {
+    arrivals: broadcast::Receiver<Arc<BlobArrival>>,
+}
+
+impl BlobListener {
+    /// The next BLOB to arrive for `device` and `property` since this
+    /// listener was made. [`IndiError::Timeout`] if none comes in time.
+    pub async fn next(
+        &mut self,
+        device: &str,
+        property: &str,
+        timeout: Duration,
+    ) -> Result<Blob, IndiError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, self.arrivals.recv()).await {
+                Err(_) => return Err(IndiError::Timeout),
+                Ok(Err(broadcast::error::RecvError::Closed)) => {
+                    return Err(IndiError::NotConnected);
+                }
+                // BLOBs were dropped unread. Whether one was ours cannot be
+                // known, so keep waiting.
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+                Ok(Ok(arrival)) => {
+                    if arrival.device == device && arrival.property == property {
+                        // Hand the bytes over without a copy when nobody
+                        // else holds them.
+                        return Ok(Arc::try_unwrap(arrival)
+                            .map_or_else(|shared| shared.blob.clone(), |only| only.blob));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A connection to an INDI server.
 pub struct IndiClient {
     addr: SocketAddr,
@@ -68,6 +118,8 @@ pub struct IndiClient {
     outgoing: mpsc::Sender<String>,
     connected: Arc<AtomicBool>,
     messages: broadcast::Sender<IndiMessage>,
+    blobs: broadcast::Sender<Arc<BlobArrival>>,
+    blob_modes: BlobModes,
     shutdown: watch::Sender<bool>,
 }
 
@@ -108,6 +160,9 @@ impl IndiClient {
         let connected = Arc::new(AtomicBool::new(false));
         let (outgoing, outgoing_rx) = mpsc::channel(64);
         let (messages, _) = broadcast::channel(256);
+        // Few: each can be a whole camera frame.
+        let (blobs, _) = broadcast::channel(4);
+        let blob_modes = BlobModes::default();
         let (shutdown, shutdown_rx) = watch::channel(false);
         // Up before the first read or write, so that what the caller does
         // next finds the connection.
@@ -119,6 +174,8 @@ impl IndiClient {
                 store: Arc::clone(&store),
                 connected: Arc::clone(&connected),
                 messages: messages.clone(),
+                blobs: blobs.clone(),
+                blob_modes: Arc::clone(&blob_modes),
             },
             stream,
             outgoing_rx,
@@ -130,6 +187,8 @@ impl IndiClient {
             outgoing,
             connected,
             messages,
+            blobs,
+            blob_modes,
             shutdown,
         })
     }
@@ -170,10 +229,70 @@ impl IndiClient {
         self.store.of_device(device)
     }
 
+    /// The devices whose driver says it has this
+    /// [`interface`](crate::protocol::property::interface), by name. A
+    /// driver that has not yet sent its `DRIVER_INFO` is not among them.
+    pub fn devices_with(&self, interface: u32) -> Vec<String> {
+        use crate::standard::general::{DRIVER_INFO, DRIVER_INTERFACE};
+
+        self.devices()
+            .into_iter()
+            .filter(|device| {
+                self.property(device, DRIVER_INFO)
+                    .and_then(|info| info.text(DRIVER_INTERFACE)?.trim().parse::<u32>().ok())
+                    .is_some_and(|mask| mask & interface != 0)
+            })
+            .collect()
+    }
+
     /// Every message as it arrives: definitions, updates, deletions and
     /// text messages.
     pub fn subscribe(&self) -> broadcast::Receiver<IndiMessage> {
         self.messages.subscribe()
+    }
+
+    /// Ask the server to send this device's BLOBs (a server sends none
+    /// until asked). It is asked again after every reconnect.
+    ///
+    /// The bytes of a BLOB go to [`blob_listener`](Self::blob_listener) and
+    /// [`next_blob`](Self::next_blob) and are not kept: the stored property
+    /// and the [`subscribe`](Self::subscribe) messages carry its format and
+    /// an empty body.
+    pub async fn enable_blobs(&self, device: &str, mode: BlobMode) -> Result<(), IndiError> {
+        self.blob_modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(device.to_string(), mode);
+        if !self.is_connected() {
+            // It goes out when the connection is made.
+            return Ok(());
+        }
+        self.send(IndiCommand::EnableBlob {
+            device: device.to_string(),
+            name: None,
+            mode,
+        })
+        .await
+    }
+
+    /// A listener for BLOBs that arrive from now on. Make it before the
+    /// request that will produce one.
+    pub fn blob_listener(&self) -> BlobListener {
+        BlobListener {
+            arrivals: self.blobs.subscribe(),
+        }
+    }
+
+    /// The next BLOB to arrive for `device` and `property` after this is
+    /// called. To be sure of not missing one, use
+    /// [`blob_listener`](Self::blob_listener) instead and make it first.
+    pub async fn next_blob(
+        &self,
+        device: &str,
+        property: &str,
+        timeout: Duration,
+    ) -> Result<Blob, IndiError> {
+        self.blob_listener().next(device, property, timeout).await
     }
 
     /// The property, if it can be written as `kind`.
@@ -354,6 +473,31 @@ struct Link {
     store: Arc<Store>,
     connected: Arc<AtomicBool>,
     messages: broadcast::Sender<IndiMessage>,
+    blobs: broadcast::Sender<Arc<BlobArrival>>,
+    blob_modes: BlobModes,
+}
+
+/// Take the bytes out of any BLOBs in `message` and hand them to whoever is
+/// waiting for them.
+fn deliver_blobs(link: &Link, message: &mut IndiMessage) {
+    let IndiMessage::Update(update) = message else {
+        return;
+    };
+    for (member, value) in &mut update.members {
+        if let MemberValue::Blob(blob) = value {
+            let arrival = BlobArrival {
+                device: update.device.clone(),
+                property: update.name.clone(),
+                member: member.clone(),
+                blob: Blob {
+                    format: blob.format.clone(),
+                    data: std::mem::take(&mut blob.data),
+                },
+            };
+            // Nobody waiting is not an error.
+            let _ = link.blobs.send(Arc::new(arrival));
+        }
+    }
 }
 
 enum Ended {
@@ -424,6 +568,24 @@ async fn serve(
     if socket.write_all(hello.as_bytes()).await.is_err() {
         return Ended::Lost;
     }
+    // A new connection has asked for no BLOBs yet.
+    let modes: Vec<(String, BlobMode)> = link
+        .blob_modes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(device, mode)| (device.clone(), *mode))
+        .collect();
+    for (device, mode) in modes {
+        let enable = serialize_command(&IndiCommand::EnableBlob {
+            device,
+            name: None,
+            mode,
+        });
+        if socket.write_all(enable.as_bytes()).await.is_err() {
+            return Ended::Lost;
+        }
+    }
     link.connected.store(true, Ordering::Release);
 
     let mut parser = StreamParser::new();
@@ -437,7 +599,8 @@ async fn serve(
                 };
                 for message in parser.feed(&chunk[..n]) {
                     match message {
-                        Ok(message) => {
+                        Ok(mut message) => {
+                            deliver_blobs(link, &mut message);
                             if !link.store.apply(&message) {
                                 debug!("an update for a property that was never defined");
                             }

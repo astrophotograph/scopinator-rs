@@ -16,8 +16,15 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
   property the server defines (`devices`, `property`, `properties`), sends new values
   (`set_numbers`, `set_switches`, `set_text`, each checked against the definition before
   anything is sent), waits for a property to reach a condition (`wait_for`), broadcasts every
-  message (`subscribe`), and reconnects by itself. There is no backend on top of it yet, and it
-  has only been run against this crate's own fake server.
+  message (`subscribe`), and reconnects by itself.
+- `scopinator_indi::IndiDevice`, a handle to one device (its interfaces and driver, connecting
+  it, reading its values), `IndiClient::devices_with` to find devices by kind, and
+  `scopinator_indi::standard`, the names of the standard INDI properties.
+- BLOBs: `IndiClient::enable_blobs`, `blob_listener` and `next_blob` deliver a camera's frames
+  without keeping them, and `scopinator_indi::fits::decode` reads the FITS file a camera sends
+  (8 or 16 bits, one plane or three) into pixels.
+- None of this has a backend on top of it yet, and it has only been run against this crate's own
+  fake server.
 
 ### Fixed
 
