@@ -62,6 +62,13 @@ upgrade notes.
   read true for about two seconds, until the failed goto left the telescope's view state. Both
   now read as over once the failure has been reported.
 
+### Verified
+
+- A Seestar takes and reports coordinates in the equinox of date, as the library has assumed
+  since 0.7.0: checked on an S30 (firmware 9.75) under the sky. A goto that plate-solves, an
+  autofocus that completes and a stack that returns an image were seen there too. See
+  `docs/protocol/hardware-observations.md`.
+
 ### Changed
 
 - Dependencies no crate used are gone: `socket2` from the workspace, `scopinator-types` from

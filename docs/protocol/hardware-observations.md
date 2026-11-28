@@ -357,6 +357,31 @@ clouded over within about fifteen minutes, so only the first goto found stars.
   `AutoGoto` `fail` event (251). The view state still showed the goto `working` when the event
   came; `is_slewing` and `acquisition` read it as over.
 
+### Equatorial mode under a clear sky: the epoch, autofocus and a stack (2026-11-27)
+
+After a power cycle the same S30 reported `mount.equ_mode: true` (whether the earlier
+`scope_park {"equ_mode": true}` took effect at the restart, or the app's attempt did, is not
+known). The sky was mostly clear.
+
+- **The telescope works in the equinox of date (JNow).** Alpheratz, J2000 0.13979 h +29.0904,
+  JNow 0.162995 h +29.240078. Sent as the JNow numbers (`iscope_start_view`), the goto ended
+  with the star 25 pixels from the centre of the 1080x1920 frame. Sent as the J2000 numbers, it
+  ended with the star 262 pixels from the centre (dx -228, dy -130): 286 pixels from where it
+  was, about 0.32 degrees at 3.99 arcseconds a pixel, against 0.34 degrees of precession. The
+  telescope's own solutions were 0.162835 h +29.245097 and 0.143311 h +29.093350: each within
+  0.05 degrees of the numbers it was sent, so its solver also reports the equinox of date.
+- `scope_get_equ_coord` after the first goto: 0.160833 h +29.233056, 0.03 degrees from the JNow
+  position and 0.31 from the J2000 one.
+- The goto from park took 77 s to `OnTarget`; from the same field, 17 s.
+- **Autofocus**: 45 s, 1253 to 1246.
+- **A stack that stacks**: `Initialise` for about 50 s (no `3PPA` stage this time), then
+  `Stack` with 20 s exposures. After 130 s: `stacked_frame: 1`, `dropped_frame: 4`.
+  `get_stack_info` `{"height": 1920, "width": 1080}`, and the stacked image came back as
+  1080x1920 RGB16. `View.Stack.Annotate.result.annotations` named the star with
+  `ra_dec_j2000: [2.096909, 29.090435]` (degrees, J2000) and a pixel position.
+- `start_solve` by hand after a solved goto again ended without a position, both times.
+- Park from the target: 52 s.
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused
@@ -401,10 +426,9 @@ and `lapse_ms`; no `camera_mode`. With the owner's agreement it was replaced:
   connection.
 - Driving the wide camera through port 4700 (`selected_cam` / `wide_cam`), a wide-camera goto or
   stack, and the RTSP streams.
-- A completed goto with plate solving, on any firmware (every session so far was indoors).
-  With it: whether the telescope takes goto coordinates in J2000 or the equinox of date, an
-  autofocus that completes, a solve result, and frames arriving in a stack.
+- A completed goto, autofocus and stack on an S50 (seen on an S30, 9.75, on 2026-11-27).
+- A `start_solve` that returns a position: twice it completed without one straight after a
+  goto that had solved.
 - A JPEG reply on the image socket (zip was observed on 9.75, not on 6.70).
 - `Alert` 429 on exceeding the connection limit.
-- Plate solving, stacking and annotation results (the device was indoors).
 - A plan running to completion, and a restart of a held plan that exists.

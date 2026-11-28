@@ -24,10 +24,10 @@ use super::GotoTracker;
 pub(super) const GOTO_START_GRACE: Duration = Duration::from_secs(15);
 
 /// The equatorial system a Seestar takes goto targets in and reports its
-/// position in: the equinox of date, according to the protocol
-/// specification. This has not been checked against a telescope; plate-solve
-/// centring hides the difference from J2000 (about 0.37 degrees in 2026) on
-/// the device itself.
+/// position in: the equinox of date. Checked on an S30 (firmware 9.75) on
+/// 2026-11-27: a star sent as its coordinates of date was centred to 25
+/// pixels, and sent as its J2000 numbers landed 0.3 degrees off, which is
+/// the precession since 2000.
 pub(super) const SEESTAR_EPOCH: Epoch = Epoch::JNow;
 
 /// The speed gear manual moves use. Gear 2 at 60 percent moved an S50
