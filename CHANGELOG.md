@@ -5,6 +5,20 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+### Added
+
+- `examples/alpaca_verify.rs`: an Alpaca server's mount and camera through the neutral traits,
+  one stage at a time (slew, sync, tracking, axis moves, guide pulse, abort, camera options,
+  park), with the backend's events printed. `seestar_verify` has a `view` stage.
+
+### Verified
+
+- More of the Alpaca backend on a Seestar S30: tracking, axis moves, guide pulses, abort, gain,
+  exposure abort and every poller event. A slew made after the telescope has centred a target
+  natively landed 0.011 degrees from where it was sent, which also confirms the server's
+  coordinates are of date. The S30's server ignores subframes. See
+  `docs/protocol/hardware-observations.md`.
+
 ## [0.8.2] - 2026-11-27
 
 ### Added

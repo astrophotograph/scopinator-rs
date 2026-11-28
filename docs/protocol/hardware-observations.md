@@ -432,6 +432,42 @@ Then the mount, through `AlpacaBackend` (`alpaca_info --mount`), in equatorial m
 - `Park`: 50 s, then `AtPark` true and `AtHome` true. (`AtPark` had read false before this,
   with the telescope folded by the native park.)
 
+A longer session the same night (`examples/alpaca_verify.rs`), with native plate solves and
+frames to check the pointing, until cloud came over:
+
+- **The coordinates are of date, as the server says.** After a native goto had centred Almach
+  (which also corrects the mount's idea of where it points), an Alpaca slew 2.3 degrees away,
+  sent as the target's coordinates of date, was solved by the telescope at 2.278445 h
+  +44.113783 against a target of 2.2786 h +44.1242: 0.011 degrees off.
+- **An open-loop slew from park is about two degrees off.** The native goto's first solve after
+  slewing from park was 2.4 degrees from its target, and after a 30 degree slew 2.2 degrees;
+  it then re-centres. An Alpaca slew stops at that first position, and a `start_solve` by hand
+  there failed (code 251) three times.
+- Returning to Almach by Alpaca after short slews away left it 50 to 420 pixels (0.06 to 0.47
+  degrees) from the centre, almost all of it in right ascension and more when arriving from
+  the east; the mount reported itself within 0.004 degrees each time. Three frames, then cloud:
+  enough to say a slew back is not exact, not enough to say why.
+- `Slewing` is true in the first read after `SlewToCoordinatesAsync` returns (0.3 s), and false
+  about 3 s later for a two-degree slew. Each request takes about 0.3 to 0.5 s.
+- The poller's events arrived for all of it: `Unparked`, `SlewStarted`, `TrackingChanged`,
+  `SlewCompleted` with the coordinates, `ExposureStarted`, `ExposureCompleted`, `ImageReady`,
+  `Parked`.
+- `Tracking` can be set once the mount is unparked and pointing at the sky.
+- `MoveAxis` at a fifth of the fastest rate moved about 3.5 degrees in 3.5 s on each axis.
+  While an axis moves `Slewing` is true and tracking off, so the poller reports a slew. A
+  **positive rate on the primary axis decreased the right ascension** (by 0.30 h); a positive
+  rate on the secondary increased the declination.
+- `PulseGuide` north for one second: declination +80 arcseconds.
+- `AbortSlew` three seconds into a ten-degree slew: accepted, `Slewing` false at once, but the
+  mount already reported the slew's destination, so whether it stopped short is not known.
+- Camera: `Gain` is applied (80, then 200 again). **Subframes are not**: `NumX = 400` is
+  accepted and reads back, `StartX = 340` is accepted and reads back 0, and the image is the
+  whole 1080x1920 sensor either way. `AbortExposure` two seconds into a twenty-second exposure
+  left the camera idle with no image.
+- The native solver went on returning one earlier result (`image_id` and `ra_dec` unchanged
+  through six slews) once Alpaca exposures had been taken; the native live view was not giving
+  it new frames. The two interfaces share one camera.
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused

@@ -30,6 +30,8 @@
 //! - `preview`: fetch the current preview frame, raw, and save it.
 //! - `stop`: `Observer::stop`.
 //! - `park`: `Mount::park` and wait for it.
+//! - `view`: start the live view where the telescope points and leave it
+//!   running. Does not move the mount.
 //! - `park-eq`: park and switch the mount to equatorial mode
 //!   (`scope_park {"equ_mode": true}`), for a telescope on a wedge. On an
 //!   S30 (9.75) under cloud this parked and left the mode as it was.
@@ -813,6 +815,24 @@ async fn main() -> AnyResult<()> {
                 let parked =
                     wait_for_park(&mount, WaitOptions::with_timeout(Duration::from_secs(10))).await;
                 say(start, format!("wait_for_park: {}", show(&parked)));
+            }
+            "view" => {
+                // Start the live view where the telescope points and leave
+                // it running, so that a solve has frames to work on.
+                let cameras = backend.cameras().await?;
+                let camera = cameras.first().ok_or("no camera")?;
+                say(
+                    start,
+                    format!(
+                        "start live view: {}",
+                        show(&camera.start_exposure(&ExposureSettings::default()).await)
+                    ),
+                );
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                say(
+                    start,
+                    format!("view: {}", raw(&client, "get_view_state").await),
+                );
             }
             "park-eq" => {
                 // Park and put the mount in equatorial mode in one command.
