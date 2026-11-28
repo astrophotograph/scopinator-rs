@@ -30,6 +30,9 @@
 //! - `preview`: fetch the current preview frame, raw, and save it.
 //! - `stop`: `Observer::stop`.
 //! - `park`: `Mount::park` and wait for it.
+//! - `park-eq`: park and switch the mount to equatorial mode
+//!   (`scope_park {"equ_mode": true}`), for a telescope on a wedge. On an
+//!   S30 (9.75) under cloud this parked and left the mode as it was.
 //!
 //! `--goto-timeout SECONDS` (default 240) is how long `goto` watches;
 //! `--frames N` (default 3) how many frames `stack` waits for.
@@ -252,12 +255,18 @@ async fn main() -> AnyResult<()> {
                 let state = client
                     .send_raw(
                         "get_device_state",
-                        Some(serde_json::json!({"keys": ["mount"]})),
+                        Some(serde_json::json!({"keys": ["mount", "balance_sensor"]})),
                     )
                     .await;
                 say(
                     start,
-                    format!("device state mount: {:?}", state.map(|r| r.result)),
+                    format!(
+                        "device state mount: {}",
+                        state.map_or_else(
+                            |e| format!("ERR {e}"),
+                            |r| serde_json::to_string(&r.result).unwrap_or_default()
+                        )
+                    ),
                 );
                 say(
                     start,
@@ -804,6 +813,36 @@ async fn main() -> AnyResult<()> {
                 let parked =
                     wait_for_park(&mount, WaitOptions::with_timeout(Duration::from_secs(10))).await;
                 say(start, format!("wait_for_park: {}", show(&parked)));
+            }
+            "park-eq" => {
+                // Park and put the mount in equatorial mode in one command.
+                let reply = client
+                    .send_raw("scope_park", Some(serde_json::json!({"equ_mode": true})))
+                    .await;
+                say(
+                    start,
+                    format!(
+                        "scope_park equ_mode=true: {:?}",
+                        reply.map(|r| (r.code, r.result))
+                    ),
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let parked =
+                    wait_for_park(&mount, WaitOptions::with_timeout(Duration::from_secs(120)))
+                        .await;
+                say(start, format!("wait_for_park: {}", show(&parked)));
+                say(
+                    start,
+                    format!(
+                        "device state mount: {:?}",
+                        client
+                            .send_raw_and_validate(
+                                "get_device_state",
+                                Some(serde_json::json!({"keys": ["mount"]})),
+                            )
+                            .await
+                    ),
+                );
             }
             other => say(start, format!("unknown stage {other:?}, skipped")),
         }

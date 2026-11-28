@@ -326,6 +326,37 @@ a second later. `stop_streaming` and `iscope_stop_view` ended it: `View` `cancel
   anywhere that was found, so whether an S30 varies its heater is not known.
 - Only the flag was observed. That the lens warms was not measured.
 
+### Outdoors on a wedge, in alt-az mode (2026-11-27)
+
+The S30 (9.75) was outside, tilted as for equatorial use (`balance_sensor.data.angle` 62.2), but
+reported `mount.equ_mode: false`. Its clock was at 2020-10-23 again after a power cycle. The sky
+clouded over within about fifteen minutes, so only the first goto found stars.
+
+- **A goto that solves.** `iscope_start_view` to Alpheratz (sent as JNow 0.162995 h,
+  +29.240078): slewing, then centring, then no `AutoGoto` in the view state and the view in
+  `ContinuousExposure`, 79 s after the request. `Observer::acquisition` read `OnTarget`. The
+  telescope's own solve, from its `PlateSolve` event: 0.163006 h, +29.205744.
+- That solve does not say which epoch the telescope works in: it centres until its solution
+  matches the numbers it was sent, whatever they mean. The frame after a goto, compared with the
+  frame after the same goto with J2000 numbers, would; clouds stopped that.
+- **Autofocus that completes**: `start_auto_focuse` from 1253, 45 s, `AutoFocus` `complete`,
+  focuser at 1235.
+- **`start_solve` by hand** straight after the goto ended as a solve that completed without a
+  position (the backend's reading of a `PlateSolve` `complete` event with no `ra_dec`; the
+  event itself was not logged).
+- **Starting a stack ran a polar-alignment measurement first**: `View.Initialise.3PPA`
+  (`percent`, then its own `AutoGoto` with `AutoFocus` under it, and
+  `equ_offset: [-0.698765, 1.890288]`), still at 99% after 180 s. No frame was stacked in that
+  time. `setting.auto_3ppa_calib` was true.
+- **`scope_park {"equ_mode": true}` did not change the mode**: code 0 and the mount parked, from
+  open and again from parked, with `mount.equ_mode` false afterwards both times. The app also
+  refused to switch that evening; it appears to want clear sky for it.
+- **A goto stopped from the app** arrives as an `AutoGoto` `fail` event, "aborted", code 253,
+  with a `cancel` event beside it.
+- **Under cloud**, the goto of 2026-11-26 again: seven failed solves over 300 s, then the
+  `AutoGoto` `fail` event (251). The view state still showed the goto `working` when the event
+  came; `is_slewing` and `acquisition` read it as over.
+
 ### Wide camera
 
 Ports open on the LAN: 4700, 4701, 4702, 4400, 4800, 4801, 4804. Ports 4554 and 4555 (RTSP) refused
