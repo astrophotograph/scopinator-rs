@@ -23,8 +23,10 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 - BLOBs: `IndiClient::enable_blobs`, `blob_listener` and `next_blob` deliver a camera's frames
   without keeping them, and `scopinator_indi::fits::decode` reads the FITS file a camera sends
   (8 or 16 bits, one plane or three) into pixels.
-- None of this has a backend on top of it yet, and it has only been run against this crate's own
-  fake server.
+- None of this has a backend on top of it yet. It has been run against `indiserver` 1.9.9 with
+  the telescope, CCD, focuser and filter wheel simulators (`examples/indi_check.rs`), and two
+  captures of what that server sends are test fixtures. `examples/indi_dump.rs` lists what is
+  in such a capture.
 
 ### Fixed
 
