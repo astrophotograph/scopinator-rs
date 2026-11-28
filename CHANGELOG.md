@@ -5,6 +5,8 @@ together. Versions before 1.0 may break API in a minor release; each entry says 
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-27
+
 ### Added
 
 - `SeestarClient::set_identity` and `ClientIdentity`: tell the telescope this client's name and
@@ -516,7 +518,8 @@ Command and event modelling checked against captured sessions from a Seestar S30
 - RSA interop-key authentication for Seestar firmware 7.18 and later ([#1](https://github.com/astrophotograph/scopinator-rs/pull/1)).
 - More settings ([#2](https://github.com/astrophotograph/scopinator-rs/pull/2)).
 
-[Unreleased]: https://github.com/astrophotograph/scopinator-rs/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/astrophotograph/scopinator-rs/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/astrophotograph/scopinator-rs/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/astrophotograph/scopinator-rs/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/astrophotograph/scopinator-rs/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/astrophotograph/scopinator-rs/compare/v0.8.0...v0.8.1
